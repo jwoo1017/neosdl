@@ -1,0 +1,20 @@
+/* github-security-poc 의 neosdl-theme.css 색상/폰트 변수를 그대로 이식 */
+:root {
+  --bg: #0a0e13;
+  --bg-raised: #0f151c;
+  --surface: #131a22;
+  --surface-2: #1a232d;
+  --surface-3: #212c37;
+  --border: #253039;
+  --border-strong: #34424e;
+  --text: #e8eef3;
+  --text-dim: #93a4b3;
+  --text-faint: #5c6b7a;
+  --accent: #3fb8ac;
+  --accent-strong: #6fd9cd;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR",
+    "Apple SD Gothic Neo", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SFMono-Regular", "IBM Plex Mono",
+    Menlo, Consolas, monospace;
+}

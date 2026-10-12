@@ -1,0 +1,25 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+psycopg[binary,pool]==3.2.3
+# Neo4j 공식 드라이버. Apache 2.0 — 서버(GPLv3)와 라이선스가 다르다.
+# 별도 프로세스에 Bolt 로 접속만 하므로 NeoSDL 코드는 GPL 영향권 밖이다.
+neo4j==5.28.5
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+httpx==0.28.1
+# GitHub App 인증(JWT 서명, RS256)
+pyjwt[crypto]==2.10.1
+# 이메일/비밀번호 가입용 해시
+bcrypt==4.2.1
+# pydantic EmailStr 검증용
+email-validator==2.3.0
+pytest==9.1.1
+# LLM 실행 추적(자체호스팅 Langfuse, 개발 전용) — app/observability.py
+langfuse==2.60.0
+# WBS 1.2 — AST 파싱
+tree-sitter==0.26.0
+tree-sitter-java==0.23.5
+tree-sitter-python==0.25.0
+tree-sitter-javascript==0.25.0
+tree-sitter-typescript==0.23.2

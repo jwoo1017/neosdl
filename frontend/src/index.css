@@ -1,0 +1,50 @@
+@import "./theme.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------- scrollbars */
+/* 다크 테마 위에 기본 브라우저 스크롤바(흰색/밝은 회색)가 그대로 뜨면
+   화면 전체가 다크인데 스크롤바만 튀어서 어색하다 — 트랙은 투명하게 비우고
+   손잡이만 은은한 회색으로 남긴다(완전히 안 보이게 하면 스크롤 위치를
+   가늠할 수 없어 사용성이 떨어지므로 그렇게까진 하지 않는다). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-faint);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

@@ -1,0 +1,128 @@
+# NeoSDL LLM 게이트웨이 — LiteLLM Proxy 설정
+#
+# 이 파일이 "드롭다운에서 고른 모델 → 호출 규격"의 유일한 원천이다.
+#   - model_name  : 앱/프론트가 쓰는 공개 별칭 (frontend/src/modelMenu.js 의 id 와 1:1)
+#   - litellm_params.model : 실제 upstream provider/모델 문자열
+# 새 모델을 늘리려면 여기에 한 줄 추가하고 백엔드/프론트는 건드리지 않는다
+# (백엔드는 부팅 시 GET /v1/models 로 활성 목록을 읽어 검증한다).
+#
+# API 키는 .env 에서 주입된다 (os.environ/...). 키가 없는 모델은 호출 시점에만
+# 실패하며(fail-open), 게이트웨이 자체 기동은 막지 않는다.
+
+model_list:
+  # ------------------------------------------------------------------ Anthropic
+  - model_name: claude-opus-5
+    litellm_params:
+      model: anthropic/claude-opus-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-fable-5-1
+    litellm_params:
+      model: anthropic/claude-fable-5-1
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ------------------------------------------------------------------ OpenAI
+  # upstream 모델 ID 는 배포 시 OpenAI 최신 라인업에 맞춰 조정 (별칭은 유지).
+  - model_name: gpt-5.1
+    litellm_params:
+      model: openai/gpt-5.1
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-5.1-mini
+    litellm_params:
+      model: openai/gpt-5.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ------------------------------------------------------------------ Google Gemini
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GEMINI_API_KEY
+  - model_name: gemini-2.5-flash
+    litellm_params:
+      model: gemini/gemini-2.5-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ------------------------------------------------------------------ xAI Grok
+  - model_name: grok-4
+    litellm_params:
+      model: xai/grok-4
+      api_key: os.environ/XAI_API_KEY
+
+  # ------------------------------------------------------------------ DeepSeek
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+  - model_name: deepseek-reasoner
+    litellm_params:
+      model: deepseek/deepseek-reasoner
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # ------------------------------------------------------------------ Mistral
+  - model_name: mistral-large
+    litellm_params:
+      model: mistral/mistral-large-latest
+      api_key: os.environ/MISTRAL_API_KEY
+
+  # ------------------------------------------------------------------ Moonshot (Kimi)
+  - model_name: kimi-k2
+    litellm_params:
+      model: moonshot/kimi-k2-0711-preview
+      api_key: os.environ/MOONSHOT_API_KEY
+
+  # ------------------------------------------------------------------ Groq (초고속 Llama)
+  - model_name: llama-3.3-70b
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: os.environ/GROQ_API_KEY
+
+  # ------------------------------------------------------------------ 로컬 (오프라인 기본값)
+  # 키가 필요 없고 항상 사용 가능 — default_chat_model / "auto" 가 여기로 떨어진다.
+  - model_name: local-qwen-coder
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:7b
+      api_base: os.environ/OLLAMA_BASE_URL
+  - model_name: local-embed
+    litellm_params:
+      model: ollama/mxbai-embed-large
+      api_base: os.environ/OLLAMA_BASE_URL
+
+litellm_settings:
+  drop_params: true            # provider 가 모르는 파라미터는 조용히 제거 (response_format 등)
+  num_retries: 2
+  request_timeout: 600
+  telemetry: false
+  json_logs: true
+  # langfuse: 게이트웨이를 지나는 모든 호출(로컬 모델 포함)을 자체호스팅
+  # Langfuse 로 추적. LANGFUSE_* 키가 없으면 콜백만 조용히 실패 — 정상 응답엔
+  # 영향 없다(docker-compose.dev.yml litellm.environment 참고).
+  success_callback: ["prometheus", "langfuse"]
+  failure_callback: ["prometheus", "langfuse"]
+
+router_settings:
+  routing_strategy: simple-shuffle
+  # 상위 모델이 죽으면(키 없음·rate limit·5xx) 자동 폴백.
+  fallbacks:
+    - claude-opus-5: ["claude-sonnet-5", "local-qwen-coder"]
+    - claude-sonnet-5: ["local-qwen-coder"]
+    - gpt-5.1: ["local-qwen-coder"]
+    - gpt-5.1-mini: ["local-qwen-coder"]
+    - gemini-2.5-pro: ["local-qwen-coder"]
+    - gemini-2.5-flash: ["local-qwen-coder"]
+  # "auto" 별칭 — 백엔드도 자체적으로 default_chat_model 로 풀지만, 게이트웨이를
+  # 직접 부르는 경로(수동 curl 등)를 위해 여기에도 둔다.
+  model_group_alias:
+    auto: local-qwen-coder
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # 앱은 master key 가 아니라 /key/generate 로 발급한 virtual key 를 쓴다 (README 참고).
+  store_model_in_db: false

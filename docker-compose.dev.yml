@@ -1,0 +1,169 @@
+# NeoSDL 개발 환경 — 로컬 전용
+#
+# ⚠ 이 파일은 개발자 로컬 기동용이며, 고객사 납품 번들이 아니다.
+#   Neo4j Community 는 GPLv3 이므로 제품 설치 번들·컨테이너 이미지에
+#   동봉해서는 안 된다. 납품 시에는 고객사가 자체 기동한 인스턴스의
+#   접속 정보를 NEO4J_URI 로 받는다. 이 compose 는 그 규칙의 예외가 아니라
+#   범위 밖(개발자 워크스테이션)이다.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: neosdl-pg
+    environment:
+      POSTGRES_USER: neosdl
+      POSTGRES_PASSWORD: neosdl_dev
+      POSTGRES_DB: neosdl
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neosdl -d neosdl"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # LiteLLM 게이트웨이 전용 DB(litellm) + Langfuse 트레이싱 DB(langfuse)를 만드는
+  # 1회성 사이드카. 둘 다 LiteLLM/Langfuse 가 부팅 시 자체 마이그레이션을 돌리는
+  # 별도 DB라 하나의 사이드카로 같이 만든다 — NeoSDL 정본 스키마(neosdl DB,
+  # sql/001~)와는 완전히 분리.
+  litellm-init:
+    image: pgvector/pgvector:pg17
+    container_name: neosdl-litellm-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - sh
+      - -c
+      # 주의: YAML folded 블록(`>`)은 기준 들여쓰기보다 더 들여쓴 줄의 줄바꿈을
+      # 접지 않고 그대로 보존한다. 아래 for 루프 본문을 "for"보다 더 들여쓰면
+      # `psql -tAc`와 뒤따르는 SQL 문자열이 별도 줄(별도 명령)로 쪼개져 DB
+      # 존재 확인(-tAc "SELECT...")이 무력화된다 — 모든 줄을 같은 들여쓰기로
+      # 맞춰야 한 줄로 접혀 의도대로 동작한다.
+      - >
+        for db in litellm langfuse; do
+        psql postgresql://neosdl:neosdl_dev@postgres:5432/neosdl -tAc
+        "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1 ||
+        psql postgresql://neosdl:neosdl_dev@postgres:5432/neosdl -c "CREATE DATABASE $$db";
+        done
+
+  # LLM 게이트웨이 — 프론트 드롭다운에서 고른 모델이 여기서 provider 호출 규격으로
+  # 번역된다. 앱(app/ai_providers.py)은 이 컨테이너의 OpenAI 호환 /v1 엔드포인트만
+  # 호출한다. 설정은 litellm/config.yaml, 프로바이더 키는 .env 에서 주입.
+  # 버전 고정(rolling main-stable 아님): app/ai_providers.py의 response_schema
+  # (grammar/schema-constrained decoding)가 이 버전의 Ollama/Anthropic/Gemini
+  # provider 변환 코드(litellm/llms/*/chat/transformation.py) 동작에 의존한다 —
+  # main-stable로 두면 무심한 `docker compose pull` 한 번에 그 동작이 바뀔 수
+  # 있다. 올릴 땐 실제로 스키마 변환이 그대로인지 확인하고 의도적으로 바꿀 것.
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.100.0
+    container_name: neosdl-litellm
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm-init:
+        condition: service_completed_successfully
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      # LiteLLM 자체 테이블(가상 키·스펜드)은 neosdl 서버의 별도 DB 'litellm' 에 둔다.
+      DATABASE_URL: postgresql://neosdl:neosdl_dev@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-neosdl-master-dev}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-neosdl-salt-dev}
+      STORE_MODEL_IN_DB: "False"
+      # 컨테이너에서 호스트의 Ollama(11434)로 나가는 경로.
+      OLLAMA_BASE_URL: ${LITELLM_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # 프로바이더 키 — .env 에 채우면 해당 모델이 살아난다(없으면 호출 시 폴백/에러).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      # Langfuse 트레이싱 콜백(litellm/config.yaml success/failure_callback) 인증.
+      # 키를 안 채워도 게이트웨이는 정상 동작 — 콜백만 조용히 실패한다.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-neosdl-dev}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-neosdl-dev}
+      LANGFUSE_HOST: http://langfuse:3000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # LLM 실행 추적/평가(자체호스팅) — 프롬프트/응답 원문 + 체인 구조를 본다.
+  # LangSmith(SaaS) 대신 이걸 쓰는 이유: 코드 조각·심볼명·dataflow finding 이
+  # 담긴 프롬프트가 외부로 나가면 "모든 LLM egress 는 게이트웨이 하나로 통제"
+  # 원칙과 상충한다. v2(단일 컨테이너, Postgres만 필요)를 쓴다 — v3 는
+  # ClickHouse+Redis+MinIO 가 더 필요해 개발 워크스테이션엔 과하다. 이것도
+  # 개발자 로컬 전용이며(파일 상단 경고 참고), 트레이스 DB에 코드 조각이
+  # 쌓이므로 neosdl 정본 DB와 동일한 접근/보존 기준으로 취급한다.
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: neosdl-langfuse
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm-init:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    environment:
+      # HOSTNAME=0.0.0.0: Next.js standalone 서버가 기본으로 컨테이너 실제 네트워크
+      # IP에만 바인딩하고 loopback 은 거부한다.
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: postgresql://neosdl:neosdl_dev@postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-dev-nextauth-secret}
+      SALT: ${LANGFUSE_SALT:-dev-salt}
+      TELEMETRY_ENABLED: "false"
+      # headless 프로비저닝 — dev 에서 키를 결정론적으로 고정해 재기동해도
+      # 매번 UI로 프로젝트/키를 새로 만들 필요가 없게 한다.
+      LANGFUSE_INIT_ORG_ID: neosdl-dev
+      LANGFUSE_INIT_PROJECT_ID: neosdl-dev
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-pk-lf-neosdl-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-sk-lf-neosdl-dev}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-dev@neosdl.local}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-neosdl-dev-pw}
+      LANGFUSE_INIT_USER_NAME: neosdl-dev
+    healthcheck:
+      # localhost 대신 127.0.0.1 명시 — 컨테이너 /etc/hosts 가 localhost 를 ::1(IPv6)
+      # 먼저 매핑하는데 서버는 IPv4(0.0.0.0)에만 붙어 있어 wget localhost 는 항상
+      # connection refused 로 실패했다(healthcheck 오탐, 서비스 자체는 정상 응답).
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/public/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # 파생 조회 계층. 이게 꺼져 있어도 NeoSDL 은 postgres_cte 폴백으로 돈다.
+  neo4j:
+    image: neo4j:5-community
+    container_name: neosdl-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/neosdl_dev
+      NEO4J_server_memory_heap_max__size: 1G
+    ports:
+      - "7474:7474"   # browser
+      - "7687:7687"   # bolt
+    volumes:
+      - neo4jdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  pgdata:
+  neo4jdata:

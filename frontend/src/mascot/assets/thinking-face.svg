@@ -1,0 +1,65 @@
+<svg width="700" height="752" viewBox="-12 -12 700 752" fill="none" xmlns="http://www.w3.org/2000/svg">
+<style>
+/* 고민하는 표정: 9s 루프(눈썹+시선+고개) / 4.4s 루프(깜빡임) */
+.tilt{transform-box:view-box;transform-origin:337px 364px;animation:tilt 9s infinite}
+.browR{animation:browUp 9s infinite}
+.gaze{animation:gaze 9s infinite}
+.mouth{animation:mouth 9s infinite}
+.eye{transform-box:fill-box;transform-origin:50% 100%;animation:blink 4.4s infinite}
+.eye.r{animation-delay:.03s}
+
+@keyframes browUp{
+  0%{d:path("M667 195C667 275.081 602.529 84.5 523 84.5C443.471 84.5 379 275.081 379 195C379 114.919 443.471 50 523 50C602.529 50 667 114.919 667 195Z");animation-timing-function:cubic-bezier(.34,1.28,.64,1)}
+  5%,85%{d:path("M672.536 84.3328C664.544 164.014 593.916 222.175 514.784 214.238C435.652 206.301 377.982 135.272 385.974 55.5903C393.966 -24.0912 439.095 171.973 518.227 179.91C597.359 187.847 680.528 4.65132 672.536 84.3328Z");animation-timing-function:cubic-bezier(.4,.1,.5,1)}
+  95%,100%{d:path("M667 195C667 275.081 602.529 84.5 523 84.5C443.471 84.5 379 275.081 379 195C379 114.919 443.471 50 523 50C602.529 50 667 114.919 667 195Z")}
+}
+
+/* 시선: 1.5%(=135ms) 만에 튀듯 이동하고 나머지는 고정 = 실제 안구 도약운동 */
+@keyframes gaze{
+  0%{transform:translate(0,0);animation-timing-function:cubic-bezier(.2,.85,.3,1)}
+  2%,20%{transform:translate(-17px,-19px);animation-timing-function:cubic-bezier(.2,.85,.3,1)}
+  21.5%,38%{transform:translate(7px,-21px);animation-timing-function:cubic-bezier(.2,.85,.3,1)}
+  39.5%,55%{transform:translate(-11px,-7px);animation-timing-function:cubic-bezier(.2,.85,.3,1)}
+  56.5%,72%{transform:translate(15px,-15px);animation-timing-function:cubic-bezier(.2,.85,.3,1)}
+  73.5%,88%{transform:translate(-4px,-21px);animation-timing-function:cubic-bezier(.3,.9,.4,1)}
+  90%,100%{transform:translate(0,0)}
+}
+
+@keyframes tilt{
+  0%{transform:rotate(0)}
+  6%,86%{transform:rotate(1.6deg)}
+  96%,100%{transform:rotate(0)}
+}
+
+@keyframes mouth{
+  0%{transform:translate(0,0)}
+  6%,86%{transform:translate(9px,-7px)}
+  96%,100%{transform:translate(0,0)}
+}
+
+@keyframes blink{
+  0%,92%{transform:scaleY(1);animation-timing-function:cubic-bezier(.4,0,1,.45)}
+  94.5%{transform:scaleY(.12)}
+  96.5%{transform:scaleY(.12);animation-timing-function:cubic-bezier(0,.55,.4,1)}
+  99.5%{transform:scaleY(1.04)}
+  100%{transform:scaleY(1)}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .tilt,.browR,.gaze,.mouth,.eye{animation:none}
+  .browR{d:path("M672.536 84.3328C664.544 164.014 593.916 222.175 514.784 214.238C435.652 206.301 377.982 135.272 385.974 55.5903C393.966 -24.0912 439.095 171.973 518.227 179.91C597.359 187.847 680.528 4.65132 672.536 84.3328Z")}
+}
+</style>
+<g class="tilt">
+  <path d="M288 145C288 225.081 223.529 34.5 144 34.5C64.471 34.5 0 225.081 0 145C0 64.9187 64.471 0 144 0C223.529 0 288 64.9187 288 145Z" fill="black"/>
+  <path class="browR" d="M667 195C667 275.081 602.529 84.5 523 84.5C443.471 84.5 379 275.081 379 195C379 114.919 443.471 50 523 50C602.529 50 667 114.919 667 195Z" fill="black"/>
+  <g class="gaze">
+    <ellipse class="eye" cx="147" cy="322" rx="50" ry="50" fill="black"/>
+    <ellipse class="eye r" cx="530" cy="322" rx="50" ry="50" fill="black"/>
+  </g>
+  <g class="mouth">
+    <path d="M317.942 445.251L194.251 716.059" stroke="black" stroke-width="20" stroke-linecap="round"/>
+    <path d="M359.001 717.78L197 716" stroke="black" stroke-width="20" stroke-linecap="round"/>
+  </g>
+</g>
+</svg>

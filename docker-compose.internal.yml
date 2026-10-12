@@ -1,0 +1,145 @@
+# NeoSDL LLM 게이트웨이 — 사내 서버 배포용
+#
+# docker-compose.dev.yml 의 dev 전용 스택(litellm-init/litellm/langfuse/postgres)
+# 중 LLM 관련 서비스만 분리해 사내 서버에서 기동하기 위한 compose 다.
+#
+# Ollama(로컬 LLM)는 이 스택 안에 컨테이너로 두지 않는다 — 사내 GPU 서버
+# (192.168.0.74)에 이미 네이티브로 설치되어 있으므로 litellm 컨테이너는
+# OLLAMA_BASE_URL 로 그 외부 주소만 참조한다.
+#
+# backend/frontend/worker 앱 서비스는 이 파일 범위 밖이다. 그 서비스들은
+# 각자의 .env 에서 LITELLM_BASE_URL/LANGFUSE_HOST 가 이 스택이 뜬 사내 서버
+# 주소를 가리키도록 설정하면 된다.
+#
+# 필요한 환경변수는 .env.internal.example 참고. dev 스택과 달리 비밀키류는
+# 기본값을 두지 않고(`:?` 문법) .env 로 반드시 채우게 해서, 운영 서버가
+# dev 기본 키(sk-neosdl-*-dev 등)로 조용히 뜨는 사고를 막는다.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: neosdl-llm-pg
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-neosdl}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 필수 — .env.internal 확인}
+      POSTGRES_DB: postgres
+    volumes:
+      - llm_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neosdl} -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # litellm/langfuse 전용 DB 생성 1회성 사이드카 (docker-compose.dev.yml 과 동일 패턴).
+  # 이 스택은 LLM 게이트웨이 전용이라 NeoSDL 정본 스키마(neosdl DB, sql/001~)는
+  # 여기서 만들지 않는다.
+  litellm-init:
+    image: pgvector/pgvector:pg17
+    container_name: neosdl-llm-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-neosdl}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 필수 — .env.internal 확인}
+    entrypoint:
+      - sh
+      - -c
+      # 주의: YAML folded 블록(`>`)은 기준 들여쓰기보다 더 들여쓴 줄의 줄바꿈을
+      # 접지 않고 그대로 보존한다. for 루프 본문을 "for"보다 더 들여쓰면
+      # psql 명령이 별도 줄로 쪼개져 DB 존재 확인이 무력화되니 들여쓰기를
+      # 맞춰서 한 줄로 접히게 유지할 것 (docker-compose.dev.yml 과 동일 주의).
+      - >
+        for db in litellm langfuse; do
+        psql postgresql://$$POSTGRES_USER:$$POSTGRES_PASSWORD@postgres:5432/postgres -tAc
+        "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1 ||
+        psql postgresql://$$POSTGRES_USER:$$POSTGRES_PASSWORD@postgres:5432/postgres -c "CREATE DATABASE $$db";
+        done
+
+  # LLM 게이트웨이 — app/ai_providers.py 는 이 컨테이너의 OpenAI 호환 /v1 엔드포인트만
+  # 호출한다. 설정은 litellm/config.internal.yaml, 프로바이더 키는 .env.internal 에서 주입.
+  # 이미지 버전은 dev 스택과 동일하게 고정 유지 — app/ai_providers.py 의 스키마
+  # 제약 디코딩이 이 버전의 provider 변환 코드 동작에 의존한다.
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.100.0
+    container_name: neosdl-llm-litellm
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm-init:
+        condition: service_completed_successfully
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm/config.internal.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-neosdl}:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY 필수 — dev 기본값 재사용 금지}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?LITELLM_SALT_KEY 필수 — dev 기본값 재사용 금지}
+      STORE_MODEL_IN_DB: "False"
+      # 사내 GPU 서버에 네이티브 설치된 Ollama. 컨테이너 아님 — 실주소만 참조.
+      OLLAMA_BASE_URL: ${LITELLM_OLLAMA_BASE_URL:-http://192.168.0.74:11434}
+      # 프로바이더 키 — 채운 만큼만 해당 모델이 살아난다(없으면 호출 시 폴백/에러).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?LANGFUSE_PUBLIC_KEY 필수}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?LANGFUSE_SECRET_KEY 필수}
+      LANGFUSE_HOST: http://langfuse:3000
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # LLM 실행 추적/평가(자체호스팅) — docker-compose.dev.yml 의 langfuse 서비스와
+  # 동일 구성(v2, 단일 컨테이너). 코드 조각·프롬프트가 담기므로 neosdl 정본 DB와
+  # 동일한 접근/보존 기준으로 취급한다.
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: neosdl-llm-langfuse
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm-init:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    environment:
+      # HOSTNAME=0.0.0.0: Next.js standalone 서버가 기본으로 컨테이너 실제 네트워크
+      # IP에만 바인딩하고 loopback 은 거부한다.
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-neosdl}:${POSTGRES_PASSWORD}@postgres:5432/langfuse
+      # 사내 서버 자체 주소 기준 — 실제 배포 호스트명/IP로 .env.internal 에서 교체.
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://192.168.0.74:3000}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?LANGFUSE_NEXTAUTH_SECRET 필수}
+      SALT: ${LANGFUSE_SALT:?LANGFUSE_SALT 필수}
+      TELEMETRY_ENABLED: "false"
+      # headless 프로비저닝 — 운영에서도 재기동 시 매번 UI로 프로젝트/키를
+      # 새로 만들 필요가 없게 고정.
+      LANGFUSE_INIT_ORG_ID: neosdl-internal
+      LANGFUSE_INIT_PROJECT_ID: neosdl-internal
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?LANGFUSE_PUBLIC_KEY 필수}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?LANGFUSE_SECRET_KEY 필수}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?LANGFUSE_INIT_USER_EMAIL 필수}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?LANGFUSE_INIT_USER_PASSWORD 필수}
+      LANGFUSE_INIT_USER_NAME: neosdl-internal
+    healthcheck:
+      # localhost 대신 127.0.0.1 명시 — 컨테이너 /etc/hosts 가 localhost 를 ::1(IPv6)
+      # 먼저 매핑하는데 서버는 IPv4(0.0.0.0)에만 붙어 있어 wget localhost 는 항상
+      # connection refused 로 실패했다(healthcheck 오탐, 서비스 자체는 정상 응답).
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/public/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  llm_pgdata:
