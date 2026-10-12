@@ -1,9 +1,10 @@
-# NeoSDL LLM 게이트웨이 — 사내 서버 배포용 LiteLLM Proxy 설정
+# NeoSDL LLM 게이트웨이 — finble-server(운영) 배포용 LiteLLM Proxy 설정
 #
-# litellm/config.yaml(dev)과 provider/모델 구조는 동일하다 — 서빙 방식이 그대로
-# Ollama 호환이라 라우팅 로직을 바꿀 이유가 없다. 차이는 배포 환경(사내 서버)에
-# 맞춰 이 파일을 docker-compose.internal.yml 이 별도로 마운트한다는 점뿐이며,
-# 앞으로 dev/사내 서버 설정이 갈라질 여지를 이 파일 분리로 남겨둔다.
+# litellm/config.yaml(dev)과 외부 provider(Anthropic/OpenAI/Gemini 등) 구조는
+# 동일하다. 로컬 모델(local-qwen-coder/local-embed)만 dev(Ollama)와 다르다 —
+# 이 파일은 finble-server 자체 GPU에서 뜬 vllm/embed 컨테이너(hosted_vllm/,
+# huggingface/ provider)를 가리킨다. docker-compose.internal.yml 이 이 파일을
+# 마운트한다.
 #
 #   - model_name  : 앱/프론트가 쓰는 공개 별칭 (frontend/src/modelMenu.js 의 id 와 1:1)
 #   - litellm_params.model : 실제 upstream provider/모델 문자열
@@ -89,17 +90,24 @@ model_list:
 
   # ------------------------------------------------------------------ 로컬 (오프라인 기본값)
   # 키가 필요 없고 항상 사용 가능 — default_chat_model / "auto" 가 여기로 떨어진다.
-  # api_base 는 사내 GPU 서버(192.168.0.74)에 네이티브 설치된 Ollama를 가리키며,
-  # 실제 주소는 docker-compose.internal.yml 의 OLLAMA_BASE_URL(.env.internal 의
-  # LITELLM_OLLAMA_BASE_URL)로 주입된다 — 이 파일엔 하드코딩하지 않는다.
+  # finble-server 자체 GPU(RTX 3080)에서 Hugging Face 모델을 직접 서빙한다
+  # (Ollama 미사용). 채팅/코더는 vLLM(OpenAI 호환 서버, hosted_vllm/ provider),
+  # 임베딩은 HF Text Embeddings Inference(TEI, huggingface/ provider)로 분리
+  # 서빙한다 — docker-compose.internal.yml 의 vllm/embed 서비스가 떠 있어야
+  # 한다. 모델 가중치는 /fast/neosdl/models, HF 캐시는 /fast/neosdl/cache에
+  # bind mount 되어 있다(가이드에 이미 할당된 LV).
+  # 12GB VRAM(RTX 3080) 예산 안에서 돌아가는 양자화(AWQ) 7B 코더 모델.
+  # docker-compose.internal.yml 의 vllm 서비스 --model 인자와 반드시 같은
+  # 모델이어야 한다(VLLM_MODEL env로 양쪽에 동일하게 주입).
   - model_name: local-qwen-coder
     litellm_params:
-      model: ollama_chat/qwen2.5-coder:14b
-      api_base: os.environ/OLLAMA_BASE_URL
+      model: hosted_vllm/Qwen/Qwen2.5-Coder-7B-Instruct-AWQ
+      api_base: os.environ/VLLM_BASE_URL
+  # 기존 Ollama의 mxbai-embed-large와 같은 모델(HF 원본) — TEI로 서빙.
   - model_name: local-embed
     litellm_params:
-      model: ollama/mxbai-embed-large
-      api_base: os.environ/OLLAMA_BASE_URL
+      model: huggingface/mixedbread-ai/mxbai-embed-large-v1
+      api_base: os.environ/EMBED_BASE_URL
 
 litellm_settings:
   drop_params: true            # provider 가 모르는 파라미터는 조용히 제거 (response_format 등)

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # --- GitHub OAuth 로그인 (App 설정의 "Identifying and authorizing users") ---
     github_oauth_client_id: str | None = None
     github_oauth_client_secret: str | None = None
-    github_oauth_callback_url: str = "http://localhost:8000/auth/github/callback"
+    github_oauth_callback_url: str = "http://localhost:5173/api/auth/github/callback"
     github_app_webhook_secret: str | None = None
     github_app_slug: str | None = None  # https://github.com/apps/{slug}/installations/new
 
@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     session_secret: str
 
     frontend_url: str = "http://localhost:5173"
-    backend_base_url: str = "http://localhost:8000"
+    # 브라우저가 직접 보는 공개 주소 — 프론트/백엔드가 같은 오리진(Vite 프록시/nginx)
+    # 뒤에 있으므로 frontend_url과 같은 호스트:포트다. 백엔드 프로세스 자체의
+    # 내부 바인딩 주소(uvicorn --port)와 혼동하지 말 것.
+    backend_base_url: str = "http://localhost:5173"
 
     # --- 로컬 LLM (Ollama) — WBS 2.2 의미 계층 프로토타입 ---
     ollama_base_url: str = "http://localhost:11434"

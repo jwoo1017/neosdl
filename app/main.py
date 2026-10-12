@@ -9,8 +9,7 @@ import json
 from typing import Literal
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -46,26 +45,25 @@ from worker.handlers.clone import workdir_for
 
 app = FastAPI(title="NeoSDL API", version="0.1.0")
 
-# frontend/ 는 별도 Vite dev 서버(5173)에서 뜨고 이 API를 직접 호출한다.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=True,  # 세션 쿠키가 크로스 포트로 오가려면 필수
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 프론트(빌드본)와 백엔드를 nginx가 같은 오리진으로 묶어서 서빙한다 — 모든
+# 앱 라우트는 /api 아래에 모이고(아래 `api` 라우터), nginx가 /api 는
+# 백엔드로, 그 외 경로는 프론트 정적 파일로 분기한다. 같은 오리진이라
+# CORS/크로스사이트 쿠키 이슈가 없다. 로컬 개발은 Vite dev 서버 프록시
+# (frontend/vite.config.js)가 /api 를 백엔드로 그대로 넘겨 같은 구조를
+# 재현한다 — 그래서 CORSMiddleware 자체가 필요 없다.
+api = APIRouter(prefix="/api")
 
-app.include_router(github_oauth.router)
-app.include_router(installations.router)
-app.include_router(workspaces.router)
-app.include_router(teamspaces.router)
-app.include_router(projects.router)
-app.include_router(releases.router)
-app.include_router(risk_api.router)
-app.include_router(security_history.router)
-app.include_router(chat.router)
-app.include_router(repo_activity.router)
-app.include_router(finding_fix_api.router)
+app.include_router(github_oauth.router, prefix="/api")
+app.include_router(installations.router, prefix="/api")
+app.include_router(workspaces.router, prefix="/api")
+app.include_router(teamspaces.router, prefix="/api")
+app.include_router(projects.router, prefix="/api")
+app.include_router(releases.router, prefix="/api")
+app.include_router(risk_api.router, prefix="/api")
+app.include_router(security_history.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
+app.include_router(repo_activity.router, prefix="/api")
+app.include_router(finding_fix_api.router, prefix="/api")
 
 
 @app.on_event("startup")
@@ -148,7 +146,7 @@ _MODEL_CATALOG: list[dict] = [
 ]
 
 
-@app.get("/models")
+@api.get("/models")
 def list_models(member: dict = Depends(get_current_member)):
     """채팅 드롭다운용 모델 목록. `available` 은 게이트웨이가 지금 서빙 중인지 여부
 
@@ -176,7 +174,7 @@ def healthz():
     return {"ok": True, "graph_backend": settings().graph_backend}
 
 
-@app.post("/repositories", status_code=201)
+@api.post("/repositories", status_code=201)
 def register_repository(body: RepositoryIn, member: dict = Depends(get_current_member)):
     """installation은 개인 소유라 등록엔 project 권한이 필요 없다 — 소유권만 확인한다.
 
@@ -221,7 +219,7 @@ def register_repository(body: RepositoryIn, member: dict = Depends(get_current_m
     return repo
 
 
-@app.patch("/repositories/{repository_id}")
+@api.patch("/repositories/{repository_id}")
 def update_repository_webhook(repository_id: UUID, body: RepositoryWebhookIn,
                                member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
@@ -248,7 +246,7 @@ def update_repository_webhook(repository_id: UUID, body: RepositoryWebhookIn,
             "pr_fix_enabled": row["pr_fix_enabled"]}
 
 
-@app.get("/repositories/{repository_id}/commits")
+@api.get("/repositories/{repository_id}/commits")
 def repository_commits(repository_id: UUID, branch: str | None = None, limit: int = 100,
                         member: dict = Depends(get_current_member)):
     """git.sync_history 가 채운 최근 커밋 목록(기본 브랜치만, 최대 100개).
@@ -280,7 +278,7 @@ def repository_commits(repository_id: UUID, branch: str | None = None, limit: in
         return list_commits(cur, repository_id, limit=limit)
 
 
-@app.get("/repositories/{repository_id}/commits/{sha}/files")
+@api.get("/repositories/{repository_id}/commits/{sha}/files")
 def repository_commit_files(repository_id: UUID, sha: str, member: dict = Depends(get_current_member)):
     """commit_file에 이미 있으면 그대로, 없으면(다른 브랜치 커밋 등) GitHub에서 라이브 조회."""
     with tx() as cur:
@@ -308,7 +306,7 @@ def repository_commit_files(repository_id: UUID, sha: str, member: dict = Depend
     ]
 
 
-@app.get("/repositories/{repository_id}/branches")
+@api.get("/repositories/{repository_id}/branches")
 def repository_branches(repository_id: UUID, member: dict = Depends(get_current_member)):
     with tx() as cur:
         assert_repository_access(cur, repository_id, member["id"], "viewer")
@@ -316,7 +314,7 @@ def repository_branches(repository_id: UUID, member: dict = Depends(get_current_
     return list_repo_branches(repo)
 
 
-@app.get("/repositories/{repository_id}/tree")
+@api.get("/repositories/{repository_id}/tree")
 def repository_tree(repository_id: UUID, path: str = "", ref: str | None = None,
                      member: dict = Depends(get_current_member)):
     with tx() as cur:
@@ -334,7 +332,7 @@ def repository_tree(repository_id: UUID, path: str = "", ref: str | None = None,
     ]
 
 
-@app.get("/repositories/{repository_id}/contents")
+@api.get("/repositories/{repository_id}/contents")
 def repository_file_contents(repository_id: UUID, path: str, ref: str | None = None,
                               member: dict = Depends(get_current_member)):
     """GitHub API로 임의 브랜치/커밋 시점의 파일 원문을 바로 열람(스캔과 무관).
@@ -354,7 +352,7 @@ def repository_file_contents(repository_id: UUID, path: str, ref: str | None = N
     return {"path": path, "content": content, "size": entry.get("size", 0)}
 
 
-@app.get("/repositories/{repository_id}/pull-requests")
+@api.get("/repositories/{repository_id}/pull-requests")
 def repository_pull_requests(repository_id: UUID, state: str | None = None,
                               member: dict = Depends(get_current_member)):
     with tx() as cur:
@@ -362,7 +360,7 @@ def repository_pull_requests(repository_id: UUID, state: str | None = None,
         return list_pull_requests(cur, repository_id, state=state)
 
 
-@app.post("/repositories/{repository_id}/pull-requests/sync")
+@api.post("/repositories/{repository_id}/pull-requests/sync")
 def sync_pull_requests(repository_id: UUID, member: dict = Depends(get_current_member)):
     """웹훅이 못 잡은 과거 PR을 GitHub에서 백필 — 새 레포를 붙였을 때 한 번 눌러주는 용도."""
     with tx() as cur:
@@ -391,7 +389,7 @@ def sync_pull_requests(repository_id: UUID, member: dict = Depends(get_current_m
     return {"synced": len(prs)}
 
 
-@app.get("/repositories/{repository_id}/languages")
+@api.get("/repositories/{repository_id}/languages")
 def repository_languages(repository_id: UUID, member: dict = Depends(get_current_member)):
     """GitHub Repository Languages API(바이트 단위) 를 그대로 비율로 환산해 돌려준다."""
     with tx() as cur:
@@ -422,7 +420,7 @@ def repository_languages(repository_id: UUID, member: dict = Depends(get_current
     return {"total_bytes": total, "languages": languages}
 
 
-@app.post("/repositories/{repository_id}/scans", status_code=202)
+@api.post("/repositories/{repository_id}/scans", status_code=202)
 def request_scan(repository_id: UUID, body: ScanIn, member: dict = Depends(get_current_member)):
     with tx() as cur:
         assert_repository_access(cur, repository_id, member["id"], "developer")
@@ -450,7 +448,7 @@ def request_scan(repository_id: UUID, body: ScanIn, member: dict = Depends(get_c
                             ref=ref, trigger=body.trigger, actor=actor)
 
 
-@app.get("/projects/{project_id}/scans")
+@api.get("/projects/{project_id}/scans")
 def list_scans(project_id: UUID, repository_id: UUID | None = None, limit: int = 20,
                member: dict = Depends(get_current_member)):
     """최근 스캔 목록. 이 프로젝트에 attach된 레포로만 스코프(목록 가시성 — 역할 무관)."""
@@ -472,7 +470,7 @@ def list_scans(project_id: UUID, repository_id: UUID | None = None, limit: int =
         return cur.fetchall()
 
 
-@app.get("/scans/{scan_id}")
+@api.get("/scans/{scan_id}")
 def get_scan(scan_id: UUID, member: dict = Depends(get_current_member)):
     with tx() as cur:
         assert_scan_access(cur, scan_id, member["id"], "viewer")
@@ -495,7 +493,7 @@ def get_scan(scan_id: UUID, member: dict = Depends(get_current_member)):
     return row
 
 
-@app.get("/scans/{scan_id}/callers")
+@api.get("/scans/{scan_id}/callers")
 def callers(scan_id: UUID, symbol_key: str, depth: int = 3,
             member: dict = Depends(get_current_member)):
     """위험도 전파 조회. 반환된 path 가 그대로 Risk Evidence 가 된다.
@@ -527,7 +525,7 @@ def callers(scan_id: UUID, symbol_key: str, depth: int = 3,
     }
 
 
-@app.get("/scans/{scan_id}/graph")
+@api.get("/scans/{scan_id}/graph")
 def scan_graph(scan_id: UUID, include_unresolved: bool = True, domain: str | None = None,
                view: Literal["all", "calls", "dependency"] = "all",
                member: dict = Depends(get_current_member)):
@@ -646,7 +644,7 @@ def scan_graph(scan_id: UUID, include_unresolved: bool = True, domain: str | Non
     return {"nodes": list(nodes.values()), "edges": cy_edges, "max_recent_changes": max_recent_changes}
 
 
-@app.get("/scans/{scan_id}/graph/domains")
+@api.get("/scans/{scan_id}/graph/domains")
 def scan_domain_graph(scan_id: UUID, member: dict = Depends(get_current_member)):
     """도메인을 노드로 하는 롤업 그래프 — symbol_semantic.domain 을 file(module) 단위로
 
@@ -703,7 +701,7 @@ def scan_domain_graph(scan_id: UUID, member: dict = Depends(get_current_member))
     return {"nodes": nodes, "edges": edges, "max_file_count": max_file_count}
 
 
-@app.get("/scans/{scan_id}/domains")
+@api.get("/scans/{scan_id}/domains")
 def scan_domains(scan_id: UUID, member: dict = Depends(get_current_member)):
     """의미 태깅(symbol.annotate)이 만든 도메인 목록 + 파일 수. 아직 안 돌았으면 빈 리스트."""
     with tx() as cur:
@@ -711,7 +709,7 @@ def scan_domains(scan_id: UUID, member: dict = Depends(get_current_member)):
         return domain_overview(cur, scan_id)
 
 
-@app.get("/scans/{scan_id}/search")
+@api.get("/scans/{scan_id}/search")
 def scan_search(scan_id: UUID, q: str, limit: int = 20, domain: str | None = None,
                  member: dict = Depends(get_current_member)):
     with tx() as cur:
@@ -719,7 +717,7 @@ def scan_search(scan_id: UUID, q: str, limit: int = 20, domain: str | None = Non
         return search_symbols(cur, scan_id, q, limit, domain=domain)
 
 
-@app.get("/scans/{scan_id}/dataflow")
+@api.get("/scans/{scan_id}/dataflow")
 def scan_dataflow(scan_id: UUID, mode: Literal["security", "business"] = "security", limit: int = 50,
                    member: dict = Depends(get_current_member)):
     with tx() as cur:
@@ -730,7 +728,7 @@ def scan_dataflow(scan_id: UUID, mode: Literal["security", "business"] = "securi
 _SEVERITY_ORDER = ["critical", "high", "medium", "low"]
 
 
-@app.get("/scans/{scan_id}/security/findings")
+@api.get("/scans/{scan_id}/security/findings")
 def scan_security_findings(scan_id: UUID, include_whitelisted: bool = False,
                             member: dict = Depends(get_current_member)):
     """최초 조회 시 1회 계산+영속화, 이후는 저장된 결과를 그대로 반환(캐시처럼 동작)."""
@@ -758,7 +756,7 @@ def scan_security_findings(scan_id: UUID, include_whitelisted: bool = False,
         return cur.fetchall()
 
 
-@app.get("/repositories/{repository_id}/security/risk-history")
+@api.get("/repositories/{repository_id}/security/risk-history")
 def repository_risk_history(repository_id: UUID, limit: int = 30,
                              member: dict = Depends(get_current_member)):
     """scan별 severity 개수 시계열 — 이미 security 분석이 끝난(security_finding이 있는) scan만."""
@@ -796,7 +794,7 @@ class WhitelistIn(BaseModel):
     reason: str | None = None
 
 
-@app.get("/projects/{project_id}/security/whitelist")
+@api.get("/projects/{project_id}/security/whitelist")
 def list_whitelist(project_id: UUID, member: dict = Depends(get_current_member)):
     with tx() as cur:
         assert_project_role(cur, project_id, member["id"])
@@ -810,7 +808,7 @@ def list_whitelist(project_id: UUID, member: dict = Depends(get_current_member))
         return cur.fetchall()
 
 
-@app.post("/projects/{project_id}/security/whitelist", status_code=201)
+@api.post("/projects/{project_id}/security/whitelist", status_code=201)
 def create_whitelist_entry(project_id: UUID, body: WhitelistIn,
                             member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
@@ -834,7 +832,7 @@ def create_whitelist_entry(project_id: UUID, body: WhitelistIn,
         return row
 
 
-@app.delete("/projects/{project_id}/security/whitelist/{whitelist_id}", status_code=204)
+@api.delete("/projects/{project_id}/security/whitelist/{whitelist_id}", status_code=204)
 def delete_whitelist_entry(project_id: UUID, whitelist_id: UUID,
                             member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
@@ -859,7 +857,7 @@ class ProjectAiSettingsIn(BaseModel):
     qa_model_name: str = Field(default="", max_length=100)
 
 
-@app.get("/projects/{project_id}/ai-settings")
+@api.get("/projects/{project_id}/ai-settings")
 def get_project_ai_settings(project_id: UUID, member: dict = Depends(get_current_member)):
     with tx() as cur:
         assert_project_role(cur, project_id, member["id"])
@@ -873,7 +871,7 @@ def get_project_ai_settings(project_id: UUID, member: dict = Depends(get_current
         return row
 
 
-@app.patch("/projects/{project_id}/ai-settings")
+@api.patch("/projects/{project_id}/ai-settings")
 def update_project_ai_settings(project_id: UUID, body: ProjectAiSettingsIn,
                                 member: dict = Depends(get_current_member)):
     """qa_model_name/ci_model_name 은 LiteLLM 게이트웨이의 model_name(공개 별칭)이다.
@@ -903,7 +901,7 @@ def update_project_ai_settings(project_id: UUID, body: ProjectAiSettingsIn,
         return row
 
 
-@app.get("/projects/{project_id}/ai-usage")
+@api.get("/projects/{project_id}/ai-usage")
 def get_project_ai_usage(project_id: UUID, member: dict = Depends(get_current_member)):
     """purpose/provider/model별 호출 건수·성공률·평균 latency."""
     with tx() as cur:
@@ -924,7 +922,7 @@ def get_project_ai_usage(project_id: UUID, member: dict = Depends(get_current_me
         return cur.fetchall()
 
 
-@app.post("/scans/{scan_id}/ask")
+@api.post("/scans/{scan_id}/ask")
 async def scan_ask(scan_id: UUID, body: AskIn, member: dict = Depends(get_current_member)):
     """자연어 질의 → 라우팅(어떤 도구를 부를지) → 도구 실행 → 답변 합성.
 
@@ -942,7 +940,7 @@ async def scan_ask(scan_id: UUID, body: AskIn, member: dict = Depends(get_curren
     )
 
 
-@app.get("/scans/{scan_id}/file")
+@api.get("/scans/{scan_id}/file")
 def scan_file(scan_id: UUID, path: str, member: dict = Depends(get_current_member)):
     """그래프 ↔ 코드 동기화용 — 노드를 클릭했을 때 실제 소스를 보여준다.
 
@@ -975,7 +973,7 @@ def scan_file(scan_id: UUID, path: str, member: dict = Depends(get_current_membe
     return {"path": path, "lang": row["lang"], "content": content}
 
 
-@app.get("/scans/{scan_id}/functions")
+@api.get("/scans/{scan_id}/functions")
 def scan_functions(scan_id: UUID, member: dict = Depends(get_current_member)):
     """CFG/PDG 뷰의 함수 선택기용 목록 — cfg_block이 있는(=CFG 추출된) 심볼만."""
     with tx() as cur:
@@ -993,7 +991,7 @@ def scan_functions(scan_id: UUID, member: dict = Depends(get_current_member)):
         return cur.fetchall()
 
 
-@app.get("/scans/{scan_id}/function-graph")
+@api.get("/scans/{scan_id}/function-graph")
 def scan_function_graph(scan_id: UUID, symbol_key: str, member: dict = Depends(get_current_member)):
     """CFG/PDG/CPG 셋 다 이 엔드포인트 하나로 처리한다.
 
@@ -1075,7 +1073,7 @@ def scan_function_graph(scan_id: UUID, symbol_key: str, member: dict = Depends(g
             "nodes": nodes, "edges": edges}
 
 
-@app.get("/scans/{scan_id}/projection")
+@api.get("/scans/{scan_id}/projection")
 def projection(scan_id: UUID, member: dict = Depends(get_current_member)):
     """파생 계층의 상태. stale=true 여도 판정은 성립한다."""
     with tx() as cur:
@@ -1085,3 +1083,8 @@ def projection(scan_id: UUID, member: dict = Depends(get_current_member)):
     return row or {"scan_id": str(scan_id), "backend": settings().graph_backend,
                    "stale": True, "projected_at": None,
                    "note": "아직 투영되지 않음 — postgres_cte 로 조회 가능"}
+
+
+# main.py 안에서 @api.* 로 등록한 라우트를 전부 모은 뒤 마운트한다 — 파일
+# 끝에서 해야 위의 모든 데코레이터가 먼저 실행되어 있다.
+app.include_router(api)

@@ -1,15 +1,12 @@
-// 127.0.0.1로 고정했다가 되돌림: GitHub OAuth 콜백(redirect_uri)이
-// .env의 GITHUB_OAUTH_CALLBACK_URL(localhost 기준)로 고정돼 있어서,
-// 로그인 시작 지점을 127.0.0.1로 바꾸면 state/세션 쿠키가 localhost와
-// 127.0.0.1 사이에서 안 넘어가(브라우저는 둘을 다른 호스트로 취급) 콜백이
-// 항상 400(state 없음)이 나거나, 어쩌다 통과해도 세션 쿠키가 다른 호스트에
-// 붙어 이후 /me 요청에 실리지 않는다. localhost:5173(프론트)↔localhost:8000
-// (백엔드) 조합을 그대로 유지해야 쿠키가 일관되게 도니, IPv6 연결 이슈는
-// 다른 방법(백엔드를 dual-stack으로 바인딩)으로 풀어야 한다.
-const API_BASE = "http://localhost:8000";
+// 프론트/백엔드는 같은 오리진으로 묶여 있다 — 운영은 nginx가, 로컬 개발은
+// Vite dev 프록시(vite.config.js의 /api)가 백엔드로 넘긴다. 그래서
+// API_BASE는 항상 "지금 떠 있는 바로 이 페이지의 오리진"이고(이전처럼
+// localhost:8000을 따로 하드코딩하지 않는다), 모든 앱 라우트는 /api
+// 아래(app/main.py)에 있다 — /config만 예외로 루트에 남아있다.
+const API_BASE = window.location.origin;
 
 async function apiFetch(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, { ...options, credentials: "include" });
+  const res = await fetch(`${API_BASE}/api${path}`, { ...options, credentials: "include" });
   if (res.status === 401) {
     // 세션 만료 — 로그인 방식이 이메일/비번일 수도 있어서 GitHub로 바로
     // 보내지 않고 우리 로그인 페이지로 보낸다.
@@ -34,7 +31,7 @@ export async function fetchModels() {
 }
 
 export function githubLoginUrl(next) {
-  const url = new URL(`${API_BASE}/auth/github/login`);
+  const url = new URL(`${API_BASE}/api/auth/github/login`);
   if (next) url.searchParams.set("next", next);
   return url.toString();
 }
@@ -47,7 +44,7 @@ export function githubAppInstallUrl(appSlug, state) {
 
 // ---------------------------------------------------------------- auth
 export async function signup(email, password, nickname) {
-  const res = await fetch(`${API_BASE}/auth/signup`, {
+  const res = await fetch(`${API_BASE}/api/auth/signup`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
@@ -57,7 +54,7 @@ export async function signup(email, password, nickname) {
 }
 
 export async function login(email, password) {
-  const res = await fetch(`${API_BASE}/auth/login`, {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
@@ -523,13 +520,13 @@ export async function fetchChatMessages(projectId, sessionId) {
 // 스트리밍 + 다중 뷰어 브로드캐스트를 위해서다. 세션 쿠키는 same-site라
 // WS 핸드셰이크에도 자동으로 실린다.
 export function chatSocketUrl(projectId, sessionId) {
-  return `${API_BASE.replace(/^http/, "ws")}/ws/projects/${projectId}/chat/sessions/${sessionId}`;
+  return `${API_BASE.replace(/^http/, "ws")}/api/ws/projects/${projectId}/chat/sessions/${sessionId}`;
 }
 
 // ---------------------------------------------------------------- mascot / repo activity
 // push/PR/스캔/수정 이벤트를 실시간으로 받는 저장소별 소켓 — app/repo_activity.py.
 export function repoActivitySocketUrl(repositoryId) {
-  return `${API_BASE.replace(/^http/, "ws")}/ws/repositories/${repositoryId}/activity`;
+  return `${API_BASE.replace(/^http/, "ws")}/api/ws/repositories/${repositoryId}/activity`;
 }
 
 export async function fetchRepositoryActivityFeed(repositoryId, limit = 50) {

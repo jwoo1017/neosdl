@@ -26,7 +26,7 @@ router = APIRouter(tags=["installations"])
 
 
 def _login_redirect(installation_id: int, setup_action: str | None, github_account_id: str | None):
-    next_path = f"/auth/github/setup?installation_id={installation_id}"
+    next_path = f"/api/auth/github/setup?installation_id={installation_id}"
     if setup_action:
         next_path += f"&setup_action={setup_action}"
     if github_account_id:

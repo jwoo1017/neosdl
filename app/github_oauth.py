@@ -169,7 +169,7 @@ def _apply_email_if_available(cur, member_id: str, candidate_email: str | None) 
 
 def _safe_redirect_target(next_path: str | None) -> str:
     """오픈 리다이렉트 방지 — next 는 허용목록을 통과해야만 그대로 쓴다."""
-    if next_path and next_path.startswith("/auth/github/setup"):
+    if next_path and next_path.startswith("/api/auth/github/setup"):
         return f"{settings().backend_base_url}{next_path}"
     if (next_path and next_path.startswith("/") and not next_path.startswith("//")
             and "://" not in next_path):
@@ -186,8 +186,11 @@ def github_login(next: str | None = None):
         "state": state,
     })
     resp = RedirectResponse(authorize_url, status_code=302)
+    # 이 라우터는 app/main.py에서 prefix="/api"로 마운트되므로 실제 요청
+    # 경로는 /api/auth/github/... 다 — 쿠키 path가 그와 안 맞으면 브라우저가
+    # 콜백 요청에 이 쿠키를 아예 안 실어서 state 검증이 매번 실패한다.
     resp.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_SECONDS,
-                     httponly=True, secure=True, samesite="lax", path="/auth/github")
+                     httponly=True, secure=True, samesite="lax", path="/api/auth/github")
     return resp
 
 
@@ -319,7 +322,7 @@ def github_callback(
     resp = RedirectResponse(redirect_to, status_code=302)
     if current_member is None:
         _set_session_cookie(resp, member)
-    resp.delete_cookie(STATE_COOKIE, path="/auth/github")
+    resp.delete_cookie(STATE_COOKIE, path="/api/auth/github")
     return resp
 
 

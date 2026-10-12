@@ -1,11 +1,12 @@
-# NeoSDL LLM 게이트웨이 — 사내 서버 배포용
+# NeoSDL LLM 게이트웨이 — finble-server(운영) 배포용
 #
 # docker-compose.dev.yml 의 dev 전용 스택(litellm-init/litellm/langfuse/postgres)
-# 중 LLM 관련 서비스만 분리해 사내 서버에서 기동하기 위한 compose 다.
+# 중 LLM 관련 서비스만 분리해 운영 서버에서 기동하기 위한 compose 다.
 #
-# Ollama(로컬 LLM)는 이 스택 안에 컨테이너로 두지 않는다 — 사내 GPU 서버
-# (192.168.0.74)에 이미 네이티브로 설치되어 있으므로 litellm 컨테이너는
-# OLLAMA_BASE_URL 로 그 외부 주소만 참조한다.
+# 로컬 모델은 Ollama가 아니라 이 스택 안의 vllm(코더)/embed(임베딩)
+# 컨테이너가 finble-server 자체 GPU(RTX 3080)로 직접 서빙한다 — 외부 GPU
+# 서버에 의존하지 않는다. 가중치/캐시는 /fast/neosdl/{models,cache}에
+# bind mount 된다(서버 구축 가이드에 이미 할당된 LV).
 #
 # backend/frontend/worker 앱 서비스는 이 파일 범위 밖이다. 그 서비스들은
 # 각자의 .env 에서 LITELLM_BASE_URL/LANGFUSE_HOST 가 이 스택이 뜬 사내 서버
@@ -80,8 +81,10 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY 필수 — dev 기본값 재사용 금지}
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?LITELLM_SALT_KEY 필수 — dev 기본값 재사용 금지}
       STORE_MODEL_IN_DB: "False"
-      # 사내 GPU 서버에 네이티브 설치된 Ollama. 컨테이너 아님 — 실주소만 참조.
-      OLLAMA_BASE_URL: ${LITELLM_OLLAMA_BASE_URL:-http://192.168.0.74:11434}
+      # 이 서버 자체 GPU(RTX 3080)에서 뜬 vllm/embed 컨테이너 — 서비스명으로
+      # 내부 접근(neosdl-net 동급 네트워크). 외부 GPU 서버(Ollama) 더 이상 안 씀.
+      VLLM_BASE_URL: http://vllm:8000
+      EMBED_BASE_URL: http://embed:80/v1
       # 프로바이더 키 — 채운 만큼만 해당 모델이 살아난다(없으면 호출 시 폴백/에러).
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -99,6 +102,63 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+
+  # 로컬 코더 모델(vLLM, OpenAI 호환 서버) — litellm.VLLM_BASE_URL이 바라본다.
+  # 모델명은 litellm/config.internal.yaml의 local-qwen-coder(hosted_vllm/...)와
+  # 반드시 같아야 한다 — 바꾸려면 두 곳을 같이 바꿀 것. GPU 1개를 통째로 씀
+  # (embed 서비스와 동시에 떠도 VRAM 12GB 안에 들어오는 조합으로 고를 것).
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: neosdl-vllm
+    command:
+      - "--model=${VLLM_MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct-AWQ}"
+      - "--quantization=awq"
+      - "--max-model-len=16384"
+      - "--gpu-memory-utilization=0.85"
+    environment:
+      HF_HOME: /cache
+    volumes:
+      - /fast/neosdl/models:/root/.cache/huggingface/hub
+      - /fast/neosdl/cache:/cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s   # 최초 기동 시 HF Hub에서 가중치를 받아오는 시간
+    restart: unless-stopped
+
+  # 임베딩 전용 — HF Text Embeddings Inference. vLLM과 GPU/모델 책임을
+  # 분리해서 코더 모델 재시작이 임베딩(검색 등)에 영향 안 주게 한다.
+  embed:
+    image: ghcr.io/huggingface/text-embeddings-inference:latest
+    container_name: neosdl-embed
+    command: ["--model-id", "${EMBED_MODEL:-mixedbread-ai/mxbai-embed-large-v1}"]
+    environment:
+      HF_HOME: /data
+    volumes:
+      - /fast/neosdl/cache:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:80/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+    restart: unless-stopped
 
   # LLM 실행 추적/평가(자체호스팅) — docker-compose.dev.yml 의 langfuse 서비스와
   # 동일 구성(v2, 단일 컨테이너). 코드 조각·프롬프트가 담기므로 neosdl 정본 DB와
