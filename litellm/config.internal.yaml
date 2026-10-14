@@ -3,7 +3,7 @@
 # litellm/config.yaml(dev)과 외부 provider(Anthropic/OpenAI/Gemini 등) 구조는
 # 동일하다. 로컬 모델(local-qwen-coder/local-embed)만 dev(Ollama)와 다르다 —
 # 이 파일은 finble-server 자체 GPU에서 뜬 vllm/embed 컨테이너(hosted_vllm/,
-# huggingface/ provider)를 가리킨다. docker-compose.internal.yml 이 이 파일을
+# openai/ provider)를 가리킨다. deploy/compose.prod.yml 이 이 파일을
 # 마운트한다.
 #
 #   - model_name  : 앱/프론트가 쓰는 공개 별칭 (frontend/src/modelMenu.js 의 id 와 1:1)
@@ -11,7 +11,7 @@
 # 새 모델을 늘리려면 여기에 한 줄 추가하고 백엔드/프론트는 건드리지 않는다
 # (백엔드는 부팅 시 GET /v1/models 로 활성 목록을 읽어 검증한다).
 #
-# API 키는 .env.internal 에서 주입된다 (os.environ/...). 키가 없는 모델은 호출
+# API 키는 deploy/.env.prod 에서 주입된다 (os.environ/...). 키가 없는 모델은 호출
 # 시점에만 실패하며(fail-open), 게이트웨이 자체 기동은 막지 않는다.
 
 model_list:
@@ -92,22 +92,24 @@ model_list:
   # 키가 필요 없고 항상 사용 가능 — default_chat_model / "auto" 가 여기로 떨어진다.
   # finble-server 자체 GPU(RTX 3080)에서 Hugging Face 모델을 직접 서빙한다
   # (Ollama 미사용). 채팅/코더는 vLLM(OpenAI 호환 서버, hosted_vllm/ provider),
-  # 임베딩은 HF Text Embeddings Inference(TEI, huggingface/ provider)로 분리
-  # 서빙한다 — docker-compose.internal.yml 의 vllm/embed 서비스가 떠 있어야
+  # 임베딩은 HF Text Embeddings Inference(TEI, OpenAI 호환 엔드포인트)로 분리
+  # 서빙한다 — deploy/compose.prod.yml 의 vllm/embed 서비스가 떠 있어야
   # 한다. 모델 가중치는 /fast/neosdl/models, HF 캐시는 /fast/neosdl/cache에
   # bind mount 되어 있다(가이드에 이미 할당된 LV).
   # 12GB VRAM(RTX 3080) 예산 안에서 돌아가는 양자화(AWQ) 7B 코더 모델.
-  # docker-compose.internal.yml 의 vllm 서비스 --model 인자와 반드시 같은
-  # 모델이어야 한다(VLLM_MODEL env로 양쪽에 동일하게 주입).
+  # deploy/compose.prod.yml 의 vllm 서비스 --served-model-name(VLLM_MODEL)과
+  # 반드시 같은 모델이어야 한다 — 바꾸려면 두 곳을 같이 바꿀 것.
   - model_name: local-qwen-coder
     litellm_params:
       model: hosted_vllm/Qwen/Qwen2.5-Coder-7B-Instruct-AWQ
       api_base: os.environ/VLLM_BASE_URL
   # 기존 Ollama의 mxbai-embed-large와 같은 모델(HF 원본) — TEI로 서빙.
+  # TEI 의 OpenAI 호환 /v1/embeddings 를 그대로 쓴다(openai/ provider). 차원 1024.
   - model_name: local-embed
     litellm_params:
-      model: huggingface/mixedbread-ai/mxbai-embed-large-v1
+      model: openai/mixedbread-ai/mxbai-embed-large-v1
       api_base: os.environ/EMBED_BASE_URL
+      api_key: "none"                     # TEI 는 인증 없음 — OpenAI 클라이언트가 빈 키를 거부해서 더미값
 
 litellm_settings:
   drop_params: true            # provider 가 모르는 파라미터는 조용히 제거 (response_format 등)
@@ -117,7 +119,7 @@ litellm_settings:
   json_logs: true
   # langfuse: 게이트웨이를 지나는 모든 호출(로컬 모델 포함)을 자체호스팅
   # Langfuse 로 추적. LANGFUSE_* 키가 없으면 콜백만 조용히 실패 — 정상 응답엔
-  # 영향 없다(docker-compose.internal.yml litellm.environment 참고).
+  # 영향 없다(deploy/compose.prod.yml litellm.environment 참고).
   success_callback: ["prometheus", "langfuse"]
   failure_callback: ["prometheus", "langfuse"]
 

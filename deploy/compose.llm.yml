@@ -1,0 +1,183 @@
+# NeoSDL LLM 스택 — finble-server(finble-dev-01) 운영
+#
+# 서버의 앱 구성(이 파일 범위 밖):
+#   - backend/worker: systemd(neosdl-backend/neosdl-worker, User=neosdl) — deploy/systemd/
+#   - web: 호스트 nginx(10.0.0.5:80) — deploy/nginx/neosdl.conf
+#   - DB : /srv/projects/neosdl/infra/compose.yaml 의 neosdl-postgres(172.20.1.10, root 관리)
+#
+# 이 파일은 GPU 를 쓰는 LLM 서비스만 Docker 로 띄운다(가이드 13절 — NVIDIA Container
+# Toolkit 기반). infra 와 project 이름을 분리(neosdl-llm)해서 서로를 orphan 으로
+# 지우지 않게 하고, 네트워크는 infra 가 만든 neosdl-net 에 external 로 붙는다.
+#
+#   backend(호스트) ─→ 127.0.0.1:4000 litellm ─→ vllm(코더) / embed(임베딩) / 외부 provider
+#   개발 PC         ─→ ssh -L 14000:127.0.0.1:4000 터널 ─→ litellm
+#
+# 호스트에 공개하는 포트는 127.0.0.1 바인딩뿐(litellm 4000, langfuse 3000).
+# 모델 가중치는 첫 기동 때 Hugging Face Hub 에서 받아 /fast/neosdl/models 에 쌓인다.
+#
+#   sudo docker compose -f deploy/compose.llm.yml --env-file deploy/.env.llm up -d
+#
+# 비밀값은 deploy/.env.llm(추적 안 됨, 600)에만 — 템플릿은 deploy/.env.llm.example.
+
+name: neosdl-llm
+
+services:
+  # litellm / langfuse 전용 DB 를 infra 의 neosdl-postgres 에 만드는 1회성 사이드카.
+  # (YAML folded 블록 들여쓰기 주의 — docker-compose.dev.yml 주석 참고)
+  db-init:
+    image: pgvector/pgvector:0.8.2-pg17
+    restart: "no"
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 필수 — infra/.env 와 같은 값}
+    entrypoint:
+      - sh
+      - -c
+      - >
+        for db in litellm langfuse; do
+        psql -h ${POSTGRES_HOST:-neosdl-postgres} -U ${POSTGRES_USER:-neosdl} -d neosdl -tAc
+        "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1 ||
+        psql -h ${POSTGRES_HOST:-neosdl-postgres} -U ${POSTGRES_USER:-neosdl} -d neosdl -c "CREATE DATABASE $$db";
+        done
+    networks: [neosdl-net]
+
+  # ------------------------------------------------------------------ LLM
+  # 게이트웨이 — 이미지 버전 고정 이유는 docker-compose.dev.yml 주석 참고.
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.100.0
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:4000:4000"   # 개발 PC 는 SSH 터널(-L 14000:127.0.0.1:4000)로 붙는다
+    volumes:
+      - ../litellm/config.internal.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-neosdl}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-neosdl-postgres}:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY 필수}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?LITELLM_SALT_KEY 필수}
+      STORE_MODEL_IN_DB: "False"
+      VLLM_BASE_URL: http://vllm:8000/v1
+      EMBED_BASE_URL: http://embed:80/v1
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: http://langfuse:3000
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [neosdl-net]
+    restart: unless-stopped
+
+  # 임베딩(TEI) — vLLM 보다 먼저 떠서 VRAM 을 확보한다(작은 쪽이 먼저).
+  # RTX 3080 = Ampere sm_86 → TEI 이미지는 "86-" 접두 태그를 써야 한다.
+  # 모델 가중치는 /fast/neosdl/models(가이드 13절), 그 외 캐시는 /fast/neosdl/cache.
+  embed:
+    image: ${EMBED_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:86-1.8}
+    command:
+      - "--model-id=${EMBED_MODEL:-mixedbread-ai/mxbai-embed-large-v1}"
+      - "--huggingface-hub-cache=/models"
+    environment:
+      HF_HOME: /cache
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - /fast/neosdl/models:/models
+      - /fast/neosdl/cache:/cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+    healthcheck:
+      # TEI 는 모델 로딩이 끝난 뒤에야 80 을 연다 — 이미지에 curl/python 이 없어 bash /dev/tcp 로 확인.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/80' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 180s
+    networks: [neosdl-net]
+    restart: unless-stopped
+
+  # 코더 모델(vLLM, OpenAI 호환). 모델은 litellm/config.internal.yaml 의
+  # local-qwen-coder(hosted_vllm/...) 와 반드시 같아야 한다(VLLM_MODEL).
+  # VRAM 12GB 예산: vLLM 0.72(≈8.8GB) + TEI(≈1.5GB) + 여유. 7B AWQ 가중치 ≈5.5GB,
+  # 나머지가 KV 캐시 → max-model-len 8192 이면 동시 몇 건은 충분하다.
+  # AWQ 는 자동으로 awq_marlin 커널이 선택되므로 --quantization 을 강제하지 않는다.
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.10.1.1}
+    depends_on:
+      embed:
+        condition: service_healthy
+    command:
+      - "--model=${VLLM_MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct-AWQ}"
+      - "--served-model-name=${VLLM_MODEL:-Qwen/Qwen2.5-Coder-7B-Instruct-AWQ}"
+      - "--max-model-len=${VLLM_MAX_MODEL_LEN:-8192}"
+      - "--gpu-memory-utilization=${VLLM_GPU_UTIL:-0.72}"
+    environment:
+      HF_HOME: /cache
+      HF_HUB_CACHE: /models
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - /fast/neosdl/models:/models
+      - /fast/neosdl/cache:/cache
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 600s   # 최초 기동 시 가중치 다운로드 + 컴파일
+    networks: [neosdl-net]
+    restart: unless-stopped
+
+  # LLM 실행 추적(자체호스팅). UI 는 SSH 터널(-L 3000:127.0.0.1:3000)로만 본다.
+  langfuse:
+    image: langfuse/langfuse:2
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      HOSTNAME: "0.0.0.0"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-neosdl}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-neosdl-postgres}:5432/langfuse
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?LANGFUSE_NEXTAUTH_SECRET 필수}
+      SALT: ${LANGFUSE_SALT:?LANGFUSE_SALT 필수}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_INIT_ORG_ID: neosdl-internal
+      LANGFUSE_INIT_PROJECT_ID: neosdl-internal
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:?LANGFUSE_PUBLIC_KEY 필수}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:?LANGFUSE_SECRET_KEY 필수}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:?LANGFUSE_INIT_USER_EMAIL 필수}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?LANGFUSE_INIT_USER_PASSWORD 필수}
+      LANGFUSE_INIT_USER_NAME: neosdl-internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/public/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [neosdl-net]
+    restart: unless-stopped
+
+networks:
+  neosdl-net:
+    external: true   # infra/compose.yaml 이 만든 네트워크(172.20.1.0/24)

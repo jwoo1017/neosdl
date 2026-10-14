@@ -1,0 +1,21 @@
+# /etc/systemd/system/neosdl-worker.service — finble-server 에 실제로 설치된 unit 의 원본.
+[Unit]
+Description=NeoSDL Worker (background job processor)
+After=network.target docker.service neosdl-backend.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=neosdl
+Group=neosdl
+WorkingDirectory=/srv/projects/neosdl/app
+EnvironmentFile=/srv/projects/neosdl/app/.env
+ExecStart=/srv/projects/neosdl/app/.venv/bin/python -m worker.main
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+StandardOutput=append:/data/neosdl/logs/worker.log
+StandardError=append:/data/neosdl/logs/worker.log
+
+[Install]
+WantedBy=multi-user.target

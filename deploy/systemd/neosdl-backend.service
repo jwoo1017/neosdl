@@ -1,0 +1,24 @@
+# /etc/systemd/system/neosdl-backend.service — finble-server 에 실제로 설치된 unit 의 원본.
+# 바꾼 뒤: sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
+[Unit]
+Description=NeoSDL Backend (FastAPI/uvicorn)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=neosdl
+Group=neosdl
+WorkingDirectory=/srv/projects/neosdl/app
+EnvironmentFile=/srv/projects/neosdl/app/.env
+# nginx(10.0.0.5:80)만 앞에서 받는다 — 백엔드는 loopback 에만.
+ExecStart=/srv/projects/neosdl/app/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+# 가이드 14절 — app log 는 /data/neosdl/logs (회전: deploy/logrotate/neosdl)
+StandardOutput=append:/data/neosdl/logs/backend.log
+StandardError=append:/data/neosdl/logs/backend.log
+
+[Install]
+WantedBy=multi-user.target

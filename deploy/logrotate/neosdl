@@ -1,0 +1,11 @@
+# /etc/logrotate.d/neosdl — systemd 가 append 로 연 파일이라 copytruncate 로 회전한다.
+/data/neosdl/logs/*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su neosdl neosdl
+}

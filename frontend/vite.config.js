@@ -10,6 +10,9 @@ export default defineConfig({
     // 재현해서 CORS/쿠키 설정 없이 바로 돌아가게 한다.
     proxy: {
       '/api': { target: 'http://localhost:8000', changeOrigin: true, ws: true },
+      // 루트에 남은 두 라우트(app/main.py) — 운영 nginx(deploy/nginx/neosdl.conf)와
+      // 동일하게 정확히 이 경로만 백엔드로 넘긴다(SPA 라우트와 겹치지 않게 정규식).
+      '^/(config|healthz)$': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

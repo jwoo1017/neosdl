@@ -1,6 +1,6 @@
 .env*
 !.env.example
-!.env.internal.example
+!deploy/.env.llm.example
 secrets/
 *.pem
 .venv/

@@ -212,6 +212,69 @@ TODO 주석으로 표시해 두었다. 파일을 새로 만들 필요 없이 그
 
 ---
 
+## 로컬 개발에서 사내 서버 LLM 쓰기
+
+로컬 모델(`local-qwen-coder`, `local-embed`)은 사내 서버(finble-dev-01) GPU에서 돈다.
+개발 PC에서는 Ollama나 로컬 litellm 없이, 서버 게이트웨이에 SSH 터널로 붙는다.
+게이트웨이는 서버의 127.0.0.1:4000 에만 열려 있어서 방화벽 개방은 필요 없다.
+WireGuard 접속이 먼저 돼 있어야 한다.
+
+```bash
+# 터미널 하나를 띄워 두기 (개인 계정, docker 권한 불필요)
+ssh -N -L 14000:127.0.0.1:4000 -i ~/.ssh/id_ed25519_finble_jwji jwji@<서버IP>
+```
+
+`.env`:
+
+```
+LITELLM_BASE_URL=http://localhost:14000
+LITELLM_API_KEY=<서버 게이트웨이에서 발급받은 개발용 virtual key>
+DEFAULT_CHAT_MODEL=local-qwen-coder
+```
+
+확인: `curl -H "Authorization: Bearer $LITELLM_API_KEY" localhost:14000/v1/models`.
+이때 `docker compose -f docker-compose.dev.yml up -d postgres neo4j`만 띄우면 된다.
+
+## 운영 배포 (finble-server)
+
+구조는 로컬과 같다. 같은 오리진에서 `/api`는 백엔드로, 나머지는 SPA로 간다.
+로컬에서는 Vite 프록시가, 운영에서는 호스트 nginx가 이 일을 한다.
+
+| 구성 | 실행 방식 | repo 원본 |
+|---|---|---|
+| backend / worker | systemd `neosdl-backend`·`neosdl-worker` (User=neosdl, 127.0.0.1:8000) | `deploy/systemd/` |
+| web | 호스트 nginx `10.0.0.5:80`, 정적 파일 `/var/www/neosdl` | `deploy/nginx/neosdl.conf` |
+| DB | `infra/compose.yaml`의 `neosdl-postgres` (172.20.1.10, 관리자 관리) | repo 밖 |
+| LLM | Docker `neosdl-llm` 프로젝트: litellm·vllm·embed·langfuse (GPU) | `deploy/compose.llm.yml` |
+| 로그 | `/data/neosdl/logs/{backend,worker}.log` | `deploy/logrotate/neosdl` |
+
+평소 배포는 main에 push한 뒤 서버에서 두 단계로 실행한다.
+
+```bash
+cd /srv/projects/neosdl/app
+deploy/deploy.sh build                # jwji: git → pip → 프론트 빌드 → /var/www/neosdl
+sudo deploy/deploy.sh release         # finbleadmin: pg_dump → migrate → 재시작 → /healthz
+```
+
+- 롤백은 `build <이전 sha>` 후 `release`를 한다. DB 스키마는 되돌리지 않으니, 필요하면 `/backup/neosdl/postgres/predeploy_*.dump`로 복구한다.
+- 새 테이블이나 컬럼은 `sql/`에 다음 번호 파일로 추가한다. `release`가 `deploy/migrate.py`로 미적용분만 적용한다.
+  운영 DB에 처음 적용할 때는 `--baseline NNN`이 필요하다.
+- unit이나 nginx 파일을 바꿨으면 관리자가 `/etc`에 복사한 뒤 `daemon-reload`나 `nginx reload`를 한다(각 파일 상단 주석 참고).
+
+LLM 스택은 앱 배포와 별개로 관리한다.
+
+```bash
+sudo docker compose -f deploy/compose.llm.yml --env-file deploy/.env.llm up -d
+```
+
+- 모델은 첫 기동 때 Hugging Face Hub에서 받아 `/fast/neosdl/models`에 저장된다. 서버에서 huggingface.co와 docker/ghcr 레지스트리로 나가는 HTTPS가 필요하다.
+- 모델을 바꿀 때는 `.env.llm`의 `VLLM_MODEL`과 `litellm/config.internal.yaml`의 `local-qwen-coder`를 같이 바꾼다.
+- 앱 `.env`에는 `LITELLM_BASE_URL=http://127.0.0.1:4000`과 게이트웨이에서 발급한 virtual key를 넣는다.
+- Langfuse UI는 `ssh -N -L 3000:127.0.0.1:3000 ...` 터널을 연 뒤 `http://localhost:3000`에서 본다.
+- GitHub App의 Callback/Setup URL은 `http://intranet.finble.internal/api/auth/github/...`로 등록한다.
+
+---
+
 ## 라이선스 주의
 
 `docker-compose.dev.yml`의 Neo4j는 **개발자 로컬 전용**이다.
