@@ -67,7 +67,7 @@ class LoginIn(BaseModel):
 def _set_session_cookie(resp: Response, member: dict) -> None:
     session_token = issue_session_token(member)
     resp.set_cookie(SESSION_COOKIE, session_token, max_age=SESSION_TTL_SECONDS,
-                     httponly=True, secure=True, samesite="lax", path="/")
+                     httponly=True, secure=settings().cookie_secure, samesite="lax", path="/")
 
 
 @router.post("/auth/signup", status_code=201)
@@ -190,7 +190,7 @@ def github_login(next: str | None = None):
     # 경로는 /api/auth/github/... 다 — 쿠키 path가 그와 안 맞으면 브라우저가
     # 콜백 요청에 이 쿠키를 아예 안 실어서 state 검증이 매번 실패한다.
     resp.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_SECONDS,
-                     httponly=True, secure=True, samesite="lax", path="/api/auth/github")
+                     httponly=True, secure=settings().cookie_secure, samesite="lax", path="/api/auth/github")
     return resp
 
 

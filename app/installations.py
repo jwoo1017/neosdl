@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -31,7 +32,8 @@ def _login_redirect(installation_id: int, setup_action: str | None, github_accou
         next_path += f"&setup_action={setup_action}"
     if github_account_id:
         next_path += f"&github_account_id={github_account_id}"
-    return RedirectResponse(f"/auth/github/login?next={next_path}", status_code=302)
+    # next 안의 &(setup_action 등)가 로그인 URL 쪽 파라미터로 새지 않게 통째로 인코딩한다.
+    return RedirectResponse(f"/api/auth/github/login?next={quote(next_path, safe='/')}", status_code=302)
 
 
 @router.get("/auth/github/setup")

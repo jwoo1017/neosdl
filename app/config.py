@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://localhost:3000"
 
     @property
+    def cookie_secure(self) -> bool:
+        """쿠키 Secure 속성 — 브라우저는 Secure 쿠키를 https(와 localhost)에서만 저장한다.
+
+        사내 서버는 아직 http://intranet.finble.internal 이라 Secure 를 붙이면 세션/OAuth
+        state 쿠키가 통째로 버려진다. 공개 주소가 https 로 바뀌면 자동으로 다시 켜진다.
+        """
+        return self.frontend_url.startswith("https://")
+
+    @property
     def graph_backend(self) -> Literal["neo4j", "postgres_cte"]:
         return "neo4j" if self.neo4j_uri else "postgres_cte"
 
