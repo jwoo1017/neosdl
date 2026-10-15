@@ -83,6 +83,9 @@ services:
   # 모델 가중치는 /fast/neosdl/models(가이드 13절), 그 외 캐시는 /fast/neosdl/cache.
   embed:
     image: ${EMBED_IMAGE:-ghcr.io/huggingface/text-embeddings-inference:86-1.8}
+    # 가이드 7절 — /fast/neosdl/* 에 쓰는 프로세스는 neosdl:neosdl 소유로 남아야 한다
+    # (infra/compose.yaml 의 postgres 와 동일 패턴). 없으면 root:neosdl 로 파일이 생김.
+    user: "${NEOSDL_UID:-999}:${NEOSDL_GID:-983}"
     command:
       - "--model-id=${EMBED_MODEL:-mixedbread-ai/mxbai-embed-large-v1}"
       - "--huggingface-hub-cache=/models"
@@ -116,6 +119,8 @@ services:
   # AWQ 는 자동으로 awq_marlin 커널이 선택되므로 --quantization 을 강제하지 않는다.
   vllm:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.10.1.1}
+    # embed 와 같은 이유.
+    user: "${NEOSDL_UID:-999}:${NEOSDL_GID:-983}"
     depends_on:
       embed:
         condition: service_healthy
