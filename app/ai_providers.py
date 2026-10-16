@@ -168,6 +168,10 @@ async def agenerate_stream(provider: str, model: str, prompt: str, *, timeout: i
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, read=None)) as client:
             async with client.stream("POST", _chat_url(), headers=_headers(),
                                      json=_payload(resolved, prompt, json_mode=False, stream=True, metadata=meta)) as resp:
+                if resp.is_error:
+                    # 스트리밍 응답은 본문을 안 읽은 상태라 _describe() 가 text 에 접근하면
+                    # ResponseNotRead 로 다시 터져 게이트웨이 에러 원문이 사라진다 — 먼저 읽어 둔다.
+                    await resp.aread()
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
@@ -240,7 +244,10 @@ def resolve_requested_model(requested: str | None, *, project_default: str | Non
 
 def _describe(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
-        body = exc.response.text[:300]
+        try:
+            body = exc.response.text[:300]
+        except httpx.ResponseNotRead:
+            body = "(응답 본문 없음)"
         return f"게이트웨이 {exc.response.status_code}: {body}"
     return str(exc)
 

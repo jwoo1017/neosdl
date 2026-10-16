@@ -92,6 +92,7 @@ services:
     environment:
       HF_HOME: /cache
       HF_TOKEN: ${HF_TOKEN:-}
+      HOME: /cache           # passwd 에 없는 UID 라 기본 홈(/)이 쓰기 불가 — vllm 과 맞춤
     volumes:
       - /fast/neosdl/models:/models
       - /fast/neosdl/cache:/cache
@@ -133,6 +134,14 @@ services:
       HF_HOME: /cache
       HF_HUB_CACHE: /models
       HF_TOKEN: ${HF_TOKEN:-}
+      # 이미지의 /etc/passwd 에는 UID 999(호스트 neosdl)가 없다 — torch inductor 가 캐시
+      # 경로를 정하려고 getpass.getuser() 를 부르면 KeyError('uid not found: 999')로 모델
+      # 검사가 실패해 재시작 루프에 빠진다(2026-10-16 장애). getuser() 는 USER/LOGNAME 을
+      # passwd 보다 먼저 보므로 이름과 쓰기 가능한 홈(~/.cache/vllm, ~/.triton)을 직접 준다.
+      USER: neosdl
+      LOGNAME: neosdl
+      HOME: /cache
+      TORCHINDUCTOR_CACHE_DIR: /cache/torchinductor
     volumes:
       - /fast/neosdl/models:/models
       - /fast/neosdl/cache:/cache
