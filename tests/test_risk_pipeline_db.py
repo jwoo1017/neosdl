@@ -210,7 +210,7 @@ def test_sqli_snippet_yields_security_evidence_and_sanitize(db, ingested):
         assert "sql_injection" in cats
 
         obj = compute_risk_object(cur, scan_id, want["lookup_user"], policy=default_policy(),
-                                  provider="gateway", model="m", allow_llm=False,
+                                  model="m", allow_llm=False,
                                   source_reader=_reader, persist_evidence=False)
     assert obj.risk.score("security") >= 0.5
     assert obj.exposure.allowed_representation in ("SANITIZED", "MASKED", "PSEUDOCODE",
@@ -222,7 +222,7 @@ def test_secret_snippet_blocks(db, ingested):
     scan_id, want = ingested
     with db() as cur:
         obj = compute_risk_object(cur, scan_id, want["build_client"], policy=default_policy(),
-                                  provider="gateway", model="m", allow_llm=False,
+                                  model="m", allow_llm=False,
                                   source_reader=_reader, persist_evidence=False)
     assert obj.risk.score("secret") >= 0.9
     assert obj.exposure.allowed_representation == "BLOCK"

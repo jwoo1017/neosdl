@@ -24,11 +24,7 @@ export default function SecurityAiSettingsPage() {
     setError(null);
     setSaved(false);
     try {
-      const updated = await updateProjectAiSettings(activeProject.id, {
-        ...settings,
-        ci_model_provider: "gateway",
-        qa_model_provider: "gateway",
-      });
+      const updated = await updateProjectAiSettings(activeProject.id, settings);
       setSettings(updated);
       setSaved(true);
     } catch (err) {

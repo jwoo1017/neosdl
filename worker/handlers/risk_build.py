@@ -36,7 +36,7 @@ def handle(payload: dict) -> None:
     with tx() as cur:
         cur.execute(
             """
-            SELECT s.repository_id, p.id AS project_id, p.ci_model_provider, p.ci_model_name
+            SELECT s.repository_id, p.id AS project_id, p.ci_model_name
               FROM scan s
               LEFT JOIN project_repository pr ON pr.repository_id = s.repository_id
               LEFT JOIN project p ON p.id = pr.project_id
@@ -51,7 +51,6 @@ def handle(payload: dict) -> None:
             return
         repository_id = row["repository_id"]
         project_id = str(row["project_id"]) if row["project_id"] else None
-        provider = row["ci_model_provider"] or "gateway"
         model = row["ci_model_name"] or settings().default_chat_model
         parent_scan_id, changed_paths = incremental.read_incremental_context(cur, str(scan_id))
 
@@ -82,7 +81,7 @@ def handle(payload: dict) -> None:
 
         with tx() as cur:
             ensure_risk_objects(
-                cur, str(scan_id), provider=provider, model=model,
+                cur, str(scan_id), model=model,
                 project_id=project_id, source_reader=source_reader,
                 parent_scan_id=parent_scan_id, changed_paths=changed_paths,
             )

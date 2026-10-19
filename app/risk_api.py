@@ -31,11 +31,11 @@ from worker.handlers.clone import workdir_for
 router = APIRouter(tags=["risk"])
 
 
-def _llm_ctx(cur, scan_id: UUID) -> tuple[str, str, str | None]:
-    """(provider, model, project_id) — Business/IP 분류에 쓸 게이트웨이 별칭."""
+def _llm_ctx(cur, scan_id: UUID) -> tuple[str, str | None]:
+    """(model, project_id) — Business/IP 분류에 쓸 게이트웨이 별칭."""
     cur.execute(
         """
-        SELECT p.id AS project_id, p.qa_model_provider, p.qa_model_name
+        SELECT p.id AS project_id, p.qa_model_name
           FROM scan s
           LEFT JOIN project_repository pr ON pr.repository_id = s.repository_id
           LEFT JOIN project p ON p.id = pr.project_id
@@ -44,9 +44,8 @@ def _llm_ctx(cur, scan_id: UUID) -> tuple[str, str, str | None]:
         (str(scan_id),),
     )
     row = cur.fetchone() or {}
-    provider = row.get("qa_model_provider") or "gateway"
     model = ai_providers.resolve_requested_model(None, project_default=row.get("qa_model_name"))
-    return provider, model, (str(row["project_id"]) if row.get("project_id") else None)
+    return model, (str(row["project_id"]) if row.get("project_id") else None)
 
 
 def _source_reader(cur, scan_id: UUID):
@@ -118,9 +117,9 @@ def symbol_risk(scan_id: UUID, symbol_key: str, member: dict = Depends(get_curre
     (일반 CRUD/유틸 심볼은 영속화하지 않으므로 — Scenario A: LOW/RAW)."""
     with tx() as cur:
         assert_scan_access(cur, scan_id, member["id"], "viewer")
-        provider, model, project_id = _llm_ctx(cur, scan_id)
+        model, project_id = _llm_ctx(cur, scan_id)
         result = synthesis.get_risk_object_with_graph(
-            cur, str(scan_id), symbol_key, provider=provider, model=model,
+            cur, str(scan_id), symbol_key, model=model,
             project_id=project_id, source_reader=_source_reader(cur, scan_id),
         )
     if result is None:
@@ -138,9 +137,9 @@ def evaluate_risk(scan_id: UUID, body: RiskEvaluateIn, member: dict = Depends(ge
     """Query-aware Contextual Risk(§11). 결과는 영속화하지 않는다."""
     with tx() as cur:
         assert_scan_access(cur, scan_id, member["id"], "viewer")
-        provider, model, project_id = _llm_ctx(cur, scan_id)
+        model, project_id = _llm_ctx(cur, scan_id)
         return synthesis.evaluate_query(
             cur, str(scan_id), body.query, body.targets,
-            provider=provider, model=model, project_id=project_id,
+            model=model, project_id=project_id,
             source_reader=_source_reader(cur, scan_id),
         )

@@ -25,6 +25,7 @@ import logging
 from app import ai_providers, llm_schemas, repo_activity_bus
 from app.config import settings
 from app.db import tx
+from app.model_catalog import provider_of
 from worker.handlers.clone import create_scan_worktree, remove_scan_worktree
 
 log = logging.getLogger("app.fix_generation")
@@ -53,10 +54,10 @@ Taint 경로(오염된 데이터가 sink까지 도달한 경유지): {path_hops}
 """
 
 
-def _project_ctx(cur, repository_id: str) -> tuple[str | None, str, str]:
+def _project_ctx(cur, repository_id: str) -> tuple[str | None, str]:
     cur.execute(
         """
-        SELECT p.id AS project_id, p.ci_model_provider, p.ci_model_name
+        SELECT p.id AS project_id, p.ci_model_name
           FROM project_repository pr JOIN project p ON p.id = pr.project_id
          WHERE pr.repository_id = %s LIMIT 1
         """,
@@ -64,9 +65,8 @@ def _project_ctx(cur, repository_id: str) -> tuple[str | None, str, str]:
     )
     row = cur.fetchone() or {}
     project_id = str(row["project_id"]) if row.get("project_id") else None
-    provider = row.get("ci_model_provider") or "gateway"
     model = row.get("ci_model_name") or settings().default_chat_model
-    return project_id, provider, model
+    return project_id, model
 
 
 def _resolve_symbol(cur, scan_id: str, symbol_key: str) -> dict | None:
@@ -108,7 +108,7 @@ def generate_fix(finding_fix_id: int) -> None:
         source_symbol = None
         if finding["source_symbol_key"] and finding["source_symbol_key"] != finding["sink_symbol_key"]:
             source_symbol = _resolve_symbol(cur, str(finding["scan_id"]), finding["source_symbol_key"])
-        project_id, provider, model = _project_ctx(cur, str(finding["repository_id"]))
+        project_id, model = _project_ctx(cur, str(finding["repository_id"]))
 
     if sink_symbol is None or scan_row is None or repo_row is None:
         with tx() as cur:
@@ -150,7 +150,7 @@ def generate_fix(finding_fix_id: int) -> None:
             start_line=sink_symbol["start_line"], end_line=sink_symbol["end_line"], sink_code=sink_code,
         )
 
-        raw = ai_providers.generate(provider, model, prompt,
+        raw = ai_providers.generate(model, prompt,
                                      response_schema=llm_schemas.FindingFixSuggestion,
                                      project_id=project_id, purpose="fix_generation", scan_id=scan_id)
         suggestion = llm_schemas.FindingFixSuggestion.model_validate_json(raw)
@@ -178,7 +178,7 @@ def generate_fix(finding_fix_id: int) -> None:
                 WHERE id=%s
                 """,
                 (sink_symbol["path"], start, end, original_snippet, suggestion.replacement_code,
-                 diff, suggestion.summary, provider, model, finding_fix_id),
+                 diff, suggestion.summary, provider_of(model), model, finding_fix_id),
             )
             repo_activity_bus.notify_repo_activity(
                 cur, repository_id,

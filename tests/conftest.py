@@ -40,7 +40,7 @@ def scripted_generate(responses: dict[str, str], default: str | None = None):
     responses = {"substring in prompt": '{"json": "response"}'} — 첫 매칭을 반환.
     매칭 없고 default 도 없으면 예외(테스트가 놓친 프롬프트를 조용히 넘기지 않게).
     """
-    def generate(provider, model, prompt, *, json_mode=False, timeout=120,
+    def generate(model, prompt, *, json_mode=False, timeout=120,
                  project_id=None, purpose="qa", scan_id=None):
         for needle, resp in responses.items():
             if needle in prompt:

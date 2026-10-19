@@ -217,7 +217,7 @@ def _override_to_raw(classification_override: dict | None) -> dict | None:
 
 def compute_risk_object(
     cur, scan_id: str, symbol_key: str, *,
-    policy: RiskPolicy, provider: str, model: str,
+    policy: RiskPolicy, model: str,
     project_id: str | None = None, source_reader: SourceReader | None = None,
     query_context: dict | None = None,
     evidence: list[Evidence] | None = None,
@@ -250,7 +250,7 @@ def compute_risk_object(
     elif allow_llm and _should_classify(compute_vector(evidence, policy), evidence, policy):
         llm = classify.classify_business_ip(
             target["symbol"], target["file"], evidence,
-            provider=provider, model=model, project_id=project_id, scan_id=scan_id,
+            model=model, project_id=project_id, scan_id=scan_id,
         )
 
     vector, classification, outcomes, exposure = assemble_risk(
@@ -281,7 +281,7 @@ def compute_risk_object(
 # --------------------------------------------------------------------- scan-level
 
 def ensure_risk_objects(
-    cur, scan_id: str, *, provider: str, model: str,
+    cur, scan_id: str, *, model: str,
     project_id: str | None = None, source_reader: SourceReader | None = None,
     parent_scan_id: str | None = None, changed_paths: list[str] | None = None,
 ) -> None:
@@ -326,7 +326,7 @@ def ensure_risk_objects(
             override = parent_cls[symbol_key]
             reused += 1
         obj = compute_risk_object(
-            cur, scan_id, symbol_key, policy=policy, provider=provider, model=model,
+            cur, scan_id, symbol_key, policy=policy, model=model,
             project_id=project_id, source_reader=source_reader, evidence=evidence,
             classification_override=override,
         )
@@ -381,7 +381,7 @@ def get_risk_objects(cur, scan_id: str) -> list[dict[str, Any]]:
 
 
 def get_risk_object_with_graph(
-    cur, scan_id: str, symbol_key: str, *, provider: str, model: str,
+    cur, scan_id: str, symbol_key: str, *, model: str,
     project_id: str | None = None, source_reader: SourceReader | None = None,
 ) -> dict[str, Any] | None:
     """영속화된 Risk Object + Evidence Graph. 없으면 즉석 계산(영속화 안 함)."""
@@ -423,7 +423,7 @@ def get_risk_object_with_graph(
     by_target = collect_evidence(cur, scan_id, policy, targets=[symbol_key], source_reader=source_reader)
     evs = by_target.get(symbol_key, [])
     obj = compute_risk_object(
-        cur, scan_id, symbol_key, policy=policy, provider=provider, model=model,
+        cur, scan_id, symbol_key, policy=policy, model=model,
         project_id=project_id, evidence=evs, persist_evidence=False,
     )
     if obj is None:
@@ -493,7 +493,7 @@ def _load_persisted_base(cur, scan_id: str, symbol_key: str) -> dict[str, Any] |
 
 def evaluate_query(
     cur, scan_id: str, query: str, targets: list[str], *,
-    provider: str, model: str, project_id: str | None = None,
+    model: str, project_id: str | None = None,
     source_reader: SourceReader | None = None,
 ) -> dict[str, Any]:
     """Query-aware Contextual Risk(§11). 영속화하지 않는다.
@@ -504,7 +504,7 @@ def evaluate_query(
     """
     policy = load_policy(cur)
     intent = classify.classify_query_intent(
-        query, targets, provider=provider, model=model, project_id=project_id, scan_id=scan_id,
+        query, targets, model=model, project_id=project_id, scan_id=scan_id,
     )
 
     results: list[dict[str, Any]] = []
@@ -512,7 +512,7 @@ def evaluate_query(
         base = _load_persisted_base(cur, scan_id, symbol_key)
         if base is None:
             obj = compute_risk_object(
-                cur, scan_id, symbol_key, policy=policy, provider=provider, model=model,
+                cur, scan_id, symbol_key, policy=policy, model=model,
                 project_id=project_id, source_reader=source_reader, persist_evidence=False,
             )
             if obj is None:

@@ -71,13 +71,13 @@ def _evidence_block(evidence: list[Evidence]) -> str:
 
 def classify_business_ip(
     symbol: str, path: str, evidence: list[Evidence], *,
-    provider: str, model: str, project_id: str | None = None, scan_id: str | None = None,
+    model: str, project_id: str | None = None, scan_id: str | None = None,
 ) -> dict | None:
     prompt = _BUSINESS_PROMPT.format(
         symbol=symbol, path=path or "(unknown)", evidence_block=_evidence_block(evidence),
     )
     try:
-        raw = ai_providers.generate(provider, model, prompt, response_schema=llm_schemas.BusinessIpClassification,
+        raw = ai_providers.generate(model, prompt, response_schema=llm_schemas.BusinessIpClassification,
                                     project_id=project_id, purpose="risk_classify", scan_id=scan_id)
         parsed = json.loads(raw)
     except Exception:
@@ -99,12 +99,12 @@ def classify_business_ip(
 
 def classify_query_intent(
     query: str, targets: list[str], *,
-    provider: str, model: str, project_id: str | None = None, scan_id: str | None = None,
+    model: str, project_id: str | None = None, scan_id: str | None = None,
 ) -> dict:
     """질문 의도 분류. 실패하면 'neutral'(fail-open — Contextual 조정 없이 static 노출 경계 사용)."""
     prompt = _QUERY_INTENT_PROMPT.format(query=query, targets=", ".join(targets) or "(없음)")
     try:
-        raw = ai_providers.generate(provider, model, prompt, response_schema=llm_schemas.QueryIntentClassification,
+        raw = ai_providers.generate(model, prompt, response_schema=llm_schemas.QueryIntentClassification,
                                     project_id=project_id, purpose="risk_query_intent", scan_id=scan_id)
         parsed = json.loads(raw)
         intent = parsed.get("intent")

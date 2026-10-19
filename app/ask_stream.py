@@ -26,7 +26,7 @@ log = logging.getLogger("app.ask_stream")
 
 
 def load_ask_context(scan_id: UUID, member_id: str, requested_model: str | None = None) -> dict:
-    """접근 권한 확인 + 질문에 필요한 컨텍스트(provider/model 포함) 조회.
+    """접근 권한 확인 + 질문에 필요한 컨텍스트(model 포함) 조회.
 
     스트림을 열기 전에(라우트 코루틴 안에서) 호출해야 한다 — 여기서 던지는
     HTTPException(403/404)이 정상적인 HTTP 에러 응답이 되게 하려면
@@ -43,7 +43,7 @@ def load_ask_context(scan_id: UUID, member_id: str, requested_model: str | None 
         cur.execute(
             """
             SELECT p.id AS project_id, p.name AS project_name, p.description AS project_description,
-                   p.qa_model_provider, p.qa_model_name, s.repository_id
+                   p.qa_model_name, s.repository_id
               FROM scan s
               JOIN project_repository pr ON pr.repository_id = s.repository_id
               JOIN project p ON p.id = pr.project_id
@@ -53,7 +53,6 @@ def load_ask_context(scan_id: UUID, member_id: str, requested_model: str | None 
         )
         proj = cur.fetchone()
         project_id = str(proj["project_id"]) if proj else None
-        provider = (proj or {}).get("qa_model_provider") or "gateway"
         model = ai_providers.resolve_requested_model(
             requested_model, project_default=(proj or {}).get("qa_model_name"),
         )
@@ -64,7 +63,6 @@ def load_ask_context(scan_id: UUID, member_id: str, requested_model: str | None 
             "repository_id": (proj or {}).get("repository_id"),
             "project_info": project_info,
             "project_id": project_id,
-            "provider": provider,
             "model": model,
         }
 
@@ -74,12 +72,12 @@ def _run_pipeline_sync(question: str, ask_ctx: dict, *, on_step) -> dict:
     with tx() as cur:
         used, evidence = orchestrator.run_agentic(
             cur, ask_ctx, question,
-            provider=ask_ctx["provider"], model=ask_ctx["model"],
+            model=ask_ctx["model"],
             project_id=ask_ctx["project_id"], scan_id=ask_ctx["scan_id"],
             on_step=on_step,
         )
         evidence = orchestrator.check_relevance(
-            question, evidence, provider=ask_ctx["provider"], model=ask_ctx["model"],
+            question, evidence, model=ask_ctx["model"],
             project_id=ask_ctx["project_id"], scan_id=ask_ctx["scan_id"],
         )
     return {"used": used, "evidence": evidence}
@@ -145,7 +143,7 @@ async def stream_answer(question: str, ask_ctx: dict) -> AsyncIterator[bytes]:
 
     chunks: list[str] = []
     async for delta in orchestrator.synthesize_answer_stream(
-        question, evidence, provider=ask_ctx["provider"], model=ask_ctx["model"],
+        question, evidence, model=ask_ctx["model"],
         project_id=ask_ctx["project_id"], scan_id=ask_ctx["scan_id"],
         executed_tools=[t["name"] for t in pipeline["used"]],
         analysis_available=bool(ask_ctx["scan_id"]),

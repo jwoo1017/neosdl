@@ -38,6 +38,7 @@ from app.github_app import (
 )
 from app.graph import make_graph_store
 from app.language_colors import color_for
+from app.model_catalog import MODEL_CATALOG
 from app.repo_queries import list_commits, list_pull_requests, list_repo_branches, repo_github_info
 from app.scan_queries import domain_overview, ensure_security_findings, run_dataflow, search_symbols
 from app.scans import create_scan
@@ -125,25 +126,6 @@ def public_config():
     return {"github_app_slug": settings().github_app_slug}
 
 
-# 게이트웨이 별칭 → 화면 표시 메타데이터. litellm/config.yaml 의 model_name 과 맞춘다.
-# 여기에 없는 별칭이 게이트웨이에 있으면 provider "other" / 별칭 그대로 label 로 노출된다.
-_MODEL_CATALOG: list[dict] = [
-    {"id": "claude-opus-5", "label": "Claude Opus 5", "provider": "anthropic", "group": "가장 어려운 작업에 적합", "starred": True},
-    {"id": "gpt-5.1", "label": "GPT-5.1", "provider": "openai", "group": "가장 어려운 작업에 적합"},
-    {"id": "grok-4", "label": "Grok 4", "provider": "xai", "group": "가장 어려운 작업에 적합"},
-    {"id": "deepseek-reasoner", "label": "DeepSeek Reasoner", "provider": "deepseek", "group": "가장 어려운 작업에 적합"},
-    {"id": "claude-sonnet-5", "label": "Claude Sonnet 5", "provider": "anthropic", "group": "Claude"},
-    {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "provider": "anthropic", "group": "Claude"},
-    {"id": "claude-fable-5-1", "label": "Claude Fable 5.1", "provider": "anthropic", "group": "Claude"},
-    {"id": "gpt-5.1-mini", "label": "GPT-5.1 mini", "provider": "openai", "group": "GPT"},
-    {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro", "provider": "gemini", "group": "Gemini", "starred": True},
-    {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash", "provider": "gemini", "group": "Gemini"},
-    {"id": "deepseek-chat", "label": "DeepSeek Chat", "provider": "deepseek", "group": "그 외"},
-    {"id": "mistral-large", "label": "Mistral Large", "provider": "mistral", "group": "그 외"},
-    {"id": "kimi-k2", "label": "Kimi K2", "provider": "kimi", "group": "그 외"},
-    {"id": "llama-3.3-70b", "label": "Llama 3.3 70B", "provider": "meta", "group": "그 외"},
-    {"id": "local-qwen-coder", "label": "Qwen2.5 Coder (로컬)", "provider": "local", "group": "로컬"},
-]
 
 
 @api.get("/models")
@@ -156,8 +138,8 @@ def list_models(member: dict = Depends(get_current_member)):
     from app import ai_providers
 
     live = set(ai_providers.available_models())
-    catalog_ids = {m["id"] for m in _MODEL_CATALOG}
-    rows = [{**m, "available": (not live) or (m["id"] in live)} for m in _MODEL_CATALOG]
+    catalog_ids = {m["id"] for m in MODEL_CATALOG}
+    rows = [{**m, "available": (not live) or (m["id"] in live)} for m in MODEL_CATALOG]
     # 카탈로그에 없지만 게이트웨이가 서빙하는 별칭도 노출(직접 config.yaml 만 편집한 경우).
     for extra in sorted(live - catalog_ids):
         if extra in ("auto", "local-embed") or extra.startswith("local-embed"):
@@ -849,11 +831,9 @@ def delete_whitelist_entry(project_id: UUID, whitelist_id: UUID,
 
 
 class ProjectAiSettingsIn(BaseModel):
-    # provider 는 이제 라우팅에 쓰이지 않는다(게이트웨이가 model 별칭으로 결정) —
-    # 하위 호환을 위해 컬럼은 두고 값만 'gateway'/'ollama' 로 받는다.
-    ci_model_provider: Literal["gateway", "ollama"] = "gateway"
+    # 모델은 게이트웨이 별칭만 고른다 — 어느 provider 로 나갈지는 게이트웨이가 정한다.
+    # (예전 *_model_provider 필드는 받아도 무시된다 — pydantic 기본 extra=ignore)
     ci_model_name: str = Field(default="", max_length=100)  # litellm/config.yaml 의 model_name
-    qa_model_provider: Literal["gateway", "ollama"] = "gateway"
     qa_model_name: str = Field(default="", max_length=100)
 
 
@@ -862,7 +842,7 @@ def get_project_ai_settings(project_id: UUID, member: dict = Depends(get_current
     with tx() as cur:
         assert_project_role(cur, project_id, member["id"])
         cur.execute(
-            "SELECT ci_model_provider, ci_model_name, qa_model_provider, qa_model_name FROM project WHERE id=%s",
+            "SELECT ci_model_name, qa_model_name FROM project WHERE id=%s",
             (str(project_id),),
         )
         row = cur.fetchone()
@@ -885,13 +865,11 @@ def update_project_ai_settings(project_id: UUID, body: ProjectAiSettingsIn,
         assert_project_role(cur, project_id, member["id"], "manager")
         cur.execute(
             """
-            UPDATE project SET ci_model_provider=%s, ci_model_name=%s,
-                               qa_model_provider=%s, qa_model_name=%s
+            UPDATE project SET ci_model_name=%s, qa_model_name=%s
              WHERE id=%s
-             RETURNING ci_model_provider, ci_model_name, qa_model_provider, qa_model_name
+             RETURNING ci_model_name, qa_model_name
             """,
-            (body.ci_model_provider, body.ci_model_name, body.qa_model_provider, body.qa_model_name,
-             str(project_id)),
+            (body.ci_model_name, body.qa_model_name, str(project_id)),
         )
         row = cur.fetchone()
         if row is None:

@@ -98,7 +98,7 @@ def test_live_llm_classification_never_exposes_flagged_ip():
     reps, labels = [], []
     for _ in range(5):
         llm = classify.classify_business_ip("calculateDiscount", "pricing/service.py", evs,
-                                            provider="gateway", model=model)
+                                            model=model)
         labels.append((llm or {}).get("classification"))
         _v, _c, _o, exposure = assemble_risk(evs, POLICY, llm_classification=llm)
         reps.append(repr_rank(exposure.allowed_representation))

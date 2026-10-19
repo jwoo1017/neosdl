@@ -5,7 +5,8 @@
 provider(Anthropic/OpenAI/Gemini/로컬 Ollama ...)로 나갈지는 게이트웨이가
 `litellm/config.yaml` 의 model_name(공개 별칭)을 보고 결정한다.
 
-- `provider` 인자는 하위 호환/로깅용으로만 남는다(라우팅에 쓰지 않는다).
+- ai_call_log.provider 에는 별칭이 실제로 나가는 upstream(local/anthropic/...)을
+  `app/model_catalog.py` 기준으로 기록한다(집계용 — 라우팅과 무관).
 - `model` 은 게이트웨이 별칭(예: "claude-sonnet-5", "local-qwen-coder"). 비어 있거나
   레거시 Ollama 모델명이면 `settings().default_chat_model` 로 떨어진다.
 - 게이트웨이가 죽어 있거나 키가 없으면 예외가 나고, 호출부(orchestrator 등)의
@@ -25,15 +26,13 @@ from starlette.concurrency import run_in_threadpool
 from app import observability
 from app.config import settings
 from app.db import tx
+from app.model_catalog import provider_of
 
 log = logging.getLogger("app.ai_providers")
 
 # 스키마 제약 호출이 실패했을 때 재시도할 만한 상태코드만 — 401(인증)/429(rate
 # limit)는 스키마를 빼도 결과가 똑같이 실패하므로 재시도가 추가 부하만 만든다.
 _SCHEMA_RETRY_STATUSES = frozenset({400, 422, 500, 503, 504})
-
-# 정보용 — 라우팅 분기는 더 이상 없다. project.*_model_provider 에 남아 있을 수 있는 값.
-SUPPORTED_PROVIDERS = ("gateway", "ollama")
 
 # 게이트웨이 별칭이 아니라 "provider 이름"이나 레거시 Ollama 모델명이 model 로
 # 넘어오는 경우(예: 기존 project 행의 qa_model_name='' → settings().ollama_model),
@@ -102,7 +101,7 @@ def _schema_retryable(exc: Exception) -> bool:
     return False
 
 
-def generate(provider: str, model: str, prompt: str, *, json_mode: bool = False,
+def generate(model: str, prompt: str, *, json_mode: bool = False,
              response_schema: type[BaseModel] | None = None, timeout: int = 120,
              project_id: str | None = None, purpose: str = "qa", scan_id: str | None = None) -> str:
     """게이트웨이 별칭 `model` 로 LLM 을 1회 호출한다. project_id 가 있으면 성공/실패 무관 ai_call_log 1행.
@@ -146,12 +145,12 @@ def generate(provider: str, model: str, prompt: str, *, json_mode: bool = False,
         # 남긴다(기존 계약 유지) — latency는 재시도 포함 전체 소요시간, success/error는
         # 최종 결과 기준.
         if project_id:
-            _log_call(project_id, purpose, provider, resolved, scan_id,
+            _log_call(project_id, purpose, resolved, scan_id,
                       latency_ms=int((time.monotonic() - started) * 1000),
                       success=error is None, error=error, usage=usage)
 
 
-async def agenerate_stream(provider: str, model: str, prompt: str, *, timeout: int = 120,
+async def agenerate_stream(model: str, prompt: str, *, timeout: int = 120,
                            project_id: str | None = None, purpose: str = "qa", scan_id: str | None = None):
     """게이트웨이 별칭 `model` 로 스트리밍 호출해 텍스트 조각을 그대로 yield 한다.
 
@@ -195,7 +194,7 @@ async def agenerate_stream(provider: str, model: str, prompt: str, *, timeout: i
     finally:
         if project_id:
             await run_in_threadpool(
-                _log_call, project_id, purpose, provider, resolved, scan_id,
+                _log_call, project_id, purpose, resolved, scan_id,
                 latency_ms=int((time.monotonic() - started) * 1000),
                 success=error is None, error=error, usage=usage,
             )
@@ -252,7 +251,7 @@ def _describe(exc: Exception) -> str:
     return str(exc)
 
 
-def _log_call(project_id: str, purpose: str, provider: str, model: str, scan_id: str | None,
+def _log_call(project_id: str, purpose: str, model: str, scan_id: str | None,
               *, latency_ms: int, success: bool, error: str | None, usage: dict | None = None) -> None:
     # 통계 기록 실패로 실제 AI 호출/응답 흐름이 막히면 안 되므로 독립 트랜잭션 + fail-open.
     usage = usage or {}
@@ -264,7 +263,7 @@ def _log_call(project_id: str, purpose: str, provider: str, model: str, scan_id:
                                          latency_ms, success, error, prompt_tokens, completion_tokens)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (project_id, purpose, provider, model, scan_id, latency_ms, success, error,
+                (project_id, purpose, provider_of(model), model, scan_id, latency_ms, success, error,
                  usage.get("prompt_tokens"), usage.get("completion_tokens")),
             )
     except Exception:

@@ -18,7 +18,7 @@ from app import llm_schemas, orchestrator
 def _fake_generate(responses):
     calls = []
 
-    def generate(provider, model, prompt, *, json_mode=False, response_schema=None,
+    def generate(model, prompt, *, json_mode=False, response_schema=None,
                  project_id=None, purpose="qa", scan_id=None):
         calls.append(prompt)
         idx = len(calls) - 1
@@ -48,7 +48,7 @@ def test_run_agentic_calls_tools_then_finishes(monkeypatch):
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="로그인 처리하는 함수 어디 있어?",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
 
     assert executed == [
@@ -69,7 +69,7 @@ def test_run_agentic_stops_at_max_steps(monkeypatch):
     max_steps에서 멈춘다."""
     call_n = {"n": 0}
 
-    def generate(provider, model, prompt, *, json_mode=False, response_schema=None,
+    def generate(model, prompt, *, json_mode=False, response_schema=None,
                  project_id=None, purpose="qa", scan_id=None):
         call_n["n"] += 1
         return json.dumps({"action": "call_tool", "tool": "semantic_search", "params": {"q": f"질의{call_n['n']}"}})
@@ -79,14 +79,14 @@ def test_run_agentic_stops_at_max_steps(monkeypatch):
 
     used, _ = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder", max_steps=2,
+        model="qwen2.5-coder", max_steps=2,
     )
 
     assert len(used) == 2
 
 
 def test_run_agentic_stops_on_repeated_identical_call(monkeypatch):
-    def generate(provider, model, prompt, *, json_mode=False, response_schema=None,
+    def generate(model, prompt, *, json_mode=False, response_schema=None,
                  project_id=None, purpose="qa", scan_id=None):
         return json.dumps({"action": "call_tool", "tool": "semantic_search", "params": {"q": "같은 질의"}})
 
@@ -102,7 +102,7 @@ def test_run_agentic_stops_on_repeated_identical_call(monkeypatch):
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder", max_steps=5,
+        model="qwen2.5-coder", max_steps=5,
     )
 
     # 같은 (tool, params)를 반복해서 고르는 순간 루프가 멈춘다 — 1번만 실행됨.
@@ -112,7 +112,7 @@ def test_run_agentic_stops_on_repeated_identical_call(monkeypatch):
 
 
 def test_run_agentic_fail_open_on_bad_json(monkeypatch):
-    def generate(provider, model, prompt, *, json_mode=False, response_schema=None,
+    def generate(model, prompt, *, json_mode=False, response_schema=None,
                  project_id=None, purpose="qa", scan_id=None):
         return "이건 JSON이 아니다"
 
@@ -120,7 +120,7 @@ def test_run_agentic_fail_open_on_bad_json(monkeypatch):
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
 
     assert used == []
@@ -131,7 +131,7 @@ def test_run_agentic_seeds_project_info():
     project_info = {"name": "OJT 프로젝트", "description": "테스트"}
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"project_info": project_info}, question="이 프로젝트 이름이 뭐야?",
-        provider="ollama", model="qwen2.5-coder", max_steps=0,
+        model="qwen2.5-coder", max_steps=0,
     )
     assert used == []
     assert tool_results["project_info"] == [project_info]
@@ -160,7 +160,7 @@ def test_run_agentic_accepts_flattened_action_shape(monkeypatch):
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="공용 인증 경로 확인 기능 데이터 흐름 설명해줘",
-        provider="ollama", model="qwen2.5-coder", max_steps=5,
+        model="qwen2.5-coder", max_steps=5,
     )
 
     assert executed == [
@@ -186,7 +186,7 @@ def test_run_agentic_emits_events_in_order(monkeypatch):
     events = []
     orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="로그인 처리하는 함수 어디 있어?",
-        provider="ollama", model="qwen2.5-coder", on_step=events.append,
+        model="qwen2.5-coder", on_step=events.append,
     )
 
     assert [(e["type"], e["status"]) for e in events] == [
@@ -225,7 +225,7 @@ def test_run_agentic_on_step_failure_does_not_break_loop(monkeypatch):
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder", on_step=broken_on_step,
+        model="qwen2.5-coder", on_step=broken_on_step,
     )
 
     assert used == [{"name": "semantic_search", "params": {"q": "로그인"}}]
@@ -233,14 +233,14 @@ def test_run_agentic_on_step_failure_does_not_break_loop(monkeypatch):
 
 
 def test_build_plan_fails_open_on_bad_json(monkeypatch):
-    def generate(provider, model, prompt, *, json_mode=False, response_schema=None,
+    def generate(model, prompt, *, json_mode=False, response_schema=None,
                  project_id=None, purpose="qa", scan_id=None):
         return "이건 JSON이 아니다"
 
     monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
 
     assert orchestrator._build_plan("아무 질문", "- semantic_search: ...",
-                                     provider="ollama", model="qwen2.5-coder",
+                                     model="qwen2.5-coder",
                                      project_id=None, scan_id="s1") is None
 
 
@@ -256,7 +256,7 @@ def test_step_prompt_includes_plan(monkeypatch):
 
     orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="보안 검사해줘",
-        provider="ollama", model="qwen2.5-coder", on_step=lambda e: None,
+        model="qwen2.5-coder", on_step=lambda e: None,
     )
 
     # calls[0] = 계획, calls[1] = 스텝 0 프롬프트
@@ -285,7 +285,7 @@ def test_run_agentic_plan_coverage_backstop(monkeypatch):
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="프로젝트 보안검사 해줘",
-        provider="ollama", model="qwen2.5-coder", on_step=lambda e: None,
+        model="qwen2.5-coder", on_step=lambda e: None,
     )
 
     assert executed == ["repo_commits", "dataflow_security"]  # 백스톱이 뒤에 붙음
@@ -307,7 +307,7 @@ def test_run_agentic_backstop_skipped_without_scan(monkeypatch):
 
     used, _ = orchestrator.run_agentic(
         cur=None, ctx={}, question="프로젝트 보안검사 해줘",
-        provider="ollama", model="qwen2.5-coder", scan_id=None, on_step=lambda e: None,
+        model="qwen2.5-coder", scan_id=None, on_step=lambda e: None,
     )
 
     assert [u["name"] for u in used] == ["repo_commits"]
@@ -327,7 +327,7 @@ def test_run_agentic_backstop_not_triggered_when_analysis_tool_ran(monkeypatch):
 
     used, _ = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="보안검사",
-        provider="ollama", model="qwen2.5-coder", on_step=lambda e: None,
+        model="qwen2.5-coder", on_step=lambda e: None,
     )
 
     assert [u["name"] for u in used] == ["semantic_search"]
@@ -359,7 +359,7 @@ def test_run_agentic_forces_semantic_search_after_codebase_structure_only(monkey
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="회원가입 정책 설명해주세요",
-        provider="ollama", model="qwen2.5-coder", max_steps=5,
+        model="qwen2.5-coder", max_steps=5,
     )
 
     assert executed == ["codebase_structure", "semantic_search"]
@@ -374,7 +374,7 @@ def test_run_agentic_forces_semantic_search_on_unparseable_response_too(monkeypa
     똑같이 개입해야 한다 — _parse_step_action을 거치지 않는 예외 경로도 커버해야 함."""
     call_n = {"n": 0}
 
-    def generate(provider, model, prompt, *, json_mode=False, response_schema=None,
+    def generate(model, prompt, *, json_mode=False, response_schema=None,
                  project_id=None, purpose="qa", scan_id=None):
         call_n["n"] += 1
         if call_n["n"] == 1:
@@ -391,7 +391,7 @@ def test_run_agentic_forces_semantic_search_on_unparseable_response_too(monkeypa
 
     used, _ = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
 
     assert executed == ["codebase_structure", "semantic_search"]
@@ -418,7 +418,7 @@ def test_run_agentic_forces_semantic_search_on_repeated_codebase_structure(monke
 
     used, _ = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
     assert executed == ["codebase_structure", "semantic_search"]
     assert [u["name"] for u in used] == ["codebase_structure", "semantic_search"]
@@ -436,7 +436,7 @@ def test_run_agentic_no_force_when_no_tools_used(monkeypatch):
 
     used, tool_results = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="안녕",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
     assert used == []
     assert tool_results == {}
@@ -460,7 +460,7 @@ def test_run_agentic_no_force_when_other_tool_also_used(monkeypatch):
 
     used, _ = orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
     assert executed == ["codebase_structure", "repo_commits"]
     assert [u["name"] for u in used] == ["codebase_structure", "repo_commits"]
@@ -483,7 +483,7 @@ def test_run_agentic_no_force_without_scan(monkeypatch):
 
     used, _ = orchestrator.run_agentic(
         cur=None, ctx={}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
     assert executed == ["codebase_structure"]
     assert [u["name"] for u in used] == ["codebase_structure"]
@@ -545,7 +545,7 @@ def test_run_agentic_tool_event_target_has_no_raw_json(monkeypatch):
     events = []
     orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="sql 인젝션 있어?",
-        provider="ollama", model="qwen2.5-coder", on_step=events.append,
+        model="qwen2.5-coder", on_step=events.append,
     )
     tool_call = next(e for e in events if e["type"] == "tool_call")
     assert tool_call["target"] == "관심 키워드: sql, 인젝션"
@@ -555,17 +555,17 @@ def test_synthesize_answer_distinguishes_missing_evidence():
     """근거가 비었을 때 '도구 미실행'과 '질문 무관'과 '스캔 없음'을 구분한다."""
     # 분석 도구를 실행했으나 근거가 빔 → "수행했으나 못 찾음"
     assert "찾지 못" in orchestrator.synthesize_answer(
-        "보안검사", {}, provider="ollama", model="m",
+        "보안검사", {}, model="m",
         executed_tools=["dataflow_security"], analysis_available=True,
     )
     # 분석 도구를 실행했는데 스캔이 없음
     assert "스캔이 없어" in orchestrator.synthesize_answer(
-        "보안검사", {}, provider="ollama", model="m",
+        "보안검사", {}, model="m",
         executed_tools=["dataflow_security"], analysis_available=False,
     )
     # 아무 도구도 실행 안 함 → 기존 문구
     assert "코드 조회가 필요 없" in orchestrator.synthesize_answer(
-        "안녕", {}, provider="ollama", model="m", executed_tools=(),
+        "안녕", {}, model="m", executed_tools=(),
     )
 
 
@@ -589,7 +589,7 @@ def _capturing_generate(responses):
     올바른 스키마가 실제로 전달되는지 검증하는 용도."""
     calls = []
 
-    def generate(provider, model, prompt, *, json_mode=False, response_schema=None,
+    def generate(model, prompt, *, json_mode=False, response_schema=None,
                  project_id=None, purpose="qa", scan_id=None):
         calls.append({"response_schema": response_schema, "json_mode": json_mode})
         idx = len(calls) - 1
@@ -603,7 +603,7 @@ def _capturing_generate(responses):
 def test_build_plan_uses_plan_steps_schema(monkeypatch):
     generate, calls = _capturing_generate([{"steps": ["a"]}])
     monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
-    orchestrator._build_plan("질문", "tools", provider="ollama", model="m",
+    orchestrator._build_plan("질문", "tools", model="m",
                              project_id=None, scan_id=None)
     assert calls[0]["response_schema"] is llm_schemas.PlanSteps
 
@@ -613,7 +613,7 @@ def test_run_agentic_step_loop_uses_step_decision_schema(monkeypatch):
     monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
     orchestrator.run_agentic(
         cur=None, ctx={"scan_id": "s1"}, question="아무 질문",
-        provider="ollama", model="qwen2.5-coder",
+        model="qwen2.5-coder",
     )
     assert calls[0]["response_schema"] is llm_schemas.StepDecision
 
@@ -623,7 +623,7 @@ def test_check_relevance_and_synthesize_stay_on_loose_mode(monkeypatch):
     (의도적 결정) — 이 회귀 가드가 실수로 스키마가 붙는 걸 잡는다."""
     generate, calls = _capturing_generate([{"a": [0]}])
     monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
-    orchestrator.check_relevance("질문", {"a": [{"x": 1}]}, provider="ollama", model="m")
+    orchestrator.check_relevance("질문", {"a": [{"x": 1}]}, model="m")
     assert calls[0]["response_schema"] is None
     assert calls[0]["json_mode"] is True
 

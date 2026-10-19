@@ -64,7 +64,7 @@ def test_generate_retries_loose_on_schema_400(monkeypatch, caplog):
         return _FakeResponse(200)
 
     monkeypatch.setattr(ai_providers.httpx, "post", fake_post)
-    result = ai_providers.generate("gateway", "m", "prompt", response_schema=_Choice)
+    result = ai_providers.generate("m", "prompt", response_schema=_Choice)
 
     assert result == "ok"
     assert len(calls) == 2
@@ -82,7 +82,7 @@ def test_generate_does_not_retry_on_401(monkeypatch):
 
     monkeypatch.setattr(ai_providers.httpx, "post", fake_post)
     with pytest.raises(httpx.HTTPStatusError):
-        ai_providers.generate("gateway", "m", "prompt", response_schema=_Choice)
+        ai_providers.generate("m", "prompt", response_schema=_Choice)
     assert len(calls) == 1
 
 
@@ -96,7 +96,7 @@ def test_generate_retries_loose_on_timeout(monkeypatch):
         return _FakeResponse(200)
 
     monkeypatch.setattr(ai_providers.httpx, "post", fake_post)
-    result = ai_providers.generate("gateway", "m", "prompt", response_schema=_Choice)
+    result = ai_providers.generate("m", "prompt", response_schema=_Choice)
     assert result == "ok"
     assert len(calls) == 2
 
@@ -112,5 +112,5 @@ def test_generate_without_schema_does_not_retry(monkeypatch):
 
     monkeypatch.setattr(ai_providers.httpx, "post", fake_post)
     with pytest.raises(httpx.HTTPStatusError):
-        ai_providers.generate("gateway", "m", "prompt", json_mode=True)
+        ai_providers.generate("m", "prompt", json_mode=True)
     assert len(calls) == 1

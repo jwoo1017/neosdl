@@ -347,7 +347,7 @@ def _parse_step_decision(raw: str) -> tuple[str, dict] | None:
 
 
 @observability.observe(name="plan")
-def _build_plan(question: str, tools_block: str, *, provider: str, model: str,
+def _build_plan(question: str, tools_block: str, *, model: str,
                  project_id: str | None, scan_id: str | None) -> list[str] | None:
     """계획 수립 전용 LLM 호출 — 실패해도 전체 흐름을 막지 않는다(fail-open).
 
@@ -357,7 +357,7 @@ def _build_plan(question: str, tools_block: str, *, provider: str, model: str,
     """
     prompt = _PLAN_PROMPT.format(question=question, tools_block=tools_block)
     try:
-        raw = ai_providers.generate(provider, model, prompt, response_schema=llm_schemas.PlanSteps,
+        raw = ai_providers.generate(model, prompt, response_schema=llm_schemas.PlanSteps,
                                      project_id=project_id, purpose="qa", scan_id=scan_id)
         parsed = json.loads(raw)
         steps = parsed.get("steps")
@@ -445,7 +445,7 @@ def _force_tool_call(cur, ctx: dict, question: str, name: str, params: dict, eve
 
 
 @observability.observe(name="agentic_loop")
-def run_agentic(cur, ctx: dict, question: str, *, provider: str, model: str,
+def run_agentic(cur, ctx: dict, question: str, *, model: str,
                  project_id: str | None = None, scan_id: str | None = None,
                  max_steps: int = MAX_STEPS,
                  on_step: Callable[[AgentEvent], None] | None = None,
@@ -505,7 +505,7 @@ def run_agentic(cur, ctx: dict, question: str, *, provider: str, model: str,
         # 걸린 시간으로 고정된다(안 그러면 finished_at=None이라 now까지 계속 증가).
         plan_event = new_event("plan-0", "plan", "running", summary="조사 계획을 세우는 중...")
         emit(plan_event)
-        plan_steps = _build_plan(question, tools_block, provider=provider, model=model,
+        plan_steps = _build_plan(question, tools_block, model=model,
                                   project_id=project_id, scan_id=scan_id)
         if plan_steps:
             emit(mark_done(plan_event, plan_steps=plan_steps, summary="계획을 세웠습니다"))
@@ -533,7 +533,7 @@ def run_agentic(cur, ctx: dict, question: str, *, provider: str, model: str,
             )
 
             try:
-                raw = ai_providers.generate(provider, model, prompt, response_schema=llm_schemas.StepDecision,
+                raw = ai_providers.generate(model, prompt, response_schema=llm_schemas.StepDecision,
                                              project_id=project_id, purpose="qa", scan_id=scan_id)
             except Exception:
                 log.exception("에이전틱 스텝 실패 — 지금까지 모은 근거로 종료")
@@ -611,7 +611,7 @@ def run_agentic(cur, ctx: dict, question: str, *, provider: str, model: str,
 
 
 @observability.observe(name="relevance_filter")
-def check_relevance(question: str, tool_results: dict, *, provider: str, model: str,
+def check_relevance(question: str, tool_results: dict, *, model: str,
                      project_id: str | None = None, scan_id: str | None = None) -> dict:
     """LLM에 근거를 넘기기 전에 실제로 질문과 관련 있는 항목만 남긴다.
 
@@ -636,7 +636,7 @@ def check_relevance(question: str, tool_results: dict, *, provider: str, model: 
     )
 
     try:
-        raw = ai_providers.generate(provider, model, prompt, json_mode=True,
+        raw = ai_providers.generate(model, prompt, json_mode=True,
                                      project_id=project_id, purpose="qa", scan_id=scan_id)
         parsed = json.loads(raw)
     except Exception:
@@ -673,7 +673,7 @@ def _no_evidence_answer(executed_tools, analysis_available: bool) -> str:
 
 
 @observability.observe(name="synthesize")
-def synthesize_answer(question: str, tool_results: dict, *, provider: str, model: str,
+def synthesize_answer(question: str, tool_results: dict, *, model: str,
                        project_id: str | None = None, scan_id: str | None = None,
                        executed_tools=(), analysis_available: bool = True) -> str:
     if not tool_results:
@@ -681,7 +681,7 @@ def synthesize_answer(question: str, tool_results: dict, *, provider: str, model
 
     prompt = _synthesize_prompt(question, tool_results, executed_tools, analysis_available)
     try:
-        return ai_providers.generate(provider, model, prompt, json_mode=False,
+        return ai_providers.generate(model, prompt, json_mode=False,
                                       project_id=project_id, purpose="qa", scan_id=scan_id).strip()
     except Exception:
         log.exception("답변 합성 실패")
@@ -689,7 +689,7 @@ def synthesize_answer(question: str, tool_results: dict, *, provider: str, model
 
 
 @observability.observe(name="synthesize")
-async def synthesize_answer_stream(question: str, tool_results: dict, *, provider: str, model: str,
+async def synthesize_answer_stream(question: str, tool_results: dict, *, model: str,
                                     project_id: str | None = None, scan_id: str | None = None,
                                     executed_tools=(), analysis_available: bool = True):
     """synthesize_answer의 스트리밍 버전 — WebSocket 채팅(app/chat.py) 전용.
@@ -704,7 +704,7 @@ async def synthesize_answer_stream(question: str, tool_results: dict, *, provide
 
     prompt = _synthesize_prompt(question, tool_results, executed_tools, analysis_available)
     try:
-        async for chunk in ai_providers.agenerate_stream(provider, model, prompt, project_id=project_id,
+        async for chunk in ai_providers.agenerate_stream(model, prompt, project_id=project_id,
                                                            purpose="qa", scan_id=scan_id):
             yield chunk
     except Exception:

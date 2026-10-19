@@ -194,7 +194,7 @@ def test_risk_incremental_reuses_parent_classification(parent_and_child, monkeyp
 
     with db() as cur:
         ensure_risk_objects(
-            cur, child, provider="gateway", model="m",
+            cur, child, model="m",
             parent_scan_id=parent_and_child["parent"], changed_paths=["app/order.py"],
         )
         cur.execute(

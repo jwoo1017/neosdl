@@ -191,14 +191,14 @@ def _apply_floors(vector, outcomes):
 def test_classify_business_ip_fail_open_on_bad_json(monkeypatch):
     monkeypatch.setattr(classify.ai_providers, "generate",
                         lambda *a, **k: "not json at all")
-    assert classify.classify_business_ip("f", "p.py", [], provider="gateway", model="m") is None
+    assert classify.classify_business_ip("f", "p.py", [], model="m") is None
 
 
 def test_classify_business_ip_parses_valid(monkeypatch):
     payload = {"classification": "business_core_logic", "business_role": "할인 계산",
                "confidence": 0.9, "evidence": ["pricing semantic"]}
     monkeypatch.setattr(classify.ai_providers, "generate", lambda *a, **k: json.dumps(payload))
-    out = classify.classify_business_ip("calcDiscount", "pricing.py", [], provider="gateway", model="m")
+    out = classify.classify_business_ip("calcDiscount", "pricing.py", [], model="m")
     assert out["classification"] == "business_core_logic"
 
 
@@ -220,7 +220,7 @@ def test_reconcile_business_ip_core_raises_generic_caps_unknown_ceilings():
 
 def test_classify_query_intent_fail_open_to_neutral(monkeypatch):
     monkeypatch.setattr(classify.ai_providers, "generate", lambda *a, **k: "boom")
-    assert classify.classify_query_intent("q", [], provider="gateway", model="m")["intent"] == "neutral"
+    assert classify.classify_query_intent("q", [], model="m")["intent"] == "neutral"
 
 
 # --------------------------------------------------------------------- policy

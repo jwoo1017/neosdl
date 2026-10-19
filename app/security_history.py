@@ -347,7 +347,7 @@ def explain_risk_identity(repository_id: UUID, fingerprint: str,
         obs = cur.fetchall()
         cur.execute(
             """
-            SELECT p.id AS project_id, p.qa_model_provider, p.qa_model_name
+            SELECT p.id AS project_id, p.qa_model_name
               FROM project_repository pr JOIN project p ON p.id = pr.project_id
              WHERE pr.repository_id = %s LIMIT 1
             """,
@@ -380,7 +380,7 @@ def explain_risk_identity(repository_id: UUID, fingerprint: str,
     model = ai_providers.resolve_requested_model(None, project_default=proj.get("qa_model_name"))
     try:
         explanation = ai_providers.generate(
-            proj.get("qa_model_provider") or "gateway", model, prompt, json_mode=False,
+            model, prompt, json_mode=False,
             project_id=str(proj["project_id"]) if proj.get("project_id") else None,
             purpose="security_history_explain",
         ).strip()

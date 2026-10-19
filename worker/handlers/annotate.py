@@ -60,7 +60,7 @@ def handle(payload: dict) -> None:
         # 자리 마련 설계와 동일한 실용적 단순화). 값이 비어있으면 전역 기본값.
         cur.execute(
             """
-            SELECT p.id AS project_id, p.ci_model_provider, p.ci_model_name
+            SELECT p.id AS project_id, p.ci_model_name
               FROM scan s
               JOIN project_repository pr ON pr.repository_id = s.repository_id
               JOIN project p ON p.id = pr.project_id
@@ -70,8 +70,6 @@ def handle(payload: dict) -> None:
         )
         proj = cur.fetchone()
         project_id = str(proj["project_id"]) if proj else None
-        # provider 는 라우팅에 안 쓰인다(게이트웨이가 model 별칭으로 결정) — 로깅용.
-        provider = (proj or {}).get("ci_model_provider") or "gateway"
         model_name = (proj or {}).get("ci_model_name") or settings().default_chat_model
 
         cur.execute(
@@ -137,7 +135,7 @@ def handle(payload: dict) -> None:
 
         try:
             result = _annotate_file(path, members, edges_by_path.get(path, []), known_domains,
-                                     provider=provider, model=model_name,
+                                     model=model_name,
                                      project_id=project_id, scan_id=scan_id)
         except Exception:
             log.exception("scan %s: %s 의미 태깅 실패 — 건너뜀", scan_id, path)
@@ -148,7 +146,7 @@ def handle(payload: dict) -> None:
             known_domains.append(domain)
 
         with tx() as cur:
-            _store(cur, scan_id, module, members, result, provider=provider, model_name=model_name)
+            _store(cur, scan_id, module, members, result, model_name=model_name)
         annotated += 1
 
     log.info("scan %s: 파일 %d개 의미 태깅 완료", scan_id, annotated)
@@ -191,7 +189,7 @@ def _incremental_carry_forward(scan_id: str) -> tuple[str | None, list[str] | No
 
 
 def _annotate_file(path: str, members: list[dict], edges: list[dict], known_domains: list[str],
-                    *, provider: str, model: str, project_id: str | None, scan_id: str) -> dict:
+                    *, model: str, project_id: str | None, scan_id: str) -> dict:
     symbols_block = "\n".join(
         f"- {m['qualified_name']}({','.join(m['param_types'] or [])})" for m in members
     ) or "(없음)"
@@ -214,14 +212,14 @@ def _annotate_file(path: str, members: list[dict], edges: list[dict], known_doma
         known_domains_block=known_domains_block,
     )
 
-    raw = ai_providers.generate(provider, model, prompt, response_schema=llm_schemas.AnnotateResult,
+    raw = ai_providers.generate(model, prompt, response_schema=llm_schemas.AnnotateResult,
                                  timeout=120, project_id=project_id, purpose="ci_annotate", scan_id=scan_id)
     return json.loads(raw)
 
 
 def _store(cur, scan_id: str, module: dict, members: list[dict], result: dict,
-           *, provider: str, model_name: str) -> None:
-    model = f"{provider}/{model_name}"
+           *, model_name: str) -> None:
+    model = model_name  # 게이트웨이 별칭 그대로(예: local-qwen-coder)
 
     cur.execute(
         """

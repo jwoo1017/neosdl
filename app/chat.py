@@ -267,7 +267,7 @@ def _insert_user_message(session_id: str, project_id: str, question: str, member
 
 
 def _generate_and_store_chat_title(session_id: str, project_id: str, question: str,
-                                    provider: str, model: str) -> str | None:
+                                    model: str) -> str | None:
     """첫 질문으로 짧은 세션 제목을 지어 chat_session.title에 저장한다.
 
     실패해도(LLM 호출 오류, 빈 응답 등) 채팅 자체엔 영향이 없어야 하므로
@@ -275,7 +275,7 @@ def _generate_and_store_chat_title(session_id: str, project_id: str, question: s
     "실패하면 None"만 보장한다. 사용자가 그 사이 세션 이름을 직접 바꿨으면
     (title IS NOT NULL) 덮어쓰지 않는다.
     """
-    raw = ai_providers.generate(provider, model, _CHAT_TITLE_PROMPT.format(question=question),
+    raw = ai_providers.generate(model, _CHAT_TITLE_PROMPT.format(question=question),
                                  json_mode=False, project_id=project_id, purpose="qa")
     title = raw.strip().strip('"').strip("'").strip()[:40]
     if not title:
@@ -290,13 +290,13 @@ def _generate_and_store_chat_title(session_id: str, project_id: str, question: s
     return title
 
 
-async def _generate_chat_title_task(session_id: str, project_id: str, question: str, provider: str,
+async def _generate_chat_title_task(session_id: str, project_id: str, question: str,
                                      model: str, queue: asyncio.Queue) -> None:
     """첫 질문 제목 생성은 답변 스트리밍과 무관한 부가 기능이라 fire-and-forget으로
     돌린다 — 실패해도(또는 느려도) 메인 답변 파이프라인을 막지 않는다."""
     try:
         title = await run_in_threadpool(_generate_and_store_chat_title, session_id, project_id,
-                                         question, provider, model)
+                                         question, model)
         if title:
             await queue.put({"type": "chat_title", "session_id": session_id, "title": title})
     except Exception:
@@ -320,17 +320,14 @@ def _insert_assistant_message(session_id: str, project_id: str, content: str, ev
         chat_bus.notify_chat_event(cur, session_id, message_id)
 
 
-def _fetch_project_model(project_id: str) -> tuple[str, str]:
-    """프로젝트에 설정된 (provider, 모델 별칭). 값이 비어 있으면 provider 는
-    'gateway', 모델은 빈 문자열 — 실제 별칭 해석은 호출부에서
+def _fetch_project_model(project_id: str) -> str:
+    """프로젝트에 설정된 질문용 모델 별칭(없으면 빈 문자열) — 실제 별칭 해석은 호출부에서
     `ai_providers.resolve_requested_model` 이 요청값·전역 기본과 합쳐서 한다.
     """
     with tx() as cur:
-        cur.execute("SELECT qa_model_provider, qa_model_name FROM project WHERE id=%s", (str(project_id),))
+        cur.execute("SELECT qa_model_name FROM project WHERE id=%s", (str(project_id),))
         proj = cur.fetchone()
-    provider = (proj or {}).get("qa_model_provider") or "gateway"
-    model = (proj or {}).get("qa_model_name") or ""
-    return provider, model
+    return (proj or {}).get("qa_model_name") or ""
 
 
 def _collect_evidence_symbols(evidence: dict, limit: int = 3) -> list[str]:
@@ -358,15 +355,15 @@ def _collect_evidence_symbols(evidence: dict, limit: int = 3) -> list[str]:
     return keys[:limit]
 
 
-def _run_pipeline_sync(question: str, ctx: dict, *, provider: str, model: str, project_id: str,
+def _run_pipeline_sync(question: str, ctx: dict, *, model: str, project_id: str,
                         on_step=None, forced_tool: str | None = None) -> dict:
     """run_agentic + check_relevance + (스캔이 있으면) Contextual Risk — 전부 동기/
     블로킹이라 하나로 묶어서 스레드풀에 한 번만 던진다(기존 /scans/{scan_id}/ask 와 같은 구성)."""
     with tx() as cur:
-        used, evidence = orchestrator.run_agentic(cur, ctx, question, provider=provider, model=model,
+        used, evidence = orchestrator.run_agentic(cur, ctx, question, model=model,
                                                     project_id=project_id, scan_id=ctx["scan_id"],
                                                     on_step=on_step, forced_tool=forced_tool)
-        evidence = orchestrator.check_relevance(question, evidence, provider=provider, model=model,
+        evidence = orchestrator.check_relevance(question, evidence, model=model,
                                                   project_id=project_id, scan_id=ctx["scan_id"])
 
         risk = None
@@ -377,7 +374,7 @@ def _run_pipeline_sync(question: str, ctx: dict, *, provider: str, model: str, p
                 try:
                     risk = risk_synthesis.evaluate_query(
                         cur, scan_id, question, symbols,
-                        provider=provider, model=model, project_id=project_id,
+                        model=model, project_id=project_id,
                     )
                 except Exception:
                     log.exception("채팅 Contextual Risk 평가 실패 — 생략하고 진행")
@@ -400,7 +397,7 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
     try:
         ctx = await run_in_threadpool(_insert_user_message, session_id, project_id, question, member_id,
                                        mentioned_project_ids, forced_tool)
-        provider, project_model = await run_in_threadpool(_fetch_project_model, project_id)
+        project_model = await run_in_threadpool(_fetch_project_model, project_id)
         # 드롭다운에서 고른 모델(요청) → 프로젝트 기본 → 전역 기본. 게이트웨이가
         # 서빙하지 않는 값은 조용히 기본으로 폴백한다(fail-open).
         model = await run_in_threadpool(
@@ -409,7 +406,7 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
 
         if ctx.get("is_first_message"):
             asyncio.create_task(
-                _generate_chat_title_task(session_id, project_id, question, provider, model, queue)
+                _generate_chat_title_task(session_id, project_id, question, model, queue)
             )
 
         # run_agentic은 스레드풀(별도 스레드)에서 도는데 매 스텝 진행 상황을
@@ -426,7 +423,7 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
                 queue.put_nowait, {"type": "agent_event", "client_msg_id": client_msg_id, "event": event}
             )
 
-        pipeline = await run_in_threadpool(_run_pipeline_sync, question, ctx, provider=provider,
+        pipeline = await run_in_threadpool(_run_pipeline_sync, question, ctx,
                                             model=model, project_id=project_id, on_step=emit_event,
                                             forced_tool=forced_tool)
         evidence = pipeline["evidence"]
@@ -443,7 +440,7 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
         await queue.put({"type": "agent_event", "client_msg_id": client_msg_id, "event": final_event})
 
         chunks: list[str] = []
-        async for delta in orchestrator.synthesize_answer_stream(question, evidence, provider=provider,
+        async for delta in orchestrator.synthesize_answer_stream(question, evidence,
                                                                     model=model, project_id=project_id,
                                                                     scan_id=ctx["scan_id"],
                                                                     executed_tools=[t["name"] for t in tools_used],
