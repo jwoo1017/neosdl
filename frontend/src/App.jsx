@@ -11,6 +11,7 @@ import { MascotProvider } from "./MascotContext";
 import MascotButton from "./mascot/MascotButton";
 import MascotPanel from "./mascot/MascotPanel";
 import LoginPage from "./pages/LoginPage";
+import VerifyEmailPage from "./pages/VerifyEmailPage";
 import OnboardingPage from "./pages/OnboardingPage";
 import WorkspaceHomePage from "./pages/WorkspaceHomePage";
 import ProjectSettingsPage from "./pages/ProjectSettingsPage";
@@ -60,6 +61,11 @@ function AppLayout() {
     // 조용히 삼키면 "불러오는 중..."에서 영영 멈춘다 — 재시도 버튼을 준다.
     fetchMe().then((m) => {
       if (cancelled) return;
+      if (m.email_verified === false) {
+        // 미인증 계정 — 다른 API 는 전부 403 이라 화면을 그리기 전에 인증 화면으로 보낸다.
+        window.location.href = `/verify-email?next=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
       setMe(m);
       // 아바타는 더 이상 /me에 없다 — 연결된 GitHub 계정이 있으면 거기서 가져온다.
       fetchGithubAccounts()
@@ -140,6 +146,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
         {/* 로그인 여부와 무관하게 미리보기를 보여줘야 해서 AppLayout(강제 로그인) 밖에 둔다 */}
         <Route path="/workspace-invites/:token" element={<WorkspaceInviteAcceptPage />} />
         <Route path="/teamspace-invites/:token" element={<TeamspaceInviteAcceptPage />} />

@@ -24,14 +24,15 @@ from uuid import UUID
 import httpx
 import jwt
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
-from app import audit
+from app import audit, email_verification
 from app.auth import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
     get_current_member,
+    get_current_member_allow_unverified,
     get_current_member_optional,
     issue_session_token,
 )
@@ -64,6 +65,15 @@ class LoginIn(BaseModel):
     password: str
 
 
+class VerifyEmailIn(BaseModel):
+    code: str = Field(min_length=1, max_length=12)
+
+
+def _is_verified(row: dict) -> bool:
+    """이메일이 없으면(GitHub 전용 가입) 확인할 대상이 없으므로 인증된 것으로 본다."""
+    return row.get("email") is None or row.get("email_verified_at") is not None
+
+
 def _set_session_cookie(resp: Response, member: dict) -> None:
     session_token = issue_session_token(member)
     resp.set_cookie(SESSION_COOKIE, session_token, max_age=SESSION_TTL_SECONDS,
@@ -86,11 +96,14 @@ def signup(body: SignupIn):
             """,
             (email, hash_password(body.password), body.nickname),
         )
-        member = cur.fetchone()
+        member = {**cur.fetchone(), "email_verified": False}
         audit.record(cur, actor=f"user:{member['nickname']}", action="member.signup",
                      subject={"member_id": str(member["id"])}, payload={"method": "email"})
+        # 가입과 동시에 첫 인증 코드를 보낸다(쿨다운 대상 아님 — 첫 발송).
+        sent = email_verification.issue_code(cur, member, enforce_rate_limit=False)
 
-    resp = Response(status_code=201)
+    # 세션은 미인증(ev=false)으로 발급 — 인증 전엔 /me·인증 API 외엔 403.
+    resp = JSONResponse({"email_verification_required": True, **sent}, status_code=201)
     _set_session_cookie(resp, member)
     return resp
 
@@ -99,11 +112,13 @@ def signup(body: SignupIn):
 def login(body: LoginIn):
     email = body.email.lower()
     with tx() as cur:
-        cur.execute("SELECT id, email, nickname, password_hash FROM member WHERE lower(email)=%s", (email,))
+        cur.execute("SELECT id, email, nickname, password_hash, email_verified_at FROM member WHERE lower(email)=%s",
+                    (email,))
         member = cur.fetchone()
         # 계정 존재 여부가 401 사유로 새지 않도록 실패 사유를 구분하지 않는다.
         if member is None or not verify_password(body.password, member["password_hash"]):
             raise HTTPException(401, "invalid email or password")
+        member = {**member, "email_verified": _is_verified(member)}
         cur.execute("UPDATE member SET last_login_at=now() WHERE id=%s", (member["id"],))
         audit.record(cur, actor=f"user:{member['nickname']}", action="member.login",
                      subject={"member_id": str(member["id"])}, payload={"method": "email"})
@@ -164,7 +179,9 @@ def _apply_email_if_available(cur, member_id: str, candidate_email: str | None) 
     cur.execute("SELECT 1 FROM member WHERE lower(email)=%s AND id<>%s", (candidate_email.lower(), member_id))
     if cur.fetchone() is not None:
         return
-    cur.execute("UPDATE member SET email=%s, updated_at=now() WHERE id=%s", (candidate_email, member_id))
+    # GitHub 가 인증한 주소라 우리 쪽 인증도 끝난 것으로 본다.
+    cur.execute("UPDATE member SET email=%s, email_verified_at=now(), updated_at=now() WHERE id=%s",
+                (candidate_email, member_id))
 
 
 def _safe_redirect_target(next_path: str | None) -> str:
@@ -283,8 +300,10 @@ def github_callback(
                 # 인증 이메일로 백필한다 — _apply_email_if_available이 이미
                 # 이메일이 있으면 건드리지 않는다.
                 _apply_email_if_available(cur, existing["member_id"], verified_email)
-                cur.execute("SELECT id, nickname, email FROM member WHERE id=%s", (existing["member_id"],))
+                cur.execute("SELECT id, nickname, email, email_verified_at FROM member WHERE id=%s",
+                            (existing["member_id"],))
                 member = cur.fetchone()
+                member = {**member, "email_verified": _is_verified(member)}
                 audit.record(cur, actor=f"user:{member['nickname']}", action="member.login",
                              subject={"member_id": str(member["id"])}, payload={"method": "github"})
             else:
@@ -295,12 +314,14 @@ def github_callback(
                     cur.execute("SELECT 1 FROM member WHERE lower(email)=%s", (email.lower(),))
                     if cur.fetchone() is not None:
                         email = None
+                # GitHub 가 인증한 이메일이라 가입 즉시 인증 완료로 둔다(이메일이 없으면 대상 없음).
                 cur.execute(
-                    "INSERT INTO member (email, nickname, last_login_at) VALUES (%s, %s, now()) "
+                    "INSERT INTO member (email, nickname, last_login_at, email_verified_at) "
+                    "VALUES (%s, %s, now(), CASE WHEN %s::text IS NULL THEN NULL ELSE now() END) "
                     "RETURNING id, nickname, email",
-                    (email, gh_user["login"]),
+                    (email, gh_user["login"], email),
                 )
-                member = cur.fetchone()
+                member = {**cur.fetchone(), "email_verified": True}
                 cur.execute(
                     """
                     INSERT INTO github_account (member_id, github_user_id, github_login, avatar_url)
@@ -334,8 +355,31 @@ def logout():
 
 
 @router.get("/me")
-def me(member: dict = Depends(get_current_member)):
+def me(member: dict = Depends(get_current_member_allow_unverified)):
+    # 미인증 상태에서도 호출된다 — 프론트가 email_verified 를 보고 인증 화면으로 보낸다.
     return member
+
+
+@router.post("/auth/email-verification/send")
+def send_email_verification(member: dict = Depends(get_current_member_allow_unverified)):
+    """인증 코드 (재)발송. 쿨다운/시간당 횟수 초과면 429(detail: resend_cooldown:<초> | too_many_requests)."""
+    with tx() as cur:
+        return email_verification.issue_code(cur, member)
+
+
+@router.post("/auth/email-verification/verify", status_code=204)
+def verify_email(body: VerifyEmailIn, member: dict = Depends(get_current_member_allow_unverified)):
+    """맞으면 ev=true 세션 쿠키를 다시 발급한다. 틀리면 400(detail: invalid_code:<남은 횟수> 등)."""
+    if member["email_verified"]:
+        return Response(status_code=204)
+    with tx() as cur:
+        result = email_verification.verify_code(cur, member["id"], body.code)
+    # 실패는 트랜잭션 커밋 뒤에 응답한다 — 오입력 횟수 증가가 롤백되면 안 되므로.
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    resp = Response(status_code=204)
+    _set_session_cookie(resp, result["member"])
+    return resp
 
 
 @router.get("/me/github-accounts")

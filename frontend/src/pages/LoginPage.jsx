@@ -22,9 +22,11 @@ export default function LoginPage() {
     try {
       if (mode === "signup") {
         await signup(email, password, nickname);
-      } else {
-        await login(email, password);
+        // 가입 직후 인증 코드가 발송된다 — 인증을 마쳐야 나머지 기능이 열린다.
+        navigate(`/verify-email?sent=1&next=${encodeURIComponent(next)}`);
+        return;
       }
+      await login(email, password);
       navigate(next);
     } catch (err) {
       setError(err.message);

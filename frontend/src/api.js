@@ -13,6 +13,15 @@ async function apiFetch(path, options = {}) {
     window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
     return new Promise(() => {}); // 리다이렉트 진행 중이니 이 호출은 그대로 매달아 둔다
   }
+  if (res.status === 403) {
+    // 이메일 미인증 계정은 백엔드가 기본 차단한다(app/auth.py) — 인증 화면으로 보낸다.
+    // 다른 403(권한 부족)은 호출부가 그대로 처리하도록 본문만 엿보고 res 는 돌려준다.
+    const detail = (await res.clone().json().catch(() => ({}))).detail;
+    if (detail === "email_not_verified") {
+      window.location.href = `/verify-email?next=${encodeURIComponent(window.location.pathname)}`;
+      return new Promise(() => {});
+    }
+  }
   return res;
 }
 
@@ -51,6 +60,30 @@ export async function signup(email, password, nickname) {
     body: JSON.stringify({ email, password, nickname }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `signup failed: ${res.status}`);
+  return res.json(); // { email_verification_required, sent, expires_in, resend_after }
+}
+
+// 이메일 인증 코드 — 실패 시 Error 에 `status`/`detail` 을 실어 던진다(화면이 사유별 문구를 고름).
+async function verificationCall(path, body) {
+  const res = await fetch(`${API_BASE}/api/auth/email-verification/${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))).detail || `${path} failed: ${res.status}`;
+    throw Object.assign(new Error(detail), { status: res.status, detail });
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+export function sendVerificationCode() {
+  return verificationCall("send"); // { sent, expires_in, resend_after }
+}
+
+export function verifyEmailCode(code) {
+  return verificationCall("verify", { code });
 }
 
 export async function login(email, password) {

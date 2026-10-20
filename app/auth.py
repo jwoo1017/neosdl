@@ -5,6 +5,11 @@
 계정 삭제/차단 기능이 아직 없어서 지금은 그래도 안전하고, 그런 기능이
 생기면 그때 조회를 추가하면 된다(지금 미리 넣어봐야 죽은 코드).
 
+이메일 인증(app/email_verification.py): 세션 클레임 `ev`(email_verified)로 들고 다닌다.
+미인증 계정은 get_current_member 가 403 `email_not_verified` 로 막는다 — 기능별로
+막는 대신 기본 차단이고, /me·인증 코드 발송/확인처럼 미인증 상태에서도 필요한
+라우트만 get_current_member_allow_unverified 를 쓴다. 인증 직후엔 쿠키를 재발급한다.
+
 역할은 고정 계층이다 — workspace: member < admin, project: viewer <
 developer < manager < owner. 매 체크는 SELECT 한 번으로 caller의 role을
 가져온 뒤 Python에서 랭크를 비교한다. 다른 테넌트의 존재 여부가 응답
@@ -35,6 +40,7 @@ def issue_session_token(member: dict) -> str:
         "sub": str(member["id"]),
         "nickname": member["nickname"],
         "email": member.get("email"),
+        "ev": bool(member.get("email_verified", False)),
         "iat": now,
         "exp": now + SESSION_TTL_SECONDS,
     }
@@ -57,29 +63,48 @@ def _decode_session(session: str | None) -> dict | None:
         "id": claims["sub"],
         "nickname": claims["nickname"],
         "email": claims.get("email"),
+        # `ev` 가 없는 쿠키는 이메일 인증 도입 전에 발급된 것 — 그때 계정은 전부
+        # 인증 완료로 백필했으므로(sql/027) 인증된 것으로 본다.
+        "email_verified": bool(claims.get("ev", True)),
     }
 
 
-def get_current_member(
+def get_current_member_allow_unverified(
     session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
 ) -> dict:
+    """로그인만 확인 — /me, 인증 코드 발송/확인처럼 미인증 상태에서도 필요한 라우트 전용."""
     member = _decode_session(session)
     if member is None:
         raise HTTPException(401, "not authenticated")
     return member
 
 
+def get_current_member(
+    session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+) -> dict:
+    member = get_current_member_allow_unverified(session)
+    if not member["email_verified"]:
+        raise HTTPException(403, "email_not_verified")
+    return member
+
+
 def get_current_member_optional(
     session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
 ) -> dict | None:
-    """setup URL 콜백처럼 "로그인 안 됐으면 리다이렉트" 를 직접 하고 싶을 때 씀."""
-    return _decode_session(session)
+    """setup URL 콜백처럼 "로그인 안 됐으면 리다이렉트" 를 직접 하고 싶을 때 씀.
+
+    미인증 계정은 로그인 안 한 것과 같게 취급한다(기본 차단 원칙 유지).
+    """
+    member = _decode_session(session)
+    return member if member and member["email_verified"] else None
 
 
 def get_current_member_ws(websocket: WebSocket) -> dict | None:
     """WebSocket 라우트는 `Depends(Cookie(...))`가 안 통해서(HTTP 요청 전용) 따로 둔다 —
-    Starlette가 WS 핸드셰이크의 쿠키도 `websocket.cookies`로 똑같이 파싱해준다."""
-    return _decode_session(websocket.cookies.get(SESSION_COOKIE))
+    Starlette가 WS 핸드셰이크의 쿠키도 `websocket.cookies`로 똑같이 파싱해준다.
+    미인증 계정은 None(호출부가 연결을 거절한다)."""
+    member = _decode_session(websocket.cookies.get(SESSION_COOKIE))
+    return member if member and member["email_verified"] else None
 
 
 def assert_not_self_invite(member: dict, target_email: str | None) -> None:
