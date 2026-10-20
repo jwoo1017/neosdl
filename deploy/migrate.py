@@ -11,6 +11,17 @@
 
 이력 테이블이 없는데 DB 에 이미 테이블이 있으면(= initdb 로 만든 기존 DB) 어디까지
 적용됐는지 추측하지 않고 멈춘다 — --baseline 으로 명시해야 한다.
+
+접속 계정 — 앱 실행 계정과 마이그레이션(DDL) 계정을 분리한다:
+    1) 환경변수 MIGRATION_DATABASE_URL
+    2) --env-file 로 준 파일의 MIGRATION_DATABASE_URL   (운영: root 만 읽는 별도 파일)
+    3) 환경변수 / app/.env 의 DATABASE_URL               (로컬 dev — 계정이 하나뿐)
+운영의 app/.env 는 CREATE 권한이 없는 앱 계정(neosdl_app)이라, 슈퍼유저 접속 정보는
+앱 프로세스가 읽는 .env 에 두지 않는다.
+
+MIGRATION_APP_ROLE(환경변수 또는 --env-file)을 주면, 적용 후 그 앱 계정이 SELECT/INSERT
+권한을 못 받은 public 테이블을 경고한다 — 마이그레이션 계정이 만든 새 테이블은 기본적으로
+앱 계정이 못 쓰므로(DEFAULT PRIVILEGES 미설정 시) 배포 직후 500 을 미리 잡기 위함.
 """
 
 from __future__ import annotations
@@ -42,16 +53,28 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--baseline", metavar="NNN")
+    ap.add_argument("--env-file", metavar="PATH",
+                    help="MIGRATION_DATABASE_URL / MIGRATION_APP_ROLE 을 읽을 파일(운영: root 전용)")
     args = ap.parse_args()
 
-    # 서버에서는 systemd 와 같은 app/.env 를 그대로 읽는다(환경변수가 있으면 그게 우선).
-    dsn = os.environ.get("DATABASE_URL") or dotenv_values(ROOT / ".env").get("DATABASE_URL")
+    extra = dotenv_values(args.env_file) if args.env_file else {}
+    if args.env_file and not extra:
+        print(f"{args.env_file} 를 읽지 못했거나 비어 있다", file=sys.stderr)
+        return 2
+    dsn = (os.environ.get("MIGRATION_DATABASE_URL") or extra.get("MIGRATION_DATABASE_URL")
+           or os.environ.get("DATABASE_URL") or dotenv_values(ROOT / ".env").get("DATABASE_URL"))
+    app_role = os.environ.get("MIGRATION_APP_ROLE") or extra.get("MIGRATION_APP_ROLE")
     if not dsn:
-        print("DATABASE_URL 이 없다", file=sys.stderr)
+        print("MIGRATION_DATABASE_URL / DATABASE_URL 이 없다", file=sys.stderr)
         return 2
 
     files = _files()
     with psycopg.connect(dsn, autocommit=True) as conn:
+        user, db, superuser = conn.execute(
+            "SELECT current_user, current_database(), current_setting('is_superuser')"
+        ).fetchone()
+        # 잘못된 계정(앱 계정 등)으로 도는 걸 바로 알아보게 접속 정보를 먼저 찍는다.
+        print(f"connected: user={user} db={db} superuser={superuser}", flush=True)
         has_table = conn.execute(
             "SELECT to_regclass('public.schema_migrations') IS NOT NULL"
         ).fetchone()[0]
@@ -102,6 +125,24 @@ def main() -> int:
                 (version, path.name),
             )
         print(f"done — {len(pending)}개 적용" if pending else "최신 상태")
+
+        if app_role:
+            missing = [r[0] for r in conn.execute(
+                """
+                SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND c.relname <> 'schema_migrations'
+                   AND NOT (has_table_privilege(%s, c.oid, 'SELECT')
+                        AND has_table_privilege(%s, c.oid, 'INSERT'))
+                 ORDER BY c.relname
+                """,
+                (app_role, app_role),
+            )]
+            if missing:
+                print(f"WARNING: 앱 계정 {app_role} 이 SELECT/INSERT 를 못 하는 테이블: {', '.join(missing)}\n"
+                      f"  필요한 권한만 부여할 것 — 예: GRANT SELECT, INSERT, UPDATE ON <table> TO {app_role};",
+                      file=sys.stderr)
+                return 4
+            print(f"app role {app_role}: 모든 테이블 SELECT/INSERT 가능")
     return 0
 
 

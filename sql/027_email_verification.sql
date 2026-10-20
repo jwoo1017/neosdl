@@ -33,4 +33,15 @@ CREATE TABLE email_verification (
 
 CREATE INDEX email_verification_member_idx ON email_verification (member_id, created_at DESC);
 
+-- 운영은 마이그레이션 계정과 앱 실행 계정(neosdl_app, DDL 권한 없음)이 분리돼 있다 —
+-- 새 테이블은 앱 계정에 필요한 권한만 준다(DELETE 불필요: 행은 member CASCADE 로만 지워짐).
+-- 로컬 dev 처럼 그 계정이 없으면 건너뛴다. member 의 새 컬럼은 기존 테이블 권한을 따른다.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'neosdl_app') THEN
+        GRANT SELECT, INSERT, UPDATE ON email_verification TO neosdl_app;
+    END IF;
+END
+$$;
+
 COMMIT;

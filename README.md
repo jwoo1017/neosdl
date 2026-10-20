@@ -258,6 +258,10 @@ sudo deploy/deploy.sh release         # finbleadmin: pg_dump → migrate → 재
 
 - 롤백은 `build <이전 sha>` 후 `release`를 한다. DB 스키마는 되돌리지 않으니, 필요하면 `/backup/neosdl/postgres/predeploy_*.dump`로 복구한다.
 - 새 테이블이나 컬럼은 `sql/`에 다음 번호 파일로 추가한다. `release`가 `deploy/migrate.py`로 미적용분만 적용한다.
+- 마이그레이션은 앱 계정(`neosdl_app`, DDL 권한 없음)이 아니라 별도 계정으로 실행한다.
+  접속 정보는 root 전용 파일 `/srv/projects/neosdl/secrets/migrate.env`에 둔다(템플릿: `deploy/migrate.env.example`).
+  새 테이블을 만들었으면 앱 계정에 필요한 권한(GRANT)도 같은 마이그레이션 파일에서 준다.
+  빠뜨리면 `migrate.py`가 경고하고 실패해서, 재시작 전에 멈춘다.
   운영 DB에 처음 적용할 때는 `--baseline NNN`이 필요하다.
 - unit이나 nginx 파일을 바꿨으면 관리자가 `/etc`에 복사한 뒤 `daemon-reload`나 `nginx reload`를 한다(각 파일 상단 주석 참고).
 

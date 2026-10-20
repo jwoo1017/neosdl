@@ -16,6 +16,7 @@ APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WEB_ROOT=/var/www/neosdl
 BACKUP_DIR=/backup/neosdl/postgres
 HEALTH_URL=http://10.0.0.5/healthz
+MIGRATE_ENV=/srv/projects/neosdl/secrets/migrate.env   # root:root 600
 
 cd "$APP_DIR"
 # release 는 root 가 jwji 소유 저장소를 읽으므로 git 의 dubious-ownership 검사를 이 경로만 푼다.
@@ -45,8 +46,11 @@ release() {
   chown neosdl:neosdl "$out" && chmod 640 "$out"
   echo "backup $out"
 
-  # 서비스와 같은 계정·같은 .env 로 마이그레이션(deploy/migrate.py 가 app/.env 를 읽는다).
-  sudo -u neosdl .venv/bin/python deploy/migrate.py
+  # 마이그레이션은 DDL 권한이 있는 별도 계정으로 — 접속 정보는 앱 .env 가 아니라 root 전용
+  # 파일(MIGRATION_DATABASE_URL, MIGRATION_APP_ROLE)에 둔다. 앱 계정 권한이 빠진 새 테이블이
+  # 있으면 migrate.py 가 0 이 아닌 코드로 끝나서 재시작 전에 멈춘다.
+  [[ -f "$MIGRATE_ENV" ]] || { echo "$MIGRATE_ENV 없음 — deploy/migrate.env.example 참고" >&2; exit 1; }
+  .venv/bin/python deploy/migrate.py --env-file "$MIGRATE_ENV"
 
   systemctl restart neosdl-backend neosdl-worker
 
