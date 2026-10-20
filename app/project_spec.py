@@ -54,7 +54,7 @@ def generate_project_spec(*, intro: str, repo_language: str | None = None,
 
     try:
         raw = ai_providers.generate(
-            "gateway", settings().default_chat_model, prompt,
+            settings().default_chat_model, prompt,
             response_schema=llm_schemas.ProjectSpec, timeout=60, purpose="project_spec",
         )
         parsed = json.loads(raw)

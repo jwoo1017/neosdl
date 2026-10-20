@@ -43,8 +43,12 @@ def send_mail(to: str, subject: str, body: str, html_body: str | None = None) ->
         msg.add_alternative(html_body, subtype="html")
 
     try:
-        with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=10) as smtp:
-            if cfg.smtp_use_tls:
+        # 465 는 접속 즉시 TLS(implicit SSL — Lark Mail 이 안내하는 방식), 그 외(587 등)는
+        # 평문 접속 후 STARTTLS 로 올린다. 같은 SMTP_USE_TLS 로 두 방식을 모두 받는다.
+        implicit_ssl = cfg.smtp_use_tls and cfg.smtp_port == 465
+        smtp_cls = smtplib.SMTP_SSL if implicit_ssl else smtplib.SMTP
+        with smtp_cls(cfg.smtp_host, cfg.smtp_port, timeout=10) as smtp:
+            if cfg.smtp_use_tls and not implicit_ssl:
                 smtp.starttls()
             if cfg.smtp_user:
                 smtp.login(cfg.smtp_user, cfg.smtp_password or "")
