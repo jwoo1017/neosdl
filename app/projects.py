@@ -307,12 +307,28 @@ def move_project(project_id: UUID, body: ProjectMoveIn, member: dict = Depends(g
             raise HTTPException(404, "project not found")
 
         assert_teamspace_role(cur, body.teamspace_id, member["id"])
-        cur.execute("SELECT workspace_id FROM teamspace WHERE id=%s AND deleted_at IS NULL", (str(body.teamspace_id),))
+        cur.execute("SELECT workspace_id, personal_owner_id FROM teamspace WHERE id=%s AND deleted_at IS NULL",
+                    (str(body.teamspace_id),))
         target_teamspace = cur.fetchone()
         if target_teamspace is None:
             raise HTTPException(404, "teamspace not found")
         if target_teamspace["workspace_id"] != project["workspace_id"]:
             raise HTTPException(400, "cannot move a project to a teamspace in a different workspace")
+
+        # 개인 페이지 → 팀스페이스(공유)는 자유. 반대(팀 → 개인 페이지)는 팀원 화면에서 프로젝트가
+        # 통째로 사라지므로, 내가 owner 이고 나 말고 명시 멤버가 없을 때만 허용한다(sql/031).
+        cur.execute("SELECT personal_owner_id FROM teamspace WHERE id=%s", (str(project["teamspace_id"]),))
+        source_personal = cur.fetchone()["personal_owner_id"] is not None
+        if target_teamspace["personal_owner_id"] is not None and not source_personal:
+            cur.execute(
+                "SELECT bool_or(member_id = %s AND role = 'owner') AS i_own, "
+                "       count(*) FILTER (WHERE member_id <> %s) AS others "
+                "FROM project_member WHERE project_id = %s",
+                (member["id"], member["id"], str(project_id)),
+            )
+            ownership = cur.fetchone()
+            if not ownership["i_own"] or ownership["others"]:
+                raise HTTPException(400, "cannot_make_shared_project_personal")
 
         cur.execute(
             "UPDATE project SET teamspace_id=%s, updated_at=now() WHERE id=%s AND deleted_at IS NULL "

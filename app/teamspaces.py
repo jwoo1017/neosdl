@@ -91,6 +91,55 @@ def create_teamspace(workspace_id: UUID, body: TeamspaceIn, member: dict = Depen
     return {**teamspace, "role": "admin"}
 
 
+def _assert_not_personal(cur, teamspace_id) -> None:
+    """개인 페이지(sql/031)는 초대·가입·멤버 관리·이름 변경·삭제를 받지 않는다 — 항상 주인 혼자인 공간."""
+    cur.execute("SELECT personal_owner_id FROM teamspace WHERE id=%s", (str(teamspace_id),))
+    row = cur.fetchone()
+    if row is not None and row["personal_owner_id"] is not None:
+        raise HTTPException(400, "personal_space")
+
+
+PERSONAL_SPACE_NAME = "개인 페이지"
+
+
+@router.get("/workspaces/{workspace_id}/personal-space")
+def get_personal_space(workspace_id: UUID, member: dict = Depends(get_current_member)):
+    """이 워크스페이스에서의 내 개인 페이지 — 없으면 만든다(get-or-create, DML 만).
+
+    항상 private + 멤버는 나 혼자(admin)라, 기존 접근 규칙이 그대로 "나만 보임"을 보장한다.
+    여기 프로젝트를 팀스페이스로 드래그(POST /projects/{id}/move)하면 그 팀과 공유된다.
+    """
+    with tx() as cur:
+        assert_workspace_role(cur, workspace_id, member["id"])
+        cur.execute(
+            """
+            INSERT INTO teamspace (workspace_id, name, visibility, created_by, personal_owner_id)
+            VALUES (%s, %s, 'private', %s, %s)
+            ON CONFLICT (workspace_id, personal_owner_id)
+               WHERE personal_owner_id IS NOT NULL AND deleted_at IS NULL
+            DO NOTHING
+            RETURNING id
+            """,
+            (str(workspace_id), PERSONAL_SPACE_NAME, member["id"], member["id"]),
+        )
+        created = cur.fetchone()
+        if created is not None:
+            cur.execute("INSERT INTO teamspace_member (teamspace_id, member_id, role) VALUES (%s, %s, 'admin')",
+                        (str(created["id"]), member["id"]))
+        cur.execute(
+            """
+            SELECT ts.id, ts.name, ts.description, ts.visibility, ts.created_at, 'admin' AS my_role,
+                   true AS personal,
+                   (SELECT count(*) FROM project p WHERE p.teamspace_id = ts.id AND p.deleted_at IS NULL)
+                     AS project_count
+              FROM teamspace ts
+             WHERE ts.workspace_id = %s AND ts.personal_owner_id = %s AND ts.deleted_at IS NULL
+            """,
+            (str(workspace_id), member["id"]),
+        )
+        return cur.fetchone()
+
+
 @router.get("/workspaces/{workspace_id}/teamspaces")
 def list_workspace_teamspaces(workspace_id: UUID, member: dict = Depends(get_current_member)):
     """private teamspace는 teamspace_member가 아니면 목록에서 아예 빠진다 —
@@ -107,6 +156,7 @@ def list_workspace_teamspaces(workspace_id: UUID, member: dict = Depends(get_cur
               FROM teamspace ts
               LEFT JOIN teamspace_member tm ON tm.teamspace_id = ts.id AND tm.member_id = %s
              WHERE ts.workspace_id = %s AND ts.deleted_at IS NULL
+               AND ts.personal_owner_id IS NULL   -- 개인 페이지는 별도 API(personal-space)로
                AND (ts.visibility <> 'private' OR tm.member_id IS NOT NULL)
              ORDER BY ts.created_at
             """,
@@ -160,6 +210,7 @@ def get_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_member)
 def update_teamspace(teamspace_id: UUID, body: TeamspaceIn, member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             """
@@ -183,6 +234,7 @@ def delete_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_memb
     """소프트 삭제 — 소속 project도 함께 소프트 삭제한다(workspace.delete와 동일 패턴)."""
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             "UPDATE teamspace SET deleted_at=now(), updated_at=now() WHERE id=%s AND deleted_at IS NULL",
@@ -211,6 +263,7 @@ def update_teamspace_member_role(teamspace_id: UUID, target_member_id: UUID, bod
                                   member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             "SELECT role FROM teamspace_member WHERE teamspace_id=%s AND member_id=%s",
@@ -241,6 +294,7 @@ def update_teamspace_member_discipline(teamspace_id: UUID, target_member_id: UUI
     """
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             "UPDATE teamspace_member SET discipline=%s WHERE teamspace_id=%s AND member_id=%s RETURNING member_id",
@@ -258,6 +312,7 @@ def update_teamspace_member_discipline(teamspace_id: UUID, target_member_id: UUI
 def remove_teamspace_member(teamspace_id: UUID, target_member_id: UUID, member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             "SELECT role FROM teamspace_member WHERE teamspace_id=%s AND member_id=%s",
@@ -277,6 +332,7 @@ def remove_teamspace_member(teamspace_id: UUID, target_member_id: UUID, member: 
 def leave_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         cur.execute(
             "SELECT role FROM teamspace_member WHERE teamspace_id=%s AND member_id=%s",
             (str(teamspace_id), member["id"]),
@@ -299,6 +355,7 @@ def join_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_member
     """
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         cur.execute(
             "SELECT workspace_id, visibility FROM teamspace WHERE id=%s AND deleted_at IS NULL",
             (str(teamspace_id),),
@@ -356,6 +413,7 @@ def create_teamspace_invite(teamspace_id: UUID, body: TeamspaceInviteIn, member:
     actor = f"user:{member['nickname']}"
     assert_not_self_invite(member, body.target_email)
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute("SELECT name FROM teamspace WHERE id=%s AND deleted_at IS NULL", (str(teamspace_id),))
         teamspace = cur.fetchone()
@@ -381,6 +439,7 @@ def create_teamspace_invite(teamspace_id: UUID, body: TeamspaceInviteIn, member:
 def resend_teamspace_invite(teamspace_id: UUID, invite_id: UUID, member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
     with tx() as cur:
+        _assert_not_personal(cur, teamspace_id)
         assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             "SELECT role, target_email, discipline, accepted_at, revoked_at FROM teamspace_invite "

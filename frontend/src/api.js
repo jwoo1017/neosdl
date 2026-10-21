@@ -728,6 +728,13 @@ export async function fetchWorkspaceTeamspaces(workspaceId) {
   return res.json();
 }
 
+// 이 워크스페이스에서의 내 개인 페이지(나만 보는 팀스페이스) — 없으면 서버가 만든다.
+export async function fetchPersonalSpace(workspaceId) {
+  const res = await apiFetch(`/workspaces/${workspaceId}/personal-space`);
+  if (!res.ok) throw new Error(`GET /workspaces/${workspaceId}/personal-space failed: ${res.status}`);
+  return res.json(); // { id, name, visibility: "private", my_role: "admin", personal: true, project_count }
+}
+
 export async function createTeamspace(workspaceId, name, { description, visibility = "open" } = {}) {
   const res = await apiFetch(`/workspaces/${workspaceId}/teamspaces`, {
     method: "POST",

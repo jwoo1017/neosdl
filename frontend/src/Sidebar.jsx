@@ -17,6 +17,7 @@ import ProjectQuickMenuModal from "./components/ProjectQuickMenuModal";
 import PlusIcon from "./icons/PlusIcon";
 import MoreIcon from "./icons/MoreIcon";
 import PanelCollapseIcon from "./icons/PanelCollapseIcon";
+import PersonalSpaceIcon from "./icons/PersonalSpaceIcon";
 import Avatar from "./components/Avatar";
 import { useMe } from "./MeContext";
 import logoUrl from "./assets/logo.svg?url";
@@ -28,6 +29,7 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
   const [joining, setJoining] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const isMember = teamspace.my_role != null;
+  const personal = !!teamspace.personal; // 개인 페이지 — 관리/가입 UI 없음
 
   const join = async () => {
     setJoining(true);
@@ -62,8 +64,9 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
     >
       <div className="sidebar-teamspace-header">
         <button type="button" className="sidebar-teamspace-toggle" onClick={() => setExpanded((v) => !v)}>
-          <span className="sidebar-teamspace-caret">{expanded ? "▾" : "▸"}</span> {teamspace.name}
-          {teamspace.visibility !== "open" && (
+          <span className="sidebar-teamspace-caret">{expanded ? "▾" : "▸"}</span>{" "}
+          {personal && <PersonalSpaceIcon />} {teamspace.name}
+          {!personal && teamspace.visibility !== "open" && (
             <span className="badge sidebar-teamspace-badge">{VISIBILITY_BADGE[teamspace.visibility]}</span>
           )}
         </button>
@@ -77,9 +80,11 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
             <PlusIcon size={14} />
           </button>
         )}
-        <button type="button" className="icon-btn" onClick={() => onManage(teamspace)} title="팀스페이스 관리">
-          ⚙
-        </button>
+        {!personal && (
+          <button type="button" className="icon-btn" onClick={() => onManage(teamspace)} title="팀스페이스 관리">
+            ⚙
+          </button>
+        )}
       </div>
       {expanded && (
         <div className="sidebar-teamspace-projects">
@@ -129,7 +134,7 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const { me } = useMe();
   const { workspaces, activeWorkspaceId, setActiveWorkspaceId, reload: reloadWorkspaces } = useWorkspace();
-  const { teamspaces, reload: reloadTeamspaces } = useTeamspace();
+  const { teamspaces, personalSpace, reload: reloadTeamspaces } = useTeamspace();
   const { projects, activeProjectId, setActiveProjectId, reload: reloadProjects } = useProject();
   const { collapsed, setCollapsed } = useSidebar();
   const { openChatTab, openDetailTab } = useTabs();
@@ -192,12 +197,24 @@ export default function Sidebar() {
   const moveProjectToTeamspace = async (projectId, teamspace) => {
     const current = (projects || []).find((p) => p.id === projectId);
     if (current?.teamspace_id === teamspace.id) return; // 같은 teamspace로 드롭 — 할 일 없음
+    const fromPersonal = personalSpace && current?.teamspace_id === personalSpace.id;
+    // 개인 페이지 ↔ 팀스페이스 이동은 "공개 범위" 가 바뀌므로 한 번 확인받는다.
+    if (fromPersonal && !teamspace.personal
+        && !window.confirm(`'${current.name}'을(를) '${teamspace.name}' 팀스페이스로 옮겨 팀원과 공유합니다. 계속할까요?`)) {
+      return;
+    }
+    if (teamspace.personal && !fromPersonal
+        && !window.confirm(`'${current?.name}'을(를) 개인 페이지로 옮기면 팀원에게 더 이상 보이지 않습니다. 계속할까요?`)) {
+      return;
+    }
     setDragError(null);
     try {
       await moveProject(projectId, teamspace.id);
       await reloadProjects();
     } catch (err) {
-      setDragError(err.message);
+      setDragError(err.message === "cannot_make_shared_project_personal"
+        ? "다른 멤버가 참여 중인 프로젝트는 개인 페이지로 옮길 수 없습니다."
+        : err.message);
     }
   };
 
@@ -295,6 +312,27 @@ export default function Sidebar() {
               ))
             )}
             {dragError && <div className="alert-error sidebar-drag-error">{dragError}</div>}
+          </div>
+        )}
+
+        {/* 개인 페이지 — 나만 보는 공간. 프로젝트를 위 팀스페이스로 끌어다 놓으면 공유된다. */}
+        {activeWorkspaceId && personalSpace && (
+          <div className="sidebar-section sidebar-personal">
+            <div className="sidebar-section-label">
+              <span>개인 페이지</span>
+            </div>
+            <TeamspaceNode
+              teamspace={personalSpace}
+              projects={projectsByTeamspace[personalSpace.id] || []}
+              activeProjectId={activeProjectId}
+              onOpenProject={openProject}
+              onCreateProject={setCreateProjectIn}
+              onJoin={async () => {}}
+              onMoveProject={moveProjectToTeamspace}
+              onManage={() => {}}
+              onQuickMenu={setQuickMenuProject}
+            />
+            <p className="muted sidebar-personal-hint">나만 볼 수 있어요. 프로젝트를 팀스페이스로 끌어다 놓으면 공유됩니다.</p>
           </div>
         )}
       </div>

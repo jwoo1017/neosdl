@@ -8,11 +8,12 @@ import HamburgerIcon from "./icons/HamburgerIcon";
 
 export default function TopNavBar() {
   const { activeWorkspace } = useWorkspace();
-  const { teamspaces } = useTeamspace();
+  const { teamspaces, personalSpace } = useTeamspace();
   const { activeProject } = useProject();
   const { collapsed, setCollapsed } = useSidebar();
 
-  const activeTeamspace = (teamspaces || []).find((t) => t.id === activeProject?.teamspace_id) || null;
+  const activeTeamspace = [...(teamspaces || []), ...(personalSpace ? [personalSpace] : [])]
+    .find((t) => t.id === activeProject?.teamspace_id) || null;
 
   const crumbs = [activeWorkspace?.name, activeTeamspace?.name, activeProject?.name].filter(Boolean);
 
@@ -45,7 +46,8 @@ export default function TopNavBar() {
       </div>
       <div className="top-navbar-right">
         {/* 지금 이 팀스페이스에서 활동 중인 멤버 — 우편함 왼쪽 */}
-        <PresenceStack teamspaceId={activeTeamspace?.id || null} />
+        {/* 개인 페이지는 나 혼자라 표시하지 않는다 */}
+        <PresenceStack teamspaceId={activeTeamspace && !activeTeamspace.personal ? activeTeamspace.id : null} />
         <InviteInbox />
       </div>
     </header>

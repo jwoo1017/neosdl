@@ -94,3 +94,49 @@ def test_presence_heartbeat_visibility_and_expiry(db, api_users):
     # 탭 종료(offline)는 즉시 빠진다.
     assert alice.client.post("/api/presence", json={"state": "offline"}).status_code == 204
     assert alice.client.get(f"/api/teamspaces/{ts_id}/presence").json() == []
+
+
+# --------------------------------------------------------------------- F. 개인 페이지
+
+@pytest.mark.integration
+def test_personal_space_is_private_and_sharing_by_move(db, api_users):
+    if not _column_exists(db, "teamspace", "personal_owner_id"):
+        pytest.skip("sql/031_personal_space.sql 미적용")
+    alice, bob = api_users.new("alice"), api_users.new("bob")
+    ws_id, team_ts, _ = _team(alice)
+    _join(db, bob, ws_id, team_ts)
+
+    personal = alice.client.get(f"/api/workspaces/{ws_id}/personal-space").json()
+    assert personal["personal"] is True and personal["visibility"] == "private"
+    # get-or-create: 두 번 불러도 같은 공간
+    assert alice.client.get(f"/api/workspaces/{ws_id}/personal-space").json()["id"] == personal["id"]
+    # 일반 팀스페이스 목록에는 안 나온다.
+    assert personal["id"] not in [t["id"] for t in alice.client.get(f"/api/workspaces/{ws_id}/teamspaces").json()]
+
+    proj = alice.client.post(f"/api/teamspaces/{personal['id']}/projects", json={"name": "나만의 실험"}).json()
+    bob_projects = [p["id"] for p in bob.client.get(f"/api/workspaces/{ws_id}/projects").json()]
+    assert proj["id"] not in bob_projects                                   # 팀원에겐 안 보임
+    assert bob.client.get(f"/api/teamspaces/{personal['id']}").status_code == 404
+
+    # 개인 공간엔 초대·가입·이름 변경을 할 수 없다.
+    assert alice.client.post(f"/api/teamspaces/{personal['id']}/invites",
+                             json={"role": "member"}).status_code == 400
+    assert bob.client.post(f"/api/teamspaces/{personal['id']}/join").status_code in (400, 404)
+    assert alice.client.patch(f"/api/teamspaces/{personal['id']}", json={"name": "x"}).status_code == 400
+
+    # 드래그(이동)로 팀스페이스에 공유 → 팀원도 본다.
+    r = alice.client.post(f"/api/projects/{proj['id']}/move", json={"teamspace_id": team_ts})
+    assert r.status_code == 200, r.text
+    assert proj["id"] in [p["id"] for p in bob.client.get(f"/api/workspaces/{ws_id}/projects").json()]
+
+    # 다른 멤버가 명시적으로 붙은 팀 프로젝트는 개인 페이지로 되돌릴 수 없다.
+    with db() as cur:
+        cur.execute("INSERT INTO project_member (project_id, member_id, role) VALUES (%s, %s, 'developer')",
+                    (proj["id"], bob.id))
+    r = alice.client.post(f"/api/projects/{proj['id']}/move", json={"teamspace_id": personal["id"]})
+    assert r.status_code == 400 and r.json()["detail"] == "cannot_make_shared_project_personal"
+    # 나 혼자인 팀 프로젝트는 되돌릴 수 있다.
+    with db() as cur:
+        cur.execute("DELETE FROM project_member WHERE project_id=%s AND member_id=%s", (proj["id"], bob.id))
+    assert alice.client.post(f"/api/projects/{proj['id']}/move",
+                             json={"teamspace_id": personal["id"]}).status_code == 200

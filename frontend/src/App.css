@@ -3986,3 +3986,14 @@ button:disabled.btn-danger-text {
     display: none; /* 좁은 화면에선 3명까지만 */
   }
 }
+
+/* 개인 페이지 섹션 (Sidebar.jsx) */
+.sidebar-personal .sidebar-teamspace-toggle svg {
+  vertical-align: -2px;
+  color: var(--accent);
+}
+.sidebar-personal-hint {
+  font-size: 0.72rem;
+  margin: 0.3rem 0.4rem 0;
+  line-height: 1.4;
+}
