@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 deploy/migrate.env
+# 로컬 dev 업로드 파일(app/storage.py, UPLOAD_ROOT 기본값)
+uploads/

@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # 임베딩 전용 게이트웨이 별칭 (vector(1024) 유지 위해 mxbai-embed-large 로 라우팅).
     embed_model: str = "local-embed"
 
+    # --- 업로드 파일(아바타 등) — app/storage.py. DB 엔 이 루트 기준 키만 저장한다. ---
+    # 서버: /data/neosdl/uploads (neosdl:neosdl 2770). 로컬 dev 는 repo 아래 uploads/(gitignore).
+    upload_root: str = "./uploads"
+    avatar_max_bytes: int = 2 * 1024 * 1024
+
     neosdl_workdir: str = "/var/tmp/neosdl"
     worker_name: str = "worker-1"
 

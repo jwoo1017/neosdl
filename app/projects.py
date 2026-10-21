@@ -15,7 +15,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app import audit
+from app import audit, profiles
 from app.auth import (
     assert_not_self_invite,
     assert_project_role,
@@ -257,8 +257,7 @@ def get_project(project_id: UUID, member: dict = Depends(get_current_member)):
         )
         project = cur.fetchone()
         cur.execute(
-            """
-            SELECT m.id AS member_id, m.nickname, pm.role, pm.joined_at
+            "SELECT " + profiles.PROFILE_COLUMNS + """, pm.role, pm.joined_at
               FROM project_member pm
               JOIN member m ON m.id = pm.member_id
              WHERE pm.project_id = %s
@@ -266,7 +265,7 @@ def get_project(project_id: UUID, member: dict = Depends(get_current_member)):
             """,
             (str(project_id),),
         )
-        members = cur.fetchall()
+        members = [profiles.with_profile(r) for r in cur.fetchall()]
     return {**project, "members": members}
 
 

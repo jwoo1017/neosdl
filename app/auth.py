@@ -1,9 +1,8 @@
 """세션 JWT 발급/검증 + workspace/project 역할 기반 접근 체크.
 
-서버 세션 테이블 없이 httpOnly JWT 쿠키만 쓴다. get_current_member 는
-쿠키의 클레임을 그대로 신뢰하고 매 요청마다 DB를 왕복하지 않는다 —
-계정 삭제/차단 기능이 아직 없어서 지금은 그래도 안전하고, 그런 기능이
-생기면 그때 조회를 추가하면 된다(지금 미리 넣어봐야 죽은 코드).
+서버 세션 테이블 없이 httpOnly JWT 쿠키만 쓴다. 다만 회원 탈퇴·비밀번호 변경으로
+기존 세션을 끊을 수 있어야 해서(sql/028), 요청마다 member PK 조회 1번으로
+`token_version`(클레임 tv)과 `deleted_at` 을 확인한다 — 다르거나 탈퇴했으면 401.
 
 이메일 인증(app/email_verification.py): 세션 클레임 `ev`(email_verified)로 들고 다닌다.
 미인증 계정은 get_current_member 가 403 `email_not_verified` 로 막는다 — 기능별로
@@ -25,6 +24,7 @@ import jwt
 from fastapi import Cookie, HTTPException, WebSocket
 
 from app.config import settings
+from app.db import tx
 
 SESSION_COOKIE = "neosdl_session"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
@@ -41,6 +41,8 @@ def issue_session_token(member: dict) -> str:
         "nickname": member["nickname"],
         "email": member.get("email"),
         "ev": bool(member.get("email_verified", False)),
+        # 세션 무효화 버전 — member.token_version 과 다르면 401. 호출부가 반드시 실어 보낸다.
+        "tv": int(member.get("token_version", 0)),
         "iat": now,
         "exp": now + SESSION_TTL_SECONDS,
     }
@@ -66,14 +68,30 @@ def _decode_session(session: str | None) -> dict | None:
         # `ev` 가 없는 쿠키는 이메일 인증 도입 전에 발급된 것 — 그때 계정은 전부
         # 인증 완료로 백필했으므로(sql/027) 인증된 것으로 본다.
         "email_verified": bool(claims.get("ev", True)),
+        "token_version": int(claims.get("tv", 0)),
     }
+
+
+def _still_valid(member: dict) -> bool:
+    """탈퇴했거나 token_version 이 올라갔으면(비밀번호 변경 등) 그 세션은 무효."""
+    with tx() as cur:
+        cur.execute("SELECT token_version, deleted_at FROM member WHERE id=%s", (member["id"],))
+        row = cur.fetchone()
+    return row is not None and row["deleted_at"] is None and row["token_version"] == member["token_version"]
+
+
+def _load_session(session: str | None) -> dict | None:
+    member = _decode_session(session)
+    if member is None or not _still_valid(member):
+        return None
+    return member
 
 
 def get_current_member_allow_unverified(
     session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
 ) -> dict:
     """로그인만 확인 — /me, 인증 코드 발송/확인처럼 미인증 상태에서도 필요한 라우트 전용."""
-    member = _decode_session(session)
+    member = _load_session(session)
     if member is None:
         raise HTTPException(401, "not authenticated")
     return member
@@ -95,7 +113,7 @@ def get_current_member_optional(
 
     미인증 계정은 로그인 안 한 것과 같게 취급한다(기본 차단 원칙 유지).
     """
-    member = _decode_session(session)
+    member = _load_session(session)
     return member if member and member["email_verified"] else None
 
 
@@ -103,7 +121,7 @@ def get_current_member_ws(websocket: WebSocket) -> dict | None:
     """WebSocket 라우트는 `Depends(Cookie(...))`가 안 통해서(HTTP 요청 전용) 따로 둔다 —
     Starlette가 WS 핸드셰이크의 쿠키도 `websocket.cookies`로 똑같이 파싱해준다.
     미인증 계정은 None(호출부가 연결을 거절한다)."""
-    member = _decode_session(websocket.cookies.get(SESSION_COOKIE))
+    member = _load_session(websocket.cookies.get(SESSION_COOKIE))
     return member if member and member["email_verified"] else None
 
 

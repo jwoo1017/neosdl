@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app import (
-    ask_stream, audit, chat, chat_bus, finding_fix_api, github_oauth, installations, projects, queue,
+    ask_stream, audit, avatars, chat, chat_bus, finding_fix_api, github_oauth, installations, me, projects, queue,
     releases, repo_activity, repo_activity_bus, risk_api, security_history, teamspaces, workspaces,
 )
 from app.auth import (
@@ -55,6 +55,8 @@ app = FastAPI(title="NeoSDL API", version="0.1.0")
 api = APIRouter(prefix="/api")
 
 app.include_router(github_oauth.router, prefix="/api")
+app.include_router(avatars.router, prefix="/api")
+app.include_router(me.router, prefix="/api")
 app.include_router(installations.router, prefix="/api")
 app.include_router(workspaces.router, prefix="/api")
 app.include_router(teamspaces.router, prefix="/api")

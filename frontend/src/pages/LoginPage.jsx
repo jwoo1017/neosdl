@@ -11,6 +11,7 @@ export default function LoginPage() {
   const [mode, setMode] = useState("login"); // "login" | "signup"
   const [email, setEmail] = useState(invitedEmail);
   const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
   const [nickname, setNickname] = useState("");
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -21,7 +22,7 @@ export default function LoginPage() {
     setError(null);
     try {
       if (mode === "signup") {
-        await signup(email, password, nickname);
+        await signup(email, password, name, nickname);
         // 가입 직후 인증 코드가 발송된다 — 인증을 마쳐야 나머지 기능이 열린다.
         navigate(`/verify-email?sent=1&next=${encodeURIComponent(next)}`);
         return;
@@ -42,12 +43,24 @@ export default function LoginPage() {
 
         <form className="auth-form" onSubmit={submit}>
           {mode === "signup" && (
-            <input
-              placeholder="닉네임"
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              required
-            />
+            <>
+              <input
+                placeholder="이름 (실명)"
+                autoComplete="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={50}
+                required
+              />
+              <input
+                placeholder="닉네임 (화면에 표시)"
+                autoComplete="nickname"
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                maxLength={100}
+                required
+              />
+            </>
           )}
           <input
             type="email"

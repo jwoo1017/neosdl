@@ -20,6 +20,13 @@ def _token(**extra) -> str:
     return auth.issue_session_token({"id": str(uuid.uuid4()), "nickname": "n", "email": "a@b.c", **extra})
 
 
+@pytest.fixture(autouse=True)
+def _no_db_session_check(request, monkeypatch):
+    # 순수 로직 테스트는 DB 없이 돈다 — 세션 유효성(token_version/탈퇴) DB 확인은 통과시킨다.
+    if "client" not in request.fixturenames:
+        monkeypatch.setattr(auth, "_still_valid", lambda member: True)
+
+
 def test_unverified_session_is_blocked_by_default():
     token = _token(email_verified=False)
     with pytest.raises(HTTPException) as exc:
@@ -70,7 +77,7 @@ def client(db, monkeypatch):
 
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(email_verification, "_send_code_email",
-                        lambda email, nickname, code: sent.append((email, code)) or True)
+                        lambda email, nickname, code, purpose="signup": sent.append((email, code)) or True)
     email = f"verify-{uuid.uuid4().hex[:10]}@example.com"
     with TestClient(app) as c:
         c.sent, c.email = sent, email
@@ -80,7 +87,7 @@ def client(db, monkeypatch):
 
 
 def _signup(client):
-    r = client.post("/api/auth/signup", json={"email": client.email, "password": "pw-12345678", "nickname": "검증"})
+    r = client.post("/api/auth/signup", json={"email": client.email, "password": "pw-12345678", "name": "검증", "nickname": "검증"})
     assert r.status_code == 201, r.text
     return r.json()
 

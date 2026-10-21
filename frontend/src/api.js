@@ -52,12 +52,12 @@ export function githubAppInstallUrl(appSlug, state) {
 }
 
 // ---------------------------------------------------------------- auth
-export async function signup(email, password, nickname) {
+export async function signup(email, password, name, nickname) {
   const res = await fetch(`${API_BASE}/api/auth/signup`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password, nickname }),
+    body: JSON.stringify({ email, password, name, nickname }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `signup failed: ${res.status}`);
   return res.json(); // { email_verification_required, sent, expires_in, resend_after }
@@ -114,8 +114,41 @@ export async function fetchGithubAccounts() {
 
 export async function unlinkGithubAccount(githubAccountId) {
   const res = await apiFetch(`/me/github-accounts/${githubAccountId}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`DELETE /me/github-accounts/${githubAccountId} failed: ${res.status}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `unlink failed: ${res.status}`);
 }
+
+// ---------------------------------------------------------------- 마이페이지 (app/me.py, app/avatars.py)
+// 실패 시 Error 에 status/detail 을 실어 던진다 — 화면이 사유별 문구를 고른다.
+async function meCall(path, { method = "POST", body, form } = {}) {
+  const res = await apiFetch(path, {
+    method,
+    headers: form ? undefined : { "content-type": "application/json" },
+    body: form || (body !== undefined ? JSON.stringify(body) : undefined),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => ({}))).detail || `${method} ${path} failed: ${res.status}`;
+    throw Object.assign(new Error(typeof detail === "string" ? detail : detail.code || "error"),
+                        { status: res.status, detail });
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+export const updateProfile = (fields) => meCall("/me", { method: "PATCH", body: fields });
+export const changePassword = (currentPassword, newPassword) =>
+  meCall("/me/password", { body: { current_password: currentPassword || null, new_password: newPassword } });
+export const requestEmailChange = (newEmail, password) =>
+  meCall("/me/email", { body: { new_email: newEmail, password: password || null } });
+export const confirmEmailChange = (code) => meCall("/me/email/verify", { body: { code } });
+export const withdrawAccount = (password, confirm) =>
+  meCall("/me", { method: "DELETE", body: { password: password || null, confirm } });
+
+export function uploadAvatar(file) {
+  const form = new FormData();
+  form.append("file", file);
+  return meCall("/me/avatar", { form });
+}
+export const deleteAvatar = () => meCall("/me/avatar", { method: "DELETE" });
+export const setAvatarSource = (source) => meCall("/me/avatar-source", { method: "PATCH", body: { source } });
 
 // ---------------------------------------------------------------- 초대 수신함
 export async function fetchMyInvites() {

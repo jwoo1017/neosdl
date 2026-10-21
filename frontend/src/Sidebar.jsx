@@ -17,6 +17,8 @@ import ProjectQuickMenuModal from "./components/ProjectQuickMenuModal";
 import PlusIcon from "./icons/PlusIcon";
 import MoreIcon from "./icons/MoreIcon";
 import PanelCollapseIcon from "./icons/PanelCollapseIcon";
+import Avatar from "./components/Avatar";
+import { useMe } from "./MeContext";
 import logoUrl from "./assets/logo.svg?url";
 
 const VISIBILITY_BADGE = { open: "공개", closed: "참가 제한", private: "비공개" };
@@ -123,8 +125,9 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
   );
 }
 
-export default function Sidebar({ me }) {
+export default function Sidebar() {
   const navigate = useNavigate();
+  const { me } = useMe();
   const { workspaces, activeWorkspaceId, setActiveWorkspaceId, reload: reloadWorkspaces } = useWorkspace();
   const { teamspaces, reload: reloadTeamspaces } = useTeamspace();
   const { projects, activeProjectId, setActiveProjectId, reload: reloadProjects } = useProject();
@@ -308,9 +311,20 @@ export default function Sidebar({ me }) {
       </nav>
       {me && (
         <div className="sidebar-account">
-          {me.avatar_url && <img src={me.avatar_url} alt="" />}
-          <span className="login">{me.nickname}</span>
-          <button onClick={handleLogout}>로그아웃</button>
+          {/* 프로필을 누르면 마이페이지 — 프로필·계정 설정 */}
+          <button
+            type="button"
+            className={`sidebar-account-profile ${location.pathname === "/me" ? "active" : ""}`}
+            onClick={() => navigate("/me")}
+            title="마이페이지"
+          >
+            <Avatar profile={me} size={30} title="마이페이지" />
+            <span className="sidebar-account-names">
+              <span className="login">{me.nickname}</span>
+              <span className="sidebar-account-realname">{me.name}</span>
+            </span>
+          </button>
+          <button type="button" className="sidebar-account-logout" onClick={handleLogout}>로그아웃</button>
         </div>
       )}
 

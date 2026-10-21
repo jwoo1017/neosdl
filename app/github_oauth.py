@@ -27,7 +27,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
-from app import audit, email_verification
+from app import audit, email_verification, profiles
 from app.auth import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
@@ -57,7 +57,8 @@ _GITHUB_USER_EMAILS_URL = "https://api.github.com/user/emails"
 class SignupIn(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=200)
-    nickname: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=50)       # 실명 — 프로필/멤버 목록에 표시
+    nickname: str = Field(min_length=1, max_length=100)  # 화면 표시용 별칭
 
 
 class LoginIn(BaseModel):
@@ -90,11 +91,11 @@ def signup(body: SignupIn):
 
         cur.execute(
             """
-            INSERT INTO member (email, password_hash, nickname, last_login_at)
-            VALUES (%s, %s, %s, now())
-            RETURNING id, email, nickname
+            INSERT INTO member (email, password_hash, name, nickname, last_login_at)
+            VALUES (%s, %s, %s, %s, now())
+            RETURNING id, email, nickname, token_version
             """,
-            (email, hash_password(body.password), body.nickname),
+            (email, hash_password(body.password), body.name.strip(), body.nickname.strip()),
         )
         member = {**cur.fetchone(), "email_verified": False}
         audit.record(cur, actor=f"user:{member['nickname']}", action="member.signup",
@@ -112,8 +113,11 @@ def signup(body: SignupIn):
 def login(body: LoginIn):
     email = body.email.lower()
     with tx() as cur:
-        cur.execute("SELECT id, email, nickname, password_hash, email_verified_at FROM member WHERE lower(email)=%s",
-                    (email,))
+        cur.execute(
+            "SELECT id, email, nickname, password_hash, email_verified_at, token_version "
+            "FROM member WHERE lower(email)=%s AND deleted_at IS NULL",
+            (email,),
+        )
         member = cur.fetchone()
         # 계정 존재 여부가 401 사유로 새지 않도록 실패 사유를 구분하지 않는다.
         if member is None or not verify_password(body.password, member["password_hash"]):
@@ -300,7 +304,7 @@ def github_callback(
                 # 인증 이메일로 백필한다 — _apply_email_if_available이 이미
                 # 이메일이 있으면 건드리지 않는다.
                 _apply_email_if_available(cur, existing["member_id"], verified_email)
-                cur.execute("SELECT id, nickname, email, email_verified_at FROM member WHERE id=%s",
+                cur.execute("SELECT id, nickname, email, email_verified_at, token_version FROM member WHERE id=%s",
                             (existing["member_id"],))
                 member = cur.fetchone()
                 member = {**member, "email_verified": _is_verified(member)}
@@ -316,10 +320,11 @@ def github_callback(
                         email = None
                 # GitHub 가 인증한 이메일이라 가입 즉시 인증 완료로 둔다(이메일이 없으면 대상 없음).
                 cur.execute(
-                    "INSERT INTO member (email, nickname, last_login_at, email_verified_at) "
-                    "VALUES (%s, %s, now(), CASE WHEN %s::text IS NULL THEN NULL ELSE now() END) "
-                    "RETURNING id, nickname, email",
-                    (email, gh_user["login"], email),
+                    "INSERT INTO member (email, name, nickname, last_login_at, email_verified_at) "
+                    "VALUES (%s, %s, %s, now(), CASE WHEN %s::text IS NULL THEN NULL ELSE now() END) "
+                    "RETURNING id, nickname, email, token_version",
+                    # GitHub 프로필 이름이 없으면 login 을 이름으로 쓴다(마이페이지에서 수정 가능).
+                    (email, (gh_user.get("name") or gh_user["login"])[:50], gh_user["login"], email),
                 )
                 member = {**cur.fetchone(), "email_verified": True}
                 cur.execute(
@@ -357,7 +362,10 @@ def logout():
 @router.get("/me")
 def me(member: dict = Depends(get_current_member_allow_unverified)):
     # 미인증 상태에서도 호출된다 — 프론트가 email_verified 를 보고 인증 화면으로 보낸다.
-    return member
+    # 이름·아바타는 세션 클레임이 아니라 DB 에서 — 마이페이지에서 바꾸면 바로 반영되게.
+    with tx() as cur:
+        profile = profiles.load_profile(cur, member["id"])
+    return {**profile, "email_verified": member["email_verified"]}
 
 
 @router.post("/auth/email-verification/send")

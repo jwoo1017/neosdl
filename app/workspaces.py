@@ -15,7 +15,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app import audit
+from app import audit, profiles
 from app.auth import (
     assert_not_self_invite,
     assert_workspace_role,
@@ -89,8 +89,7 @@ def get_workspace(workspace_id: UUID, member: dict = Depends(get_current_member)
                      (str(workspace_id),))
         workspace = cur.fetchone()
         cur.execute(
-            """
-            SELECT m.id AS member_id, m.nickname, wm.role, wm.joined_at
+            "SELECT " + profiles.PROFILE_COLUMNS + """, wm.role, wm.joined_at
               FROM workspace_member wm
               JOIN member m ON m.id = wm.member_id
              WHERE wm.workspace_id = %s
@@ -98,7 +97,7 @@ def get_workspace(workspace_id: UUID, member: dict = Depends(get_current_member)
             """,
             (str(workspace_id),),
         )
-        members = cur.fetchall()
+        members = [profiles.with_profile(r) for r in cur.fetchall()]
     return {**workspace, "members": members}
 
 

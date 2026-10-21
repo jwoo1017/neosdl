@@ -19,7 +19,9 @@ import MultiPaneLayout from "./MultiPaneLayout";
 import WorkspaceInviteAcceptPage from "./pages/WorkspaceInviteAcceptPage";
 import TeamspaceInviteAcceptPage from "./pages/TeamspaceInviteAcceptPage";
 import ProjectInviteAcceptPage from "./pages/ProjectInviteAcceptPage";
-import { fetchGithubAccounts, fetchMe } from "./api";
+import { fetchMe } from "./api";
+import { MeContext } from "./MeContext";
+import MyPage from "./pages/MyPage";
 import "./App.css";
 
 function OnboardingGate({ children }) {
@@ -66,15 +68,8 @@ function AppLayout() {
         window.location.href = `/verify-email?next=${encodeURIComponent(window.location.pathname)}`;
         return;
       }
+      // 이름·아바타 URL 은 /me 가 같이 준다(app/profiles.py — 업로드/GitHub/이니셜 중 선택된 것).
       setMe(m);
-      // 아바타는 더 이상 /me에 없다 — 연결된 GitHub 계정이 있으면 거기서 가져온다.
-      fetchGithubAccounts()
-        .then((accounts) => {
-          if (!cancelled && accounts[0]?.avatar_url) {
-            setMe((prev) => ({ ...prev, avatar_url: accounts[0].avatar_url }));
-          }
-        })
-        .catch(() => {});
     }).catch((err) => {
       if (!cancelled) setLoadError(err.message);
     });
@@ -99,6 +94,7 @@ function AppLayout() {
   }
 
   return (
+    <MeContext.Provider value={{ me, setMe }}>
     <WorkspaceProvider>
       <TeamspaceProvider>
         <ProjectProvider>
@@ -114,11 +110,12 @@ function AppLayout() {
                   >
                     {sidebarOpen ? "✕" : "☰"}
                   </button>
-                  <Sidebar me={me} />
+                  <Sidebar />
                   {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
                   <OnboardingGate>
                     <Routes>
                       <Route path="/workspace" element={<WorkspaceHomePage />} />
+                      <Route path="/me" element={<MyPage />} />
                       <Route path="/projects/:projectId/settings" element={<ProjectSettingsPage />} />
                       {/* 채팅/상세는 라우트가 아니라 멀티페인 셸 안의 패널로 열린다.
                           아래 경로들은 딥링크 진입점으로만 남겨 둔다(셸이 패널을 열고 /panes로 정리). */}
@@ -138,6 +135,7 @@ function AppLayout() {
         </ProjectProvider>
       </TeamspaceProvider>
     </WorkspaceProvider>
+    </MeContext.Provider>
   );
 }
 

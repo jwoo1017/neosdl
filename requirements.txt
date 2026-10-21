@@ -23,3 +23,7 @@ tree-sitter-java==0.23.5
 tree-sitter-python==0.25.0
 tree-sitter-javascript==0.25.0
 tree-sitter-typescript==0.23.2
+# 프로필 아바타 — 업로드 검증·512px 축소·WebP 재인코딩(app/avatars.py)
+Pillow==11.3.0
+# FastAPI multipart(UploadFile) 파서
+python-multipart==0.0.20

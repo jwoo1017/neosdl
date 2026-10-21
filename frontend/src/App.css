@@ -3673,3 +3673,201 @@ tr.risk-row:hover { background: var(--surface-2); }
     bottom: 12px;
   }
 }
+
+/* =====================================================================
+   프로필 아바타 (components/Avatar.jsx) — 역할 모자(RoleHatIcon)는 머리 위에 기울여 얹는다
+   ===================================================================== */
+.avatar {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  --avatar-ring: var(--bg-raised);
+}
+.avatar > svg {
+  display: block;
+  overflow: visible;
+}
+.avatar-hat {
+  position: absolute;
+  top: -38%;
+  left: -12%;
+  transform: rotate(-18deg);
+  pointer-events: none;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+}
+
+/* 사이드바 하단 프로필(누르면 마이페이지) — 아래 .sidebar-account button 기본 스타일을 덮는다 */
+.sidebar-account .sidebar-account-profile {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.3rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  text-align: left;
+  font-size: 0.85rem;
+}
+.sidebar-account .sidebar-account-profile:hover,
+.sidebar-account .sidebar-account-profile.active {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.sidebar-account-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+.sidebar-account-names .login {
+  color: var(--text);
+}
+.sidebar-account-realname {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* =====================================================================
+   마이페이지 (pages/MyPage.jsx)
+   ===================================================================== */
+.mypage {
+  max-width: 760px;
+}
+.mypage h1 {
+  margin-bottom: 1.2rem;
+}
+.mypage-section {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+.mypage-section-head h2 {
+  font-size: 1rem;
+  margin: 0 0 0.25rem;
+}
+.mypage-section-head p {
+  margin: 0 0 0.9rem;
+  font-size: 0.82rem;
+}
+.mypage-avatar-row {
+  display: flex;
+  gap: 1.1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+.mypage-avatar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.mypage-hint {
+  width: 100%;
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+}
+.mypage-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.mypage-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+.mypage-form input {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.9rem;
+}
+.mypage-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+}
+.mypage-ok {
+  color: var(--accent-strong);
+  font-size: 0.85rem;
+  margin: 0.6rem 0 0;
+}
+.mypage-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 0.6rem;
+}
+.mypage-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.mypage-list li span {
+  flex: 1;
+}
+.mypage-gh-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-decoration: none;
+}
+.btn-secondary:hover {
+  background: var(--surface-3);
+}
+.btn-danger-text {
+  background: none;
+  border: none;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.3rem;
+}
+.btn-danger-text:hover {
+  text-decoration: underline;
+}
+button:disabled.btn-secondary,
+button:disabled.btn-danger-text {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .mypage-section {
+    padding: 0.9rem;
+  }
+  .mypage-actions {
+    justify-content: stretch;
+  }
+  .mypage-actions > * {
+    flex: 1;
+    justify-content: center;
+  }
+}
