@@ -38,7 +38,9 @@ from starlette.concurrency import run_in_threadpool
 
 from app import ai_providers, chat_bus, observability, orchestrator, profiles
 from app.agent_events import AgentEvent, mark_done, new_event
-from app.auth import assert_project_role, get_current_member, get_current_member_ws
+from app.auth import (
+    assert_project_role, get_current_member, get_current_member_ws, watch_ws_session, ws_origin_allowed,
+)
 from app.db import tx
 from app.risk import synthesis as risk_synthesis
 
@@ -473,13 +475,20 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
 
 @router.websocket("/ws/projects/{project_id}/chat/sessions/{session_id}")
 async def chat_socket(websocket: WebSocket, project_id: UUID, session_id: UUID):
+    if not ws_origin_allowed(websocket):   # 다른 사이트가 우리 쿠키로 여는 소켓(CSWSH) 차단
+        await websocket.close(code=4403)
+        return
     member = get_current_member_ws(websocket)
     if member is None:
+        # 인증·권한 실패는 수락한 뒤 이유 코드로 닫는다 — 수락 전에 닫으면 브라우저엔 HTTP 403/1006 으로만
+        # 보여 "로그인 만료(4401) → 로그인 화면" / "권한 없음(4403) → 재시도 중단" 을 구분할 수 없다.
+        await websocket.accept()
         await websocket.close(code=4401)
         return
     try:
         await run_in_threadpool(_assert_session_access, project_id, session_id, member["id"])
     except Exception:
+        await websocket.accept()
         await websocket.close(code=4403)
         return
 
@@ -502,6 +511,8 @@ async def chat_socket(websocket: WebSocket, project_id: UUID, session_id: UUID):
                 pass
 
     forwarder = asyncio.create_task(forward())
+    # 비밀번호 변경·탈퇴 후에도 열린 소켓이 남지 않게 주기적으로 세션 재검증(무효면 4401 로 닫힘).
+    watcher = asyncio.create_task(watch_ws_session(websocket, member))
     try:
         while True:
             try:
@@ -532,4 +543,5 @@ async def chat_socket(websocket: WebSocket, project_id: UUID, session_id: UUID):
                                                   mentioned_project_ids, forced_tool, model_override))
     finally:
         forwarder.cancel()
+        watcher.cancel()
         chat_bus.bus.unsubscribe(sid, queue)

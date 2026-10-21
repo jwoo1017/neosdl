@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { repoActivitySocketUrl } from "../api";
-
-const RECONNECT_DELAY_MS = 3000;
+import { createBackoff, isTerminalClose } from "../wsReconnect";
 
 // 저장소당 소켓 1개(app/repo_activity.py는 저장소 단위 엔드포인트라 여러
 // 저장소를 동시에 볼 때 소켓도 그만큼 열린다 — ProjectChatPage.jsx의
@@ -12,7 +11,7 @@ export function useRepoActivitySockets(repoIds, onEvent) {
     onEventRef.current = onEvent;
   }, [onEvent]);
 
-  const socketsRef = useRef(new Map()); // repoId -> { ws, reconnectTimer, closed }
+  const socketsRef = useRef(new Map()); // repoId -> { ws, reconnectTimer, closed, backoff }
   const key = repoIds.join("|");
 
   useEffect(() => {
@@ -30,8 +29,10 @@ export function useRepoActivitySockets(repoIds, onEvent) {
 
     function connect(repoId, entry) {
       if (entry.closed) return;
+      entry.reconnectTimer = null;
       const ws = new WebSocket(repoActivitySocketUrl(repoId));
       entry.ws = ws;
+      ws.onopen = () => entry.backoff.reset();
       ws.onmessage = (msg) => {
         try {
           onEventRef.current?.(repoId, JSON.parse(msg.data));
@@ -40,15 +41,19 @@ export function useRepoActivitySockets(repoIds, onEvent) {
         }
       };
       ws.onerror = () => ws.close();
-      ws.onclose = () => {
+      ws.onclose = (evt) => {
         if (entry.closed) return;
-        entry.reconnectTimer = setTimeout(() => connect(repoId, entry), RECONNECT_DELAY_MS);
+        if (isTerminalClose(evt.code)) {
+          entry.closed = true; // 4401/4403 — 이 저장소 소켓은 더 시도하지 않는다
+          return;
+        }
+        entry.reconnectTimer = setTimeout(() => connect(repoId, entry), entry.backoff.next());
       };
     }
 
     for (const repoId of wanted) {
       if (sockets.has(repoId)) continue;
-      const entry = { ws: null, reconnectTimer: null, closed: false };
+      const entry = { ws: null, reconnectTimer: null, closed: false, backoff: createBackoff() };
       sockets.set(repoId, entry);
       connect(repoId, entry);
     }

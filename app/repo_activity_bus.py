@@ -2,8 +2,8 @@
 
 `app/chat_bus.py`와 같은 이유로 Redis 없이 이걸 쓴다(동기 psycopg 연결 + 전용
 백그라운드 스레드 — Windows ProactorEventLoop에서 async LISTEN/NOTIFY가 안
-되는 사정도 동일). 다만 채팅과 달리 이 채널은 `ChatBus`를 재사용하지 않고
-별도 클래스로 둔다 — 결정적 차이는 payload 설계다.
+되는 사정도 동일 — 연결·재연결·스레드는 app/pg_listener.py 공용 뼈대). 다만 채팅과
+달리 fan-out 처리(_dispatch)는 별도 클래스로 둔다 — 결정적 차이는 payload 설계다.
 
 채팅은 NOTIFY에 `{session_id, message_id}`만 싣고 실제 내용은 `_fetch_message`로
 1회 재조회한다(메시지 본문이 8000바이트 NOTIFY 제한을 넘을 수 있어서). 여기
@@ -19,17 +19,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import threading
 
-import psycopg
-from starlette.concurrency import run_in_threadpool
-
-from app.config import settings
-
-log = logging.getLogger("app.repo_activity_bus")
+from app.pg_listener import PgListenerBus
 
 _CHANNEL = "neosdl_repo_activity"
 
@@ -46,67 +38,23 @@ def notify_repo_activity(cur, repository_id, event: dict) -> None:
     )
 
 
-class RepoActivityBus:
-    def __init__(self) -> None:
-        self._subs: dict[str, set[asyncio.Queue]] = {}
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._conn: psycopg.Connection | None = None
-        self._thread: threading.Thread | None = None
-        self._stopping = threading.Event()
+class RepoActivityBus(PgListenerBus):
+    """저장소별 fan-out. 연결/재연결·스레드 관리는 app/pg_listener.py 공용 뼈대."""
 
-    def subscribe(self, repository_id: str) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
-        self._subs.setdefault(repository_id, set()).add(q)
-        return q
-
-    def unsubscribe(self, repository_id: str, q: asyncio.Queue) -> None:
-        subs = self._subs.get(repository_id)
-        if not subs:
-            return
-        subs.discard(q)
-        if not subs:
-            self._subs.pop(repository_id, None)
-
-    async def start(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._conn = psycopg.connect(settings().database_url, autocommit=True)
-        self._conn.execute(f"LISTEN {_CHANNEL}")
-        self._thread = threading.Thread(target=self._listen_thread, daemon=True,
-                                         name="repo-activity-bus-listener")
-        self._thread.start()
-        log.info("repo_activity_bus: LISTEN %s 시작(백그라운드 스레드)", _CHANNEL)
-
-    async def stop(self) -> None:
-        self._stopping.set()
-        if self._conn:
-            self._conn.close()
-        if self._thread:
-            self._thread.join(timeout=2)
-
-    def _listen_thread(self) -> None:
-        assert self._conn is not None
-        try:
-            for notify in self._conn.notifies():
-                if self._loop is None or self._loop.is_closed():
-                    continue
-                asyncio.run_coroutine_threadsafe(self._dispatch(notify.payload), self._loop)
-        except Exception:
-            if not self._stopping.is_set():
-                log.exception("repo_activity_bus: 리스너 스레드 중단됨")
+    channel = _CHANNEL
+    name = "repo_activity_bus"
 
     async def _dispatch(self, payload: str) -> None:
         try:
             event = json.loads(payload)
             repository_id = event["repository_id"]
         except Exception:
-            log.exception("repo_activity_bus: 알림 payload 파싱 실패: %r", payload)
+            self._log.exception("repo_activity_bus: 알림 payload 파싱 실패: %r", payload)
             return
 
-        subs = self._subs.get(repository_id)
-        if not subs:
-            return  # 아무도 이 저장소를 보고 있지 않음
-        for q in list(subs):
+        for q in self.subscribers(repository_id):  # 아무도 안 보고 있으면 빈 목록
             q.put_nowait(event)
+
 
 
 bus = RepoActivityBus()

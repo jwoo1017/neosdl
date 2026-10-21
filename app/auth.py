@@ -18,10 +18,13 @@ developer < manager < owner. 매 체크는 SELECT 한 번으로 caller의 role�
 
 from __future__ import annotations
 
+import asyncio
 import time
+from urllib.parse import urlsplit
 
 import jwt
 from fastapi import Cookie, HTTPException, WebSocket
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.db import tx
@@ -115,6 +118,47 @@ def get_current_member_optional(
     """
     member = _load_session(session)
     return member if member and member["email_verified"] else None
+
+
+WS_REVALIDATE_SECONDS = 60
+
+
+def _origin_of(url: str) -> str:
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}".lower()
+
+
+def ws_origin_allowed(websocket: WebSocket) -> bool:
+    """Cross-Site WebSocket Hijacking 방어 — 핸드셰이크 Origin 이 우리 화면 주소일 때만 허용.
+
+    브라우저는 WS 핸드셰이크에 항상 Origin 을 싣고, 다른 사이트의 스크립트가 우리 쿠키로
+    소켓을 여는 공격(CSWSH)은 그 사이트의 Origin 으로 들어온다. 세션 쿠키가 SameSite=lax 라
+    대부분 이미 막히지만 서버에서 명시적으로 한 번 더 막는다(현업 관례).
+    Origin 이 아예 없으면 브라우저가 아닌 클라이언트(점검용 curl 등)라 CSWSH 대상이 아니다 —
+    그 경우엔 쿠키 인증만으로 판단한다.
+    """
+    origin = websocket.headers.get("origin")
+    if origin is None:
+        return True
+    allowed = {_origin_of(settings().frontend_url), _origin_of(settings().backend_base_url)}
+    return origin.lower().rstrip("/") in allowed
+
+
+async def watch_ws_session(websocket: WebSocket, member: dict) -> None:
+    """열린 소켓의 세션을 주기적으로 재검증 — 비밀번호 변경·탈퇴(token_version/deleted_at,
+    sql/028) 뒤에도 이미 열린 실시간 연결이 계속 살아 있지 않게 한다. 무효면 4401 로 닫는다.
+    소켓 핸들러가 asyncio 태스크로 띄우고, 연결이 끝나면 cancel 한다."""
+    while True:
+        await asyncio.sleep(WS_REVALIDATE_SECONDS)
+        try:
+            valid = await run_in_threadpool(_still_valid, member)
+        except Exception:
+            continue  # DB 일시 장애로 멀쩡한 연결을 끊지 않는다(fail-open)
+        if not valid:
+            try:
+                await websocket.close(code=4401)
+            finally:
+                return
 
 
 def get_current_member_ws(websocket: WebSocket) -> dict | None:

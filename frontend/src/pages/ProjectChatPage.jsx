@@ -17,6 +17,7 @@ import AutoIcon from "../icons/AutoIcon";
 import { historyEvents } from "../AgentActivityTimeline";
 import ChatMessage from "../chat/ChatMessage";
 import { useMe } from "../MeContext";
+import { createBackoff, isTerminalClose } from "../wsReconnect";
 import { useThrottledValue } from "../chat/useThrottledValue";
 import {
   IconBack, IconPaperclip, IconSend, IconStar, IconWrench, IconCheck, IconChevronDown, IconPencil, IconSearch,
@@ -26,7 +27,6 @@ import MoreHorizontalIcon from "../icons/MoreHorizontalIcon";
 import LinkIcon from "../icons/LinkIcon";
 import TrashIcon from "../icons/TrashIcon";
 
-const RECONNECT_DELAY_MS = 2000;
 const MENTION_SEARCH_DEBOUNCE_MS = 250;
 
 // "+" 메뉴 / "자동" 모델 메뉴 / 멘션·스킬 칩까지 포함한 입력창.
@@ -659,15 +659,20 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     setLiveChatTitle(null);
     loadHistory();
 
+    const backoff = createBackoff();
+    let gaveUp = false; // 4401/4403 — 다시 연결해도 소용없음
+
     const connect = () => {
-      if (cancelled) return;
+      if (cancelled || gaveUp) return;
+      reconnectTimerRef.current = null;
       const ws = new WebSocket(chatSocketUrl(projectId, activeSessionId));
       wsRef.current = ws;
 
       ws.onopen = () => {
         if (cancelled) return;
+        backoff.reset();
         setConnected(true);
-        loadHistory();
+        loadHistory(); // 끊겨 있던 동안의 메시지는 브로드캐스트로 재생되지 않으므로 다시 불러온다
       };
 
       ws.onmessage = (evt) => {
@@ -708,19 +713,33 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (evt) => {
         if (cancelled) return;
         setConnected(false);
-        reconnectTimerRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+        if (isTerminalClose(evt.code)) {
+          gaveUp = true;
+          return;
+        }
+        reconnectTimerRef.current = setTimeout(connect, backoff.next());
       };
 
       ws.onerror = () => ws.close();
     };
 
+    // 백그라운드 탭에서 백오프로 오래 기다리던 중이면, 다시 보는 순간 바로 연결한다.
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        connect();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     connect();
 
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
       clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();
     };

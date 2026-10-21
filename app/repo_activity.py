@@ -21,7 +21,9 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
 from app import repo_activity_bus
-from app.auth import assert_repository_access, get_current_member, get_current_member_ws
+from app.auth import (
+    assert_repository_access, get_current_member, get_current_member_ws, watch_ws_session, ws_origin_allowed,
+)
 from app.db import tx
 
 router = APIRouter(tags=["repo_activity"])
@@ -34,13 +36,20 @@ def _check_ws_access(repository_id: UUID, member_id: str) -> None:
 
 @router.websocket("/ws/repositories/{repository_id}/activity")
 async def repo_activity_socket(websocket: WebSocket, repository_id: UUID):
+    if not ws_origin_allowed(websocket):   # 다른 사이트가 우리 쿠키로 여는 소켓(CSWSH) 차단
+        await websocket.close(code=4403)
+        return
     member = get_current_member_ws(websocket)
     if member is None:
+        # 인증·권한 실패는 수락한 뒤 이유 코드로 닫는다 — 수락 전에 닫으면 브라우저엔 HTTP 403/1006 으로만
+        # 보여 "로그인 만료(4401) → 로그인 화면" / "권한 없음(4403) → 재시도 중단" 을 구분할 수 없다.
+        await websocket.accept()
         await websocket.close(code=4401)
         return
     try:
         await run_in_threadpool(_check_ws_access, repository_id, member["id"])
     except Exception:
+        await websocket.accept()
         await websocket.close(code=4403)
         return
 
@@ -57,6 +66,8 @@ async def repo_activity_socket(websocket: WebSocket, repository_id: UUID):
                 pass
 
     forwarder = asyncio.create_task(forward())
+    # 비밀번호 변경·탈퇴 후에도 열린 소켓이 남지 않게 주기적으로 세션 재검증(무효면 4401 로 닫힘).
+    watcher = asyncio.create_task(watch_ws_session(websocket, member))
     try:
         while True:
             try:
@@ -70,6 +81,7 @@ async def repo_activity_socket(websocket: WebSocket, repository_id: UUID):
                 continue
     finally:
         forwarder.cancel()
+        watcher.cancel()
         repo_activity_bus.bus.unsubscribe(rid, queue)
 
 

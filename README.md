@@ -279,6 +279,37 @@ sudo docker compose -f deploy/compose.llm.yml --env-file deploy/.env.llm up -d
 - Langfuse UI는 `ssh -N -L 3000:127.0.0.1:3000 ...` 터널을 연 뒤 `http://localhost:3000`에서 본다.
 - GitHub App의 Callback/Setup URL은 `http://intranet.finble.internal/api/auth/github/...`로 등록한다.
 
+### 실시간(WebSocket)
+
+채팅(`/api/ws/projects/.../chat/sessions/...`)과 마스코트(`/api/ws/repositories/.../activity`)는
+페이지와 같은 주소의 `wss://`로 붙는다. 전체 경로는 이렇다.
+
+브라우저 → WireGuard → pfSense(443 허용) → 호스트 nginx(TLS 종단, `/api/` Upgrade) → uvicorn
+
+별도 포트나 방화벽 규칙은 필요 없다.
+
+- **nginx**: `/api/`에 `proxy_http_version 1.1`, `Upgrade`/`Connection` 헤더, `proxy_read_timeout 3600s`가
+  있어야 한다(`deploy/nginx/neosdl.conf`). uvicorn이 20초마다 ping을 보내 유휴 연결을 유지한다.
+- **사내 인증서 신뢰**: 페이지는 인증서 경고를 무시하고 열 수 있어도, wss는 경고 없이 실패할 수 있다.
+  직원 PC에 사내 CA(또는 서버 인증서)를 신뢰 루트로 설치한다.
+- **보안**: 핸드셰이크 `Origin`이 `FRONTEND_URL`과 다르면 거절한다(CSWSH 방어). 열린 소켓도 60초마다
+  세션을 재검증해서, 비밀번호 변경·탈퇴 후에는 닫는다(close 4401).
+- **복구**: 백엔드의 Postgres LISTEN 연결은 DB가 재시작돼도 자동으로 재연결한다(`app/pg_listener.py`).
+  브라우저는 지수 백오프(최대 30초)로 재접속하고, 4401이면 로그인 화면, 4403이면 재시도를 멈춘다.
+- **점검**
+  ```bash
+  # nginx → 백엔드 Upgrade 경로. 응답이 101 이면 경로 정상(쿠키가 없어 곧바로 4401 로 닫힘).
+  # 404/502 면 nginx 설정 문제, 403 이면 Origin 불일치.
+  curl -k -i -N --http1.1 -H "Connection: Upgrade" -H "Upgrade: websocket" \
+       -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" \
+       -H "Origin: https://intranet.finble.internal" \
+       https://intranet.finble.internal/api/ws/repositories/00000000-0000-0000-0000-000000000000/activity
+  sudo grep ' /api/ws/' /var/log/nginx/access.log | tail -5   # 실제 연결은 101 로 찍힌다
+  grep -E "chat_bus|repo_activity_bus" /data/neosdl/logs/backend.log | tail   # LISTEN 시작/재연결 로그
+  ```
+- **향후 외부 공개**(UTM Reverse Proxy/HAProxy 경유): HAProxy에 `timeout tunnel 1h`를 설정한다.
+  IPS(Suricata) 웹 룰이 WS 프레임을 오탐하지 않는지도 확인한다.
+
 ---
 
 ## 라이선스 주의

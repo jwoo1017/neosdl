@@ -27,19 +27,13 @@ evidence는 그보다 클 수 있다) — 알림에는 `{project_id, message_id}
 
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import threading
 
-import psycopg
 from starlette.concurrency import run_in_threadpool
 
 from app import profiles
-from app.config import settings
 from app.db import tx
-
-log = logging.getLogger("app.chat_bus")
+from app.pg_listener import PgListenerBus
 
 _CHANNEL = "neosdl_chat"
 
@@ -84,52 +78,11 @@ def notify_chat_event(cur, session_id, message_id: int) -> None:
     )
 
 
-class ChatBus:
-    def __init__(self) -> None:
-        self._subs: dict[str, set[asyncio.Queue]] = {}
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._conn: psycopg.Connection | None = None
-        self._thread: threading.Thread | None = None
-        self._stopping = threading.Event()
+class ChatBus(PgListenerBus):
+    """세션별 fan-out. 연결/재연결·스레드 관리는 app/pg_listener.py 공용 뼈대."""
 
-    def subscribe(self, session_id: str) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
-        self._subs.setdefault(session_id, set()).add(q)
-        return q
-
-    def unsubscribe(self, session_id: str, q: asyncio.Queue) -> None:
-        subs = self._subs.get(session_id)
-        if not subs:
-            return
-        subs.discard(q)
-        if not subs:
-            self._subs.pop(session_id, None)
-
-    async def start(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._conn = psycopg.connect(settings().database_url, autocommit=True)
-        self._conn.execute(f"LISTEN {_CHANNEL}")
-        self._thread = threading.Thread(target=self._listen_thread, daemon=True, name="chat-bus-listener")
-        self._thread.start()
-        log.info("chat_bus: LISTEN %s 시작(백그라운드 스레드)", _CHANNEL)
-
-    async def stop(self) -> None:
-        self._stopping.set()
-        if self._conn:
-            self._conn.close()  # notifies() 제너레이터가 대기 중이던 소켓이 끊기며 스레드가 빠져나온다
-        if self._thread:
-            self._thread.join(timeout=2)
-
-    def _listen_thread(self) -> None:
-        assert self._conn is not None
-        try:
-            for notify in self._conn.notifies():
-                if self._loop is None or self._loop.is_closed():
-                    continue
-                asyncio.run_coroutine_threadsafe(self._dispatch(notify.payload), self._loop)
-        except Exception:
-            if not self._stopping.is_set():
-                log.exception("chat_bus: 리스너 스레드 중단됨")
+    channel = _CHANNEL
+    name = "chat_bus"
 
     async def _dispatch(self, payload: str) -> None:
         try:
@@ -137,10 +90,10 @@ class ChatBus:
             session_id = data["session_id"]
             message_id = data["message_id"]
         except Exception:
-            log.exception("chat_bus: 알림 payload 파싱 실패: %r", payload)
+            self._log.exception("chat_bus: 알림 payload 파싱 실패: %r", payload)
             return
 
-        subs = self._subs.get(session_id)
+        subs = self.subscribers(session_id)
         if not subs:
             return  # 아무도 이 세션을 보고 있지 않음 — DB 조회도 아낀다
 
@@ -148,8 +101,9 @@ class ChatBus:
         if message is None:
             return
         event = {"type": "message", "message": message}
-        for q in list(subs):
+        for q in subs:
             q.put_nowait(event)
+
 
 
 bus = ChatBus()
