@@ -5,19 +5,23 @@ import {
   fetchMyInstallations,
   githubAppInstallUrl,
   registerRepository,
+  requestScan,
 } from "../api";
+import { requestNotificationPermission, watchProjectAnalysis } from "../analysis/analysisWatch";
 import Modal from "./Modal";
 
 function activeInstallationKey(memberScope) {
   return `neosdl_active_installation_${memberScope}`;
 }
 
-export default function AttachRepositoryModal({ projectId, githubAppSlug, attachedRemoteIds, onAttached, onClose }) {
+export default function AttachRepositoryModal({
+  projectId, projectName, githubAppSlug, attachedRemoteIds, onAttached, onClose,
+}) {
   const [installations, setInstallations] = useState(null);
   const [installationId, setInstallationId] = useState(null);
   const [repos, setRepos] = useState(null);
   const [error, setError] = useState(null);
-  const [actionState, setActionState] = useState({}); // remote_id -> {status, error}
+  const [actionState, setActionState] = useState({}); // remote_id -> {status, error, repositoryId}
 
   useEffect(() => {
     fetchMyInstallations()
@@ -44,18 +48,38 @@ export default function AttachRepositoryModal({ projectId, githubAppSlug, attach
   };
 
   const registerAndAttach = async (repo) => {
+    // 분석이 끝났을 때 다른 탭을 보고 있어도 알 수 있게 — 권한 요청은 클릭 안에서만 된다.
+    requestNotificationPermission();
     setActionState((s) => ({ ...s, [repo.remote_id]: { status: "running" } }));
     try {
       // 이미 등록된 레포라도 다시 등록한다 — installation_id를 항상 이
       // installationId로 갱신해서, 예전에 연결이 끊긴 채 남아있던 레포도
       // (예: 소유 installation이 재설치된 경우) 다시 붙을 때 자동으로 복구된다.
       const registered = await registerRepository(installationId, repo);
-      await attachRepositoryToProject(projectId, registered.id);
-      setActionState((s) => ({ ...s, [repo.remote_id]: { status: "done" } }));
+      // 연결하면 서버가 곧바로 첫 분석을 시작한다(app/projects.py). 시작에 실패해도 연결은 된다.
+      const result = await attachRepositoryToProject(projectId, registered.id);
+      if (result.scan) watchProjectAnalysis(projectId, projectName);
+      setActionState((s) => ({
+        ...s,
+        [repo.remote_id]: result.scan_error
+          ? { status: "scan_error", repositoryId: registered.id }
+          : { status: "done" },
+      }));
       onAttached();
       fetchInstallationRepositories(installationId).then(setRepos).catch(() => {});
     } catch (err) {
       setActionState((s) => ({ ...s, [repo.remote_id]: { status: "error", error: err.message } }));
+    }
+  };
+
+  const retryScan = async (repo, repositoryId) => {
+    setActionState((s) => ({ ...s, [repo.remote_id]: { status: "retrying", repositoryId } }));
+    try {
+      await requestScan(repositoryId);
+      watchProjectAnalysis(projectId, projectName);
+      setActionState((s) => ({ ...s, [repo.remote_id]: { status: "done" } }));
+    } catch {
+      setActionState((s) => ({ ...s, [repo.remote_id]: { status: "scan_error", repositoryId } }));
     }
   };
 
@@ -135,7 +159,25 @@ export default function AttachRepositoryModal({ projectId, githubAppSlug, attach
                         </button>
                       )}
                     </td>
-                    <td>{state?.status === "error" && <span className="alert-error">{state.error}</span>}</td>
+                    <td>
+                      {state?.status === "error" && <span className="alert-error">{state.error}</span>}
+                      {state?.status === "done" && (
+                        <span className="attach-scan-note">분석을 시작했어요. 끝나면 알려드릴게요.</span>
+                      )}
+                      {(state?.status === "scan_error" || state?.status === "retrying") && (
+                        <span className="attach-scan-note attach-scan-note-error">
+                          연결했지만 분석을 시작하지 못했어요.{" "}
+                          <button
+                            type="button"
+                            className="link-btn"
+                            disabled={state.status === "retrying"}
+                            onClick={() => retryScan(repo, state.repositoryId)}
+                          >
+                            {state.status === "retrying" ? "요청 중..." : "다시 분석"}
+                          </button>
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 );
               })}

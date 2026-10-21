@@ -4353,3 +4353,332 @@ tr.risk-row:hover { background: var(--surface-2); }
     content: none; /* 세로로 쌓이면 구분점이 줄 맨 앞에 남으므로 뺀다 */
   }
 }
+
+/* ---------------------------------------------------------- 분석 상태(채팅 잠금 패널) · 토스트 */
+.spinner-ring {
+  animation: spinner-ring-rotate 0.9s linear infinite;
+}
+
+@keyframes spinner-ring-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner-ring {
+    animation-duration: 2.4s;
+  }
+}
+
+.analysis-panel {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.85rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+}
+
+.analysis-panel-progress {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.analysis-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.analysis-panel-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.analysis-panel-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.analysis-panel-title {
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.analysis-panel-desc {
+  margin-top: 0.15rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.analysis-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.analysis-panel-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #06201d;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.analysis-panel-btn:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.analysis-panel-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.analysis-panel-error {
+  border-color: color-mix(in srgb, #f87171 45%, var(--border-strong));
+}
+
+.analysis-panel-error .analysis-panel-icon {
+  color: #f87171;
+  background: color-mix(in srgb, #f87171 12%, transparent);
+}
+
+.analysis-panel-error-text {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  max-height: 3.6em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.analysis-stages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.analysis-stage {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 0.82rem;
+  color: var(--text-faint);
+  min-width: 0;
+}
+
+.analysis-stage-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-stage-mark {
+  flex-shrink: 0;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.analysis-stage-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.analysis-stage-done {
+  color: var(--text-dim);
+}
+
+.analysis-stage-done .analysis-stage-mark {
+  color: var(--accent);
+}
+
+.analysis-stage-active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.analysis-stage-active .analysis-stage-mark {
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .analysis-stages {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analysis-panel:not(.analysis-panel-progress) {
+    flex-wrap: wrap;
+  }
+}
+
+.chat-reanalyze-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  white-space: nowrap;
+}
+
+.attach-scan-note {
+  font-size: 0.82rem;
+  color: var(--accent-strong);
+}
+
+.attach-scan-note-error {
+  color: #fca5a5;
+}
+
+.link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-strong);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.toast-stack {
+  position: fixed;
+  right: 20px;
+  bottom: 88px; /* 오른쪽 아래 마스코트 버튼 위로 */
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.85rem 0.8rem 0.85rem 0.95rem;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  animation: toast-in 0.22s ease-out;
+}
+
+.toast-error {
+  border-left-color: #f87171;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.toast-error .toast-icon {
+  color: #f87171;
+}
+
+.toast-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.toast-title {
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.toast-body {
+  margin-top: 0.15rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+  max-height: 4.2em;
+  overflow: hidden;
+}
+
+.toast-action {
+  margin-top: 0.55rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #06201d;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: var(--accent-strong);
+}
+
+.toast-error .toast-action {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  padding: 0.2rem;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.toast-close:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}

@@ -87,6 +87,14 @@ def handle(payload: dict) -> None:
             )
         log.info("scan %s: risk.build 완료", scan_id)
 
+        # 사용자에게 "분석 완료" = 이 시점(sql/032). 채팅 잠금 해제·완료 알림의 기준이라
+        # 알림과 달리 fail-open 이 아니다 — 기록에 실패하면 작업을 재시도한다.
+        with tx() as cur:
+            cur.execute(
+                "UPDATE scan SET analysis_completed_at = now(), analysis_error = NULL WHERE id = %s",
+                (scan_id,),
+            )
+
         # 파이프라인의 마지막 단계 — 여기서 "이 스캔 끝났다"를 마스코트 사이드바에
         # 알린다. 실패해도(알림 자체 오류) 스캔 결과에는 영향이 없어야 하므로
         # 별도 try로 감싼다(모듈 전체의 fail-open 철학과 동일).

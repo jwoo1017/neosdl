@@ -45,8 +45,11 @@ def finish(cur: Cursor, job_id: int) -> None:
     )
 
 
-def fail(cur: Cursor, job_id: int, error: str, *, backoff_seconds: int = 30) -> None:
-    """재시도 한도를 넘으면 dead 로 내린다. 조용히 사라지는 작업이 없어야 한다."""
+def fail(cur: Cursor, job_id: int, error: str, *, backoff_seconds: int = 30) -> str | None:
+    """재시도 한도를 넘으면 dead 로 내린다. 조용히 사라지는 작업이 없어야 한다.
+
+    바뀐 상태('queued' 재시도 대기 | 'dead' 최종 실패)를 돌려준다.
+    """
     cur.execute(
         """
         UPDATE job SET
@@ -58,6 +61,9 @@ def fail(cur: Cursor, job_id: int, error: str, *, backoff_seconds: int = 30) -> 
             locked_at  = NULL,
             updated_at = now()
         WHERE id = %s
+        RETURNING status
         """,
         (backoff_seconds, error[:4000], job_id),
     )
+    row = cur.fetchone()
+    return row["status"] if row else None

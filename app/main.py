@@ -29,7 +29,6 @@ from app.config import settings
 from app.db import tx
 from app.github_app import (
     get_commit_files,
-    get_latest_commit_sha,
     get_repo_contents,
     get_repository_languages,
     installation_token,
@@ -41,7 +40,7 @@ from app.language_colors import color_for
 from app.model_catalog import MODEL_CATALOG
 from app.repo_queries import list_commits, list_pull_requests, list_repo_branches, repo_github_info
 from app.scan_queries import domain_overview, ensure_security_findings, run_dataflow, search_symbols
-from app.scans import create_scan
+from app.scans import start_repository_scan
 from worker.handlers.clone import workdir_for
 
 app = FastAPI(title="NeoSDL API", version="0.1.0")
@@ -409,28 +408,11 @@ def repository_languages(repository_id: UUID, member: dict = Depends(get_current
 def request_scan(repository_id: UUID, body: ScanIn, member: dict = Depends(get_current_member)):
     with tx() as cur:
         assert_repository_access(cur, repository_id, member["id"], "developer")
-        cur.execute(
-            """
-            SELECT r.namespace, r.name, r.default_branch, i.github_installation_id
-              FROM repository r JOIN installation i ON i.id = r.installation_id
-             WHERE r.id=%s AND r.is_active
-            """,
-            (str(repository_id),),
-        )
-        repo = cur.fetchone()
-        if repo is None:
-            raise HTTPException(404, "repository not found")
-
-    commit_sha = body.commit_sha
-    ref = body.ref or f"refs/heads/{repo['default_branch']}"
-    if commit_sha is None:
-        commit_sha = get_latest_commit_sha(repo["github_installation_id"], repo["namespace"],
-                                            repo["name"], repo["default_branch"])
-
-    actor = f"user:{member['nickname']}"
-    with tx() as cur:
-        return create_scan(cur, repository_id=str(repository_id), commit_sha=commit_sha,
-                            ref=ref, trigger=body.trigger, actor=actor)
+    try:
+        return start_repository_scan(str(repository_id), actor=f"user:{member['nickname']}",
+                                     commit_sha=body.commit_sha, ref=body.ref, trigger=body.trigger)
+    except LookupError:
+        raise HTTPException(404, "repository not found")
 
 
 @api.get("/projects/{project_id}/scans")

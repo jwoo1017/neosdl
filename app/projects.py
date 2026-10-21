@@ -8,6 +8,7 @@ repository는 installation 전체가 아니라 개별 단위로 project에 붙�
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -15,7 +16,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app import audit, profiles
+from app import analysis, audit, profiles
 from app.auth import (
     assert_not_self_invite,
     assert_project_role,
@@ -28,6 +29,9 @@ from app.config import settings
 from app.db import tx
 from app.mailer import invite_email_html, send_mail
 from app.project_spec import generate_project_spec
+from app.scans import start_repository_scan
+
+log = logging.getLogger("app.projects")
 
 router = APIRouter(tags=["projects"])
 
@@ -648,6 +652,14 @@ def accept_project_invite(token: str, member: dict = Depends(get_current_member)
 
 
 # ---------------------------------------------------------------- repository attachment
+@router.get("/projects/{project_id}/analysis")
+def get_project_analysis(project_id: UUID, member: dict = Depends(get_current_member)):
+    """분석 진행 상태 — 채팅 잠금 패널과 완료 알림이 쓴다(app/analysis.py)."""
+    with tx() as cur:
+        assert_project_role(cur, project_id, member["id"])
+        return analysis.project_analysis(cur, str(project_id))
+
+
 @router.get("/projects/{project_id}/repositories")
 def list_project_repositories(project_id: UUID, member: dict = Depends(get_current_member)):
     with tx() as cur:
@@ -687,8 +699,22 @@ def attach_project_repository(project_id: UUID, body: AttachRepositoryIn,
         row = cur.fetchone()
         audit.record(cur, actor=actor, action="project_repository.attach",
                      subject={"project_id": str(project_id), "repository_id": str(body.repository_id)})
+
+    # 연결하자마자 첫 분석을 시작한다(사용자가 스캔 버튼을 따로 누르지 않게). 기본 브랜치 최신
+    # 커밋 조회는 GitHub 네트워크 호출이라 연결 트랜잭션이 커밋된 뒤에 한다. 실패해도 연결은
+    # 성공으로 두고 사유만 돌려준다 — 화면이 "다시 분석" 을 보여준다. 같은 커밋이 이미 스캔돼
+    # 있으면(다른 프로젝트에서 연결) create_scan 이 기존 스캔을 재사용한다.
+    scan, scan_error = None, None
+    if row is not None:
+        try:
+            scan = start_repository_scan(str(body.repository_id), actor=actor)
+        except Exception as exc:  # noqa: BLE001 — GitHub/네트워크 오류 전부 "다시 분석" 대상
+            log.warning("연결 직후 분석 시작 실패 repository=%s", body.repository_id, exc_info=True)
+            scan_error = f"{type(exc).__name__}: {exc}"[:300]
     return {"project_id": str(project_id), "repository_id": str(body.repository_id),
-            "already_attached": row is None}
+            "already_attached": row is None,
+            "scan": {"id": str(scan["id"]), "status": scan["status"], "reused": scan["reused"]} if scan else None,
+            "scan_error": scan_error}
 
 
 @router.delete("/projects/{project_id}/repositories/{repository_id}", status_code=204)

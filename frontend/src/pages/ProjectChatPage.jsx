@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   chatSocketUrl, createChatSession, deleteChatSession, fetchChatMessages, fetchChatSessions,
-  fetchModels, fetchTeamspaceProjects, renameChatSession,
+  fetchModels, fetchTeamspaceProjects, renameChatSession, requestScan,
 } from "../api";
+import { useProjectAnalysis } from "../analysis/useProjectAnalysis";
+import AnalysisLockPanel from "../analysis/AnalysisLockPanel";
+import { watchProjectAnalysis } from "../analysis/analysisWatch";
+import { SpinnerRing } from "../icons/AnalysisIcons";
 import { useProject } from "../ProjectContext";
 import { useTabs } from "../TabsContext";
 import { TOOL_LABELS } from "../toolLabels";
@@ -46,7 +50,7 @@ function findMentionTrigger(text, cursor) {
 }
 
 function ChatComposer({
-  question, setQuestion, onSubmit, disabled, connected,
+  question, setQuestion, onSubmit, disabled, connected, placeholder,
   teamspaceId, currentProjectId,
   mentionedProjects, setMentionedProjects,
   forcedTool, setForcedTool,
@@ -240,7 +244,7 @@ function ChatComposer({
           value={question}
           onChange={onQuestionChange}
           onKeyDown={onKeyDown}
-          placeholder="AI로 무엇이든 시도해 보세요..."
+          placeholder={placeholder || "AI로 무엇이든 시도해 보세요..."}
           rows={1}
           disabled={disabled}
         />
@@ -383,7 +387,7 @@ function ChatComposer({
 // 세션(chat_session, sql/018)을 지원하므로 실제 세션 목록을 보여주고 전환/
 // 생성/이름변경/삭제를 모두 연결한다. "링크 복사"는 여전히 순수 프론트 동작.
 function ChatHeader({
-  title, connected, sessions, activeSessionId,
+  title, connected, reanalyzing, sessions, activeSessionId,
   onSelectSession, onNewChat, onRenameSession, onDeleteSession,
 }) {
   const [openMenu, setOpenMenu] = useState(null); // null | "session" | "more"
@@ -482,6 +486,11 @@ function ChatHeader({
       </div>
 
       <div className="chat-header-actions">
+        {reanalyzing && (
+          <span className="chat-reanalyze-chip" title="이전 분석 결과로 답하고 있어요. 끝나면 자동으로 최신 결과를 써요.">
+            <SpinnerRing size={12} /> 최신 커밋 분석 중
+          </span>
+        )}
         <button type="button" className="chat-header-icon-btn" title="새 채팅" onClick={onNewChat}>
           <NewChatIcon size={17} />
         </button>
@@ -574,6 +583,25 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
   // 배열의 "마지막 메시지"가 여전히 이전 답변이라, 그걸 새 질문의 답변으로
   // 오인해서 즉시(가짜로) 확인 처리해버린다.
   const pendingSinceCountRef = useRef(0);
+
+  // 첫 분석이 끝나기 전엔 질문을 막는다(서버도 analysis_not_ready 로 거절 — app/chat.py).
+  const { analysis, refresh: refreshAnalysis } = useProjectAnalysis(projectId);
+  const chatLocked = !analysis || !analysis.chat_ready;
+  const refreshAnalysisRef = useRef(refreshAnalysis);
+  useEffect(() => {
+    refreshAnalysisRef.current = refreshAnalysis;
+  }, [refreshAnalysis]);
+  const retryAnalysis = useCallback(async () => {
+    const repoId = analysis?.latest?.repository?.id;
+    if (!repoId) return;
+    try {
+      await requestScan(repoId);
+      watchProjectAnalysis(projectId, project?.name);
+    } catch (err) {
+      setError(err.message);
+    }
+    await refreshAnalysis();
+  }, [analysis, projectId, project, refreshAnalysis]);
 
   useEffect(() => {
     let alive = true;
@@ -706,7 +734,13 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
         } else if (data.type === "risk") {
           setRiskByCid((prev) => ({ ...prev, [data.client_msg_id]: data.risk }));
         } else if (data.type === "error") {
-          setError(data.error);
+          if (data.error === "analysis_not_ready") {
+            // 화면은 열려 있었는데 서버 기준으론 아직 — 상태를 다시 맞춘다.
+            setError(data.message || "저장소 분석이 끝나면 질문할 수 있어요");
+            refreshAnalysisRef.current?.();
+          } else {
+            setError(data.error);
+          }
           // 이 턴은 끝났다 — 대기 상태를 풀어 입력창을 다시 열고, 진행 중
           // 블록의 "생각하는 중..." 버블이 계속 남지 않게 한다.
           setPendingClientMsgId((cur) => (cur === data.client_msg_id ? null : cur));
@@ -784,7 +818,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     e.preventDefault();
     const q = question.trim();
     const ws = wsRef.current;
-    if (!q || isStreaming || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!q || isStreaming || chatLocked || !ws || ws.readyState !== WebSocket.OPEN) return;
     const clientMsgId = crypto.randomUUID();
     // 직전 턴은 확정된 지 오래고 이제 새 턴이 화면 맨 아래를 차지하니, 그동안
     // 리마운트를 피하려고 남겨뒀던 실시간 렌더링 자리를 여기서 정리한다 —
@@ -881,6 +915,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
       <ChatHeader
         title={headerTitle}
         connected={connected}
+        reanalyzing={analysis?.state === "ready_reanalyzing"}
         sessions={sessions}
         activeSessionId={activeSessionId}
         onSelectSession={selectSession}
@@ -894,7 +929,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
           {messages === null ? (
             <p className="muted">불러오는 중...</p>
           ) : visibleMessages.length === 0 && !streamingCid ? (
-            <p className="muted">
+            chatLocked ? null : <p className="muted">
               이 프로젝트에 대해 무엇이든 물어보세요 — 커밋/브랜치/PR/릴리즈 이력부터 코드 위치, 보안 취약점까지
               필요한 데이터를 찾아 답합니다.
             </p>
@@ -933,11 +968,24 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
 
       {error && <div className="alert-error">{error}</div>}
 
+      {chatLocked && (
+        <AnalysisLockPanel
+          analysis={analysis}
+          onConnectRepository={project ? () => openDetailTab(project) : null}
+          onRetry={retryAnalysis}
+        />
+      )}
+
       <ChatComposer
         question={question}
         setQuestion={setQuestion}
         onSubmit={send}
-        disabled={isStreaming}
+        disabled={isStreaming || chatLocked}
+        placeholder={
+          !chatLocked ? null
+            : analysis?.state === "no_repository" ? "저장소를 연결하면 질문할 수 있어요"
+              : "분석이 끝나면 질문할 수 있어요"
+        }
         connected={connected}
         teamspaceId={project?.teamspace_id}
         currentProjectId={projectId}

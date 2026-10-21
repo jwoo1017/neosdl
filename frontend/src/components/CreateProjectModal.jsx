@@ -9,7 +9,9 @@ import {
   generateProjectSpec,
   githubAppInstallUrl,
   registerRepository,
+  requestScan,
 } from "../api";
+import { requestNotificationPermission, watchProjectAnalysis } from "../analysis/analysisWatch";
 import Modal from "./Modal";
 import TagIcon from "../icons/TagIcon";
 
@@ -40,6 +42,8 @@ export default function CreateProjectModal({ teamspaceId, onCreated, onClose }) 
   const [error, setError] = useState(null);
   const [warning, setWarning] = useState(null);
   const [spec, setSpec] = useState(null);
+  // 저장소 연결 직후 자동 분석(app/projects.py) 결과 — started | {projectId, repositoryId} 재시도 대상
+  const [scanState, setScanState] = useState(null); // null | "started" | "retrying" | {projectId, repositoryId}
 
   useEffect(() => {
     fetchTeamspace(teamspaceId).then((t) => setMembers(t.members)).catch((err) => setError(err.message));
@@ -70,6 +74,7 @@ export default function CreateProjectModal({ teamspaceId, onCreated, onClose }) 
   const goBack = () => setStep(STEPS[STEPS.indexOf(step) - 1]);
 
   const finish = async () => {
+    if (selectedRepo) requestNotificationPermission(); // 클릭 안에서만 물을 수 있다
     setCreating(true);
     setError(null);
     setWarning(null);
@@ -86,7 +91,13 @@ export default function CreateProjectModal({ teamspaceId, onCreated, onClose }) 
           const registered = selectedRepo.already_registered
             ? { id: selectedRepo.already_registered }
             : await registerRepository(installationId, selectedRepo);
-          await attachRepositoryToProject(project.id, registered.id);
+          const attached = await attachRepositoryToProject(project.id, registered.id);
+          if (attached.scan) {
+            watchProjectAnalysis(project.id, name.trim());
+            setScanState("started");
+          } else if (attached.scan_error) {
+            setScanState({ projectId: project.id, repositoryId: registered.id });
+          }
         } catch (err) {
           setWarning(`레포지토리 연결에 실패했습니다: ${err.message} (프로젝트 설정에서 다시 연결할 수 있습니다)`);
         }
@@ -109,6 +120,18 @@ export default function CreateProjectModal({ teamspaceId, onCreated, onClose }) 
       setError(err.message);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const retryScan = async () => {
+    const target = scanState;
+    setScanState("retrying");
+    try {
+      await requestScan(target.repositoryId);
+      watchProjectAnalysis(target.projectId, name.trim());
+      setScanState("started");
+    } catch {
+      setScanState(target);
     }
   };
 
@@ -247,6 +270,16 @@ export default function CreateProjectModal({ teamspaceId, onCreated, onClose }) 
         <div className="dashboard-empty">
           <p>"{name}" 프로젝트를 만들었습니다.</p>
           {warning && <div className="alert-error">{warning}</div>}
+          {scanState === "started" && (
+            <p className="attach-scan-note">저장소 분석을 시작했어요. 끝나면 알려드릴게요 — 그 뒤로 채팅에서 질문할 수 있어요.</p>
+          )}
+          {scanState && typeof scanState === "object" && (
+            <p className="attach-scan-note attach-scan-note-error">
+              저장소는 연결했지만 분석을 시작하지 못했어요.{" "}
+              <button type="button" className="link-btn" onClick={retryScan}>다시 분석</button>
+            </p>
+          )}
+          {scanState === "retrying" && <p className="attach-scan-note">분석 요청 중...</p>}
           {spec?.summary && <p className="spec-summary">{spec.summary}</p>}
           {spec?.tags?.length > 0 && (
             <div className="tag-list">

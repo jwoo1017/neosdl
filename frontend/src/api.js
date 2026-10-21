@@ -998,6 +998,14 @@ export async function attachRepositoryToProject(projectId, repositoryId) {
   return res.json();
 }
 
+// 분석 진행 상태(app/analysis.py) — 채팅 잠금 패널과 완료 알림이 쓴다.
+// state: no_repository | analyzing | failed | ready | ready_reanalyzing
+export async function fetchProjectAnalysis(projectId) {
+  const res = await apiFetch(`/projects/${projectId}/analysis`);
+  if (!res.ok) throw new Error(`GET /projects/${projectId}/analysis failed: ${res.status}`);
+  return res.json();
+}
+
 export async function detachRepositoryFromProject(projectId, repositoryId) {
   const res = await apiFetch(`/projects/${projectId}/repositories/${repositoryId}`, { method: "DELETE" });
   if (!res.ok) throw new Error(`DELETE /projects/${projectId}/repositories/${repositoryId} failed: ${res.status}`);

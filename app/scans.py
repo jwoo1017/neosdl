@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 from app import audit, queue, repo_activity_bus
+from app.db import tx
+from app.github_app import get_latest_commit_sha
 
 PARSER_VERSION = "tree-sitter-0.26/java+python+typescript+javascript"
 
@@ -57,3 +59,35 @@ def create_scan(cur, *, repository_id: str, commit_sha: str, ref: str,
         (str(row["id"]), repository_id, commit_sha),
     )
     return {**row, "reused": False}
+
+
+def start_repository_scan(repository_id: str, *, actor: str, commit_sha: str | None = None,
+                          ref: str | None = None, trigger: str = "manual") -> dict:
+    """저장소 분석 시작 — 커밋을 안 주면 기본 브랜치 최신 커밋을 GitHub 에서 조회한다.
+
+    수동 스캔 버튼(POST /repositories/{id}/scans)과 저장소 연결 직후 자동 분석
+    (app/projects.py attach_project_repository)이 같이 쓴다. GitHub 조회는 네트워크라
+    DB 트랜잭션 밖에서 하고, 스캔 생성만 짧은 트랜잭션으로 묶는다.
+    없는/비활성 저장소면 LookupError.
+    """
+    with tx() as cur:
+        cur.execute(
+            """
+            SELECT r.namespace, r.name, r.default_branch, i.github_installation_id
+              FROM repository r JOIN installation i ON i.id = r.installation_id
+             WHERE r.id=%s AND r.is_active
+            """,
+            (str(repository_id),),
+        )
+        repo = cur.fetchone()
+    if repo is None:
+        raise LookupError("repository not found")
+
+    ref = ref or f"refs/heads/{repo['default_branch']}"
+    if commit_sha is None:
+        commit_sha = get_latest_commit_sha(repo["github_installation_id"], repo["namespace"],
+                                           repo["name"], repo["default_branch"])
+    with tx() as cur:
+        return create_scan(cur, repository_id=str(repository_id), commit_sha=commit_sha,
+                           ref=ref, trigger=trigger, actor=actor)
+

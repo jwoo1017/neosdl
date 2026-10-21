@@ -208,6 +208,7 @@ export default function DashboardPage() {
       {showAttachModal && (
         <AttachRepositoryModal
           projectId={activeProject.id}
+          projectName={activeProject.name}
           githubAppSlug={config?.github_app_slug}
           attachedRemoteIds={new Set((projectRepos || []).map((r) => r.remote_id))}
           onAttached={loadProjectRepos}

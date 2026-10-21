@@ -10,7 +10,7 @@ import signal
 import time
 from pathlib import Path
 
-from app import queue
+from app import analysis, queue
 from app.config import settings
 from app.db import tx
 from worker.handlers import (
@@ -71,18 +71,40 @@ def run() -> None:
 
         idle = 0
         log.info("job %s %s 시작 (attempt %s)", job["id"], job["kind"], job["attempts"])
+        _notify_stage(job)
         try:
             HANDLERS[job["kind"]](job["payload"])
         except Exception as exc:                    # noqa: BLE001
             log.exception("job %s 실패", job["id"])
+            error = f"{type(exc).__name__}: {exc}"
             with tx() as cur:
-                queue.fail(cur, job["id"], f"{type(exc).__name__}: {exc}")
+                status = queue.fail(cur, job["id"], error)
+            if status == "dead":
+                _mark_dead(job, error)
         else:
             with tx() as cur:
                 queue.finish(cur, job["id"])
             log.info("job %s 완료", job["id"])
 
     log.info("worker %s 종료", worker)
+
+
+def _notify_stage(job: dict) -> None:
+    """핵심 분석 단계 시작을 화면에 알린다(app/analysis.py). 알림 실패가 작업을 막으면 안 된다."""
+    try:
+        with tx() as cur:
+            analysis.notify_stage(cur, job["kind"], job["payload"])
+    except Exception:
+        log.warning("job %s: scan_stage 알림 실패 — 무시", job["id"], exc_info=True)
+
+
+def _mark_dead(job: dict, error: str) -> None:
+    """핵심 분석 단계가 최종 실패하면 스캔에 실패를 남긴다 — 화면이 "분석 중"에 머물지 않게."""
+    try:
+        with tx() as cur:
+            analysis.mark_stage_dead(cur, job["kind"], job["payload"], error)
+    except Exception:
+        log.exception("job %s: 분석 실패 기록 실패", job["id"])
 
 
 def _sweep_stale_worktrees() -> None:

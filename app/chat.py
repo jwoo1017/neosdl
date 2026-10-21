@@ -36,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from app import ai_providers, chat_bus, observability, orchestrator, profiles
+from app import ai_providers, analysis, chat_bus, observability, orchestrator, profiles
 from app.agent_events import AgentEvent, mark_done, new_event
 from app.auth import (
     assert_project_role, get_current_member, get_current_member_ws, watch_ws_session, ws_origin_allowed,
@@ -216,6 +216,9 @@ def _resolve_chat_ctx(cur, project_id: UUID) -> dict:
         )
         scan = cur.fetchone()
         scan_id = str(scan["id"]) if scan else None
+        # 분석이 끝난 스캔이 있으면 그걸 쓴다 — 재분석 중엔 새 스캔이 파싱만 끝났어도
+        # 의미·위험 분석 전이라, 이전에 완료된 결과로 답하는 편이 정확하다(app/analysis.py).
+        scan_id = analysis.latest_ready_scan_id(cur, repository_id) or scan_id
 
     return {"repository_id": repository_id, "scan_id": scan_id, "project_info": project_info}
 
@@ -239,6 +242,11 @@ def _resolve_mentioned_projects(cur, member_id: str, mentioned_project_ids: list
         if row:
             resolved.append(row)
     return resolved
+
+
+def _project_chat_ready(project_id: str) -> bool:
+    with tx() as cur:
+        return analysis.chat_ready(cur, project_id)
 
 
 def _touch_session(cur, session_id: str) -> None:
@@ -529,6 +537,12 @@ async def chat_socket(websocket: WebSocket, project_id: UUID, session_id: UUID):
             if not question or len(question) > _MAX_QUESTION_LEN:
                 await queue.put({"type": "error", "client_msg_id": client_msg_id,
                                  "error": "질문은 1~2000자여야 합니다"})
+                continue
+            # 첫 분석이 끝나기 전엔 답할 근거가 없다 — 화면 잠금을 우회해도 서버에서 막는다.
+            if not await run_in_threadpool(_project_chat_ready, pid):
+                await queue.put({"type": "error", "client_msg_id": client_msg_id,
+                                 "error": "analysis_not_ready",
+                                 "message": "저장소 분석이 끝나면 질문할 수 있어요"})
                 continue
             # mentioned_project_ids/forced_tool은 둘 다 선택 필드 — 잘못된 값은
             # 에러로 막지 않고 조용히 무시한다(fail-open, 모듈 전체와 같은 방침).

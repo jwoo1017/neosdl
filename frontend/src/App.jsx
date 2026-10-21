@@ -22,6 +22,8 @@ import ProjectInviteAcceptPage from "./pages/ProjectInviteAcceptPage";
 import { fetchMe } from "./api";
 import { MeContext } from "./MeContext";
 import MyPage from "./pages/MyPage";
+import { ToastProvider } from "./toast/ToastContext";
+import AnalysisWatcher from "./analysis/AnalysisWatcher";
 import "./App.css";
 
 function OnboardingGate({ children }) {
@@ -99,6 +101,8 @@ function AppLayout() {
       <TeamspaceProvider>
         <ProjectProvider>
           <TabsProvider>
+            <ToastProvider>
+            <AnalysisWatcher />
             <MascotProvider>
               <SidebarProvider>
                 <div className={`app-shell${sidebarOpen ? " sidebar-open" : ""}`}>
@@ -131,6 +135,7 @@ function AppLayout() {
                 </div>
               </SidebarProvider>
             </MascotProvider>
+            </ToastProvider>
           </TabsProvider>
         </ProjectProvider>
       </TeamspaceProvider>
