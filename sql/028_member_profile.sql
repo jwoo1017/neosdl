@@ -24,6 +24,10 @@ ALTER TABLE member ADD CONSTRAINT member_avatar_source_ck
 ALTER TABLE member ADD CONSTRAINT member_avatar_upload_key_ck
     CHECK (avatar_source <> 'upload' OR avatar_key IS NOT NULL);
 
+-- 이전엔 연결된 GitHub 계정 사진을 자동으로 보여줬다 — 그 사람들은 계속 GitHub 사진으로 시작한다.
+UPDATE member m SET avatar_source = 'github'
+ WHERE EXISTS (SELECT 1 FROM github_account ga WHERE ga.member_id = m.id AND ga.avatar_url IS NOT NULL);
+
 ALTER TABLE member ADD COLUMN token_version int NOT NULL DEFAULT 0;
 ALTER TABLE member ADD COLUMN deleted_at    timestamptz;
 

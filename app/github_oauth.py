@@ -320,11 +320,14 @@ def github_callback(
                         email = None
                 # GitHub 가 인증한 이메일이라 가입 즉시 인증 완료로 둔다(이메일이 없으면 대상 없음).
                 cur.execute(
-                    "INSERT INTO member (email, name, nickname, last_login_at, email_verified_at) "
-                    "VALUES (%s, %s, %s, now(), CASE WHEN %s::text IS NULL THEN NULL ELSE now() END) "
+                    "INSERT INTO member (email, name, nickname, last_login_at, email_verified_at, avatar_source) "
+                    "VALUES (%s, %s, %s, now(), CASE WHEN %s::text IS NULL THEN NULL ELSE now() END, "
+                    "        CASE WHEN %s::text IS NULL THEN 'initials' ELSE 'github' END) "
                     "RETURNING id, nickname, email, token_version",
                     # GitHub 프로필 이름이 없으면 login 을 이름으로 쓴다(마이페이지에서 수정 가능).
-                    (email, (gh_user.get("name") or gh_user["login"])[:50], gh_user["login"], email),
+                    # GitHub 사진이 있으면 그걸 기본 아바타로(마이페이지에서 바꿀 수 있음).
+                    (email, (gh_user.get("name") or gh_user["login"])[:50], gh_user["login"], email,
+                     gh_user.get("avatar_url")),
                 )
                 member = {**cur.fetchone(), "email_verified": True}
                 cur.execute(
