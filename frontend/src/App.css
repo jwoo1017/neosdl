@@ -3871,3 +3871,72 @@ button:disabled.btn-danger-text {
     justify-content: center;
   }
 }
+
+/* =====================================================================
+   팀 채팅방 형식 (chat/ChatMessage.jsx) — 팀원 질문은 왼쪽 + 프로필, AI 답변은 AI 아바타
+   ===================================================================== */
+.chat-message-other {
+  justify-content: flex-start;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+.chat-message-other .chat-message-content {
+  max-width: 82%;
+  gap: 0.25rem;
+}
+.chat-message-avatar {
+  margin-top: 0.15rem;
+}
+/* 역할 모자가 머리 위로 올라가므로 위쪽 여백을 조금 더 */
+.chat-message-other .avatar-has-hat {
+  margin-top: 0.55rem;
+}
+.chat-message-assistant {
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+.chat-message-ai-avatar {
+  display: inline-flex;
+  flex: none;
+}
+.chat-message-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+.chat-message-author {
+  color: var(--text);
+  font-weight: 600;
+}
+.chat-message-realname {
+  color: var(--text-faint);
+}
+.chat-message-time {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+.chat-message-time-right {
+  align-self: flex-end;
+}
+.chat-message-bubble-other {
+  align-self: flex-start;
+  background: var(--surface-2);
+  border-top-left-radius: 6px;
+}
+
+/* 멤버 표의 계정 칸 — 아바타(역할 모자) + 닉네임/이름 */
+.member-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding-top: 0.35rem; /* 모자가 위로 올라갈 공간 */
+}
+.member-cell-names {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.member-cell-names .muted {
+  font-size: 0.75rem;
+}

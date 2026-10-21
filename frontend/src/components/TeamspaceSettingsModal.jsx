@@ -10,6 +10,7 @@ import {
 } from "../api";
 import { useTeamspace } from "../TeamspaceContext";
 import { removeRecentProjectsByTeamspace } from "../recentProjects";
+import Avatar from "./Avatar";
 import Modal from "./Modal";
 import TeamspaceInviteList from "./TeamspaceInviteList";
 
@@ -171,7 +172,16 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
             <tbody>
               {teamspace.members.map((m) => (
                 <tr key={m.member_id}>
-                  <td>{m.nickname}</td>
+                  <td>
+                    <span className="member-cell">
+                      <Avatar profile={{ id: m.member_id, nickname: m.nickname, name: m.name, avatar_url: m.avatar_url }}
+                              size={26} role={m.role} />
+                      <span className="member-cell-names">
+                        <span>{m.nickname}</span>
+                        {m.name && m.name !== m.nickname && <span className="muted">{m.name}</span>}
+                      </span>
+                    </span>
+                  </td>
                   <td>
                     {isAdmin ? (
                       <select value={m.role} onChange={(e) => changeMemberRole(m.member_id, e.target.value)}>

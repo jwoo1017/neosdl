@@ -13,6 +13,7 @@ from PIL import Image
 
 from app import avatars, email_verification, me
 from app.storage import LocalStorage
+from tests.conftest import disable_last_admin_triggers
 
 PW = "pw-12345678"
 
@@ -60,8 +61,7 @@ def env(db, monkeypatch, tmp_path):
     e.client, e.new_client, e.signup, e.sent, e.store, e.root = new_client(), new_client, signup, sent, store, tmp_path
     yield e
     with db() as cur:
-        # 테스트 계정 정리 — 마지막 admin 보호 트리거를 이 트랜잭션에서만 끈다(로컬 슈퍼유저).
-        cur.execute("SET LOCAL session_replication_role = replica")
+        disable_last_admin_triggers(cur)   # 마지막 admin 보호 트리거만 이 트랜잭션 동안 끈다
         for email in created:
             cur.execute("SELECT id FROM member WHERE lower(email)=%s", (email,))
             row = cur.fetchone()
@@ -265,8 +265,7 @@ def test_withdraw_blocks_sole_admin_then_anonymizes(env, db):
         # 정리: 테스트가 만든 워크스페이스와 탈퇴 처리된 행을 지운다(이력 FK 때문에 워크스페이스 먼저).
         cur.execute("SELECT created_by FROM workspace WHERE id=%s", (ws_id,))
         withdrawn_id = cur.fetchone()["created_by"]
-        # 마지막 admin 보호 트리거가 CASCADE 삭제도 막으므로 테스트 정리 동안만 트리거를 끈다(로컬 슈퍼유저).
-        cur.execute("SET LOCAL session_replication_role = replica")
+        disable_last_admin_triggers(cur)
         cur.execute("DELETE FROM workspace WHERE id=%s", (ws_id,))
         cur.execute("DELETE FROM member WHERE id=%s", (withdrawn_id,))
 

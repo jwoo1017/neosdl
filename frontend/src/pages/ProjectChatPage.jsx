@@ -16,6 +16,7 @@ import CloseIcon from "../icons/CloseIcon";
 import AutoIcon from "../icons/AutoIcon";
 import { historyEvents } from "../AgentActivityTimeline";
 import ChatMessage from "../chat/ChatMessage";
+import { useMe } from "../MeContext";
 import { useThrottledValue } from "../chat/useThrottledValue";
 import {
   IconBack, IconPaperclip, IconSend, IconStar, IconWrench, IconCheck, IconChevronDown, IconPencil, IconSearch,
@@ -525,6 +526,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
   const projectId = propProjectId ?? routeProjectId;
   const { projects } = useProject();
   const { openDetailTab } = useTabs();
+  const { me } = useMe(); // 내 질문(오른쪽)과 팀원 질문(왼쪽, 프로필) 구분
   const project = useMemo(
     () => (projects || []).find((p) => p.id === projectId) || null,
     [projects, projectId]
@@ -883,6 +885,9 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
                 key={m.id}
                 role={m.role}
                 content={m.content}
+                author={m.author}
+                mine={!!m.author && m.author.id === me?.id}
+                createdAt={m.created_at}
                 events={historyEvents(m)}
                 toolsUsed={m.tools_used}
                 risk={m.evidence?.risk}

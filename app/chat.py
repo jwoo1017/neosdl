@@ -36,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from app import ai_providers, chat_bus, observability, orchestrator
+from app import ai_providers, chat_bus, observability, orchestrator, profiles
 from app.agent_events import AgentEvent, mark_done, new_event
 from app.auth import assert_project_role, get_current_member, get_current_member_ws
 from app.db import tx
@@ -163,12 +163,17 @@ def list_chat_messages(project_id: UUID, session_id: UUID, member: dict = Depend
         _assert_session(cur, project_id, session_id)
         cur.execute(
             """
-            SELECT id, role, content, evidence, tools_used, mentioned_project_ids, forced_tool, created_at
+            SELECT id, role, content, evidence, tools_used, mentioned_project_ids, forced_tool, created_at,
+                   author_member_id
               FROM chat_message WHERE session_id=%s ORDER BY created_at
             """,
             (str(session_id),),
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+        # 채팅방 형식 — 질문마다 보낸 사람(프로필 + 팀스페이스 역할)을 같이 내려준다.
+        authors = profiles.load_authors(cur, (r["author_member_id"] for r in rows), str(project_id))
+        return [{**r, "author": authors.get(str(r["author_member_id"])) if r["author_member_id"] else None}
+                for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -250,11 +255,12 @@ def _insert_user_message(session_id: str, project_id: str, question: str, member
         mentioned = _resolve_mentioned_projects(cur, member_id, mentioned_project_ids)
         cur.execute(
             """
-            INSERT INTO chat_message (project_id, session_id, role, content, mentioned_project_ids, forced_tool)
-            VALUES (%s, %s, 'user', %s, %s, %s) RETURNING id
+            INSERT INTO chat_message (project_id, session_id, role, content, mentioned_project_ids, forced_tool,
+                                      author_member_id)
+            VALUES (%s, %s, 'user', %s, %s, %s, %s) RETURNING id
             """,
             (project_id, session_id, question,
-             [str(p["id"]) for p in mentioned] or None, forced_tool),
+             [str(p["id"]) for p in mentioned] or None, forced_tool, member_id),
         )
         message_id = cur.fetchone()["id"]
         _touch_session(cur, session_id)

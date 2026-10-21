@@ -35,6 +35,7 @@ import threading
 import psycopg
 from starlette.concurrency import run_in_threadpool
 
+from app import profiles
 from app.config import settings
 from app.db import tx
 
@@ -48,11 +49,16 @@ def _fetch_message(message_id: int) -> dict | None:
     여기서 문자열로 변환해 둔다(프론트는 다시 Date로 안 만들고 그대로 표시만 함)."""
     with tx() as cur:
         cur.execute(
-            "SELECT id, project_id, session_id, role, content, evidence, tools_used, created_at "
+            "SELECT id, project_id, session_id, role, content, evidence, tools_used, created_at, author_member_id "
             "FROM chat_message WHERE id=%s",
             (message_id,),
         )
         row = cur.fetchone()
+        author = None
+        if row is not None and row["author_member_id"]:
+            # 다른 사람이 보낸 질문이 실시간으로 도착할 때도 말풍선 옆 프로필·역할을 그릴 수 있게.
+            author = profiles.load_authors(cur, [row["author_member_id"]], str(row["project_id"])).get(
+                str(row["author_member_id"]))
     if row is None:
         return None
     return {
@@ -64,6 +70,7 @@ def _fetch_message(message_id: int) -> dict | None:
         "evidence": row["evidence"],
         "tools_used": row["tools_used"],
         "created_at": row["created_at"].isoformat(),
+        "author": author,
     }
 
 

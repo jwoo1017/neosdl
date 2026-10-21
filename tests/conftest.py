@@ -130,3 +130,67 @@ def scan_factory(db):
     with db() as cur:
         for sid in created:
             cur.execute("DELETE FROM scan WHERE id = %s", (sid,))
+
+
+# --------------------------------------------------------------------- API 사용자(가입·인증 완료)
+
+@pytest.fixture
+def api_users(db, monkeypatch):
+    """인증까지 끝난 테스트 계정을 만들어 TestClient 로 돌려준다. teardown 에서 그 계정들이
+    만든 워크스페이스(→ 팀스페이스/프로젝트/채팅 CASCADE)와 계정을 지운다.
+
+    사용: `alice = api_users.new("alice")` → alice.client(쿠키 세션), alice.id, alice.email
+    """
+    from fastapi.testclient import TestClient
+
+    from app import email_verification
+    from app.main import app
+
+    codes: list[str] = []
+    monkeypatch.setattr(email_verification, "_send_code_email",
+                        lambda email, nickname, code, purpose="signup": codes.append(code) or True)
+    made: list[str] = []
+
+    class User:
+        pass
+
+    def new(nickname: str):
+        client = TestClient(app)
+        email = f"{nickname}-{uuid.uuid4().hex[:8]}@example.com"
+        r = client.post("/api/auth/signup",
+                        json={"email": email, "password": "pw-12345678", "name": f"{nickname} 실명",
+                              "nickname": nickname})
+        assert r.status_code == 201, r.text
+        assert client.post("/api/auth/email-verification/verify", json={"code": codes[-1]}).status_code == 204
+        u = User()
+        u.client, u.email, u.nickname = client, email, nickname
+        u.id = client.get("/api/me").json()["id"]
+        made.append(u.id)
+        return u
+
+    class Users:
+        pass
+
+    users = Users()
+    users.new = new
+    yield users
+
+    with db() as cur:
+        disable_last_admin_triggers(cur)
+        for mid in made:
+            cur.execute("DELETE FROM workspace WHERE created_by = %s", (mid,))
+        for mid in made:
+            cur.execute("DELETE FROM member WHERE id = %s", (mid,))
+
+
+def disable_last_admin_triggers(cur) -> None:
+    """테스트 정리용 — 마지막 admin/owner 보호 트리거만 이 트랜잭션 동안 끈다(로컬 슈퍼유저).
+
+    session_replication_role=replica 는 FK CASCADE(이것도 트리거)까지 꺼서 고아 행이 남으므로 쓰지 않는다.
+    ALTER TABLE 은 트랜잭션 안이라 커밋/롤백과 함께 원상복구된다.
+    """
+    for table, trg in (("workspace_member", "workspace_member_protect_last_admin_trg"),
+                       ("teamspace_member", "teamspace_member_protect_last_admin_trg"),
+                       ("project_member", "project_member_protect_last_owner_trg")):
+        cur.execute(f"ALTER TABLE {table} DISABLE TRIGGER {trg}")
+

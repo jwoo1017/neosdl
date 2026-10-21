@@ -63,3 +63,26 @@ def load_profile(cur, member_id: str) -> dict | None:
         return None
     return {**public_profile(row), "email": row["email"], "avatar_source": row["avatar_source"],
             "has_github_avatar": row["github_avatar_url"] is not None}
+
+
+def load_authors(cur, member_ids, project_id: str) -> dict[str, dict]:
+    """채팅 작성자 프로필 + 그 프로젝트가 속한 팀스페이스 안의 역할(admin/member) — 말풍선 옆 표시용.
+
+    반환: {member_id: {id, nickname, name, avatar_url, role}} (role 은 팀스페이스를 나갔으면 None).
+    """
+    ids = sorted({str(i) for i in member_ids if i})
+    if not ids:
+        return {}
+    cur.execute(
+        f"""
+        SELECT {PROFILE_COLUMNS}, tm.role
+          FROM member m
+          LEFT JOIN teamspace_member tm
+                 ON tm.member_id = m.id
+                AND tm.teamspace_id = (SELECT teamspace_id FROM project WHERE id = %s)
+         WHERE m.id = ANY(%s::uuid[])
+        """,
+        (str(project_id), ids),
+    )
+    return {str(r["member_id"]): {**public_profile(r), "role": r["role"]} for r in cur.fetchall()}
+
