@@ -15,8 +15,8 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app import (
-    ask_stream, audit, avatars, chat, chat_bus, finding_fix_api, github_oauth, installations, me, projects, queue,
-    releases, repo_activity, repo_activity_bus, risk_api, security_history, teamspaces, workspaces,
+    ask_stream, audit, avatars, chat, chat_bus, finding_fix_api, github_oauth, installations, me, presence, projects,
+    queue, releases, repo_activity, repo_activity_bus, risk_api, security_history, teamspaces, workspaces,
 )
 from app.auth import (
     assert_installation_owned,
@@ -57,6 +57,7 @@ api = APIRouter(prefix="/api")
 app.include_router(github_oauth.router, prefix="/api")
 app.include_router(avatars.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
+app.include_router(presence.router, prefix="/api")
 app.include_router(installations.router, prefix="/api")
 app.include_router(workspaces.router, prefix="/api")
 app.include_router(teamspaces.router, prefix="/api")

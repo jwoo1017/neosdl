@@ -3,6 +3,7 @@ import { useTeamspace } from "./TeamspaceContext";
 import { useProject } from "./ProjectContext";
 import { useSidebar } from "./SidebarContext";
 import InviteInbox from "./InviteInbox";
+import PresenceStack from "./components/PresenceStack";
 import HamburgerIcon from "./icons/HamburgerIcon";
 
 export default function TopNavBar() {
@@ -42,7 +43,11 @@ export default function TopNavBar() {
           )}
         </nav>
       </div>
-      <InviteInbox />
+      <div className="top-navbar-right">
+        {/* 지금 이 팀스페이스에서 활동 중인 멤버 — 우편함 왼쪽 */}
+        <PresenceStack teamspaceId={activeTeamspace?.id || null} />
+        <InviteInbox />
+      </div>
     </header>
   );
 }

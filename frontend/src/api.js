@@ -1001,3 +1001,25 @@ export async function fetchRepositoryLanguages(repositoryId) {
   if (!res.ok) throw new Error(`GET /repositories/${repositoryId}/languages failed: ${res.status}`);
   return res.json();
 }
+
+// ---------------------------------------------------------------- 접속 상태 (app/presence.py)
+export async function sendPresence(teamspaceId, state) {
+  const res = await apiFetch("/presence", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ teamspace_id: teamspaceId || null, state }),
+  });
+  if (!res.ok) throw new Error(`POST /presence failed: ${res.status}`);
+}
+
+// 탭을 닫을 때 — fetch 는 페이지가 사라지며 취소될 수 있어 sendBeacon 으로 보낸다(쿠키 포함, 같은 오리진).
+export function sendPresenceOfflineBeacon() {
+  const blob = new Blob([JSON.stringify({ state: "offline" })], { type: "application/json" });
+  return navigator.sendBeacon?.(`${API_BASE}/api/presence`, blob);
+}
+
+export async function fetchTeamspacePresence(teamspaceId) {
+  const res = await apiFetch(`/teamspaces/${teamspaceId}/presence`);
+  if (!res.ok) throw new Error(`GET presence failed: ${res.status}`);
+  return res.json(); // [{id, nickname, name, avatar_url, role, state}]
+}

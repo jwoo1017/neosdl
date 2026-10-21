@@ -244,6 +244,7 @@ def withdraw(body: WithdrawIn, member: dict = Depends(get_current_member)):
                 (m,),
             )
         cur.execute("DELETE FROM email_verification WHERE member_id = %s", (m,))
+        cur.execute("DELETE FROM member_presence WHERE member_id = %s", (m,))   # 상단 접속 표시에서 즉시 제거
 
         # 개인정보 제거 + 세션 무효화. email 을 비워 같은 주소로 재가입할 수 있게 한다.
         cur.execute("SELECT avatar_key FROM member WHERE id = %s FOR UPDATE", (m,))

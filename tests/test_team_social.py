@@ -59,3 +59,38 @@ def test_chat_messages_carry_author_profile_and_teamspace_role(db, api_users):
     # 실시간 브로드캐스트 경로(chat_bus)도 같은 작성자 정보를 싣는다.
     pushed = chat_bus._fetch_message(by_text["밥 질문"]["id"])
     assert pushed["author"]["id"] == bob.id and pushed["author"]["role"] == "member"
+
+
+# --------------------------------------------------------------------- E. 접속 상태
+
+@pytest.mark.integration
+def test_presence_heartbeat_visibility_and_expiry(db, api_users):
+    with db() as cur:
+        cur.execute("SELECT to_regclass('public.member_presence') AS t")
+        if cur.fetchone()["t"] is None:
+            pytest.skip("sql/030_member_presence.sql 미적용")
+    alice, bob, carol = api_users.new("alice"), api_users.new("bob"), api_users.new("carol")
+    ws_id, ts_id, _ = _team(alice)
+    _join(db, bob, ws_id, ts_id)
+
+    assert alice.client.post("/api/presence", json={"teamspace_id": ts_id, "state": "active"}).status_code == 204
+    assert bob.client.post("/api/presence", json={"teamspace_id": ts_id, "state": "idle"}).status_code == 204
+
+    seen = bob.client.get(f"/api/teamspaces/{ts_id}/presence").json()
+    assert [m["nickname"] for m in seen] == ["alice", "bob"]          # active 먼저
+    assert seen[0]["state"] == "active" and seen[0]["role"] == "admin"
+    assert seen[1]["state"] == "idle" and seen[1]["role"] == "member"
+
+    # 비멤버는 조회도, 그 팀스페이스로 하트비트도 못 한다.
+    assert carol.client.get(f"/api/teamspaces/{ts_id}/presence").status_code == 404
+    assert carol.client.post("/api/presence", json={"teamspace_id": ts_id, "state": "active"}).status_code == 404
+
+    # 90초 넘게 신호가 없으면 빠진다.
+    with db() as cur:
+        cur.execute("UPDATE member_presence SET last_seen_at = now() - interval '2 minutes' WHERE member_id=%s",
+                    (bob.id,))
+    assert [m["nickname"] for m in alice.client.get(f"/api/teamspaces/{ts_id}/presence").json()] == ["alice"]
+
+    # 탭 종료(offline)는 즉시 빠진다.
+    assert alice.client.post("/api/presence", json={"state": "offline"}).status_code == 204
+    assert alice.client.get(f"/api/teamspaces/{ts_id}/presence").json() == []

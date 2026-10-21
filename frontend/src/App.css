@@ -3940,3 +3940,49 @@ button:disabled.btn-danger-text {
 .member-cell-names .muted {
   font-size: 0.75rem;
 }
+
+/* =====================================================================
+   상단바 접속 표시 (components/PresenceStack.jsx) — 우편함 왼쪽, 아바타를 겹쳐 쌓는다
+   ===================================================================== */
+.top-navbar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.presence-stack {
+  display: flex;
+  align-items: center;
+  padding-top: 0.45rem; /* 역할 모자가 위로 올라갈 공간 */
+}
+.presence-stack .presence-avatar {
+  --avatar-ring: var(--bg-raised);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg-raised);
+}
+.presence-stack .presence-avatar + .presence-avatar {
+  margin-left: -8px;
+}
+.presence-stack .presence-avatar:hover {
+  z-index: 1;
+  transform: translateY(-2px);
+  transition: transform 0.12s ease;
+}
+.presence-more {
+  margin-left: 4px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border-radius: 15px;
+  background: var(--surface-3);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+@media (max-width: 640px) {
+  .presence-stack .presence-avatar:nth-child(n + 4) {
+    display: none; /* 좁은 화면에선 3명까지만 */
+  }
+}
