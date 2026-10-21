@@ -12,7 +12,7 @@ function formatTime(iso) {
 }
 
 // 채팅 메시지 한 줄 — 팀 채팅방 형식:
-//  - 내 질문: 오른쪽 말풍선
+//  - 내 질문: 오른쪽 말풍선(프로필·이름 없이)
 //  - 다른 팀원 질문: 왼쪽에 아바타(역할 모자) + 닉네임·시간 + 말풍선
 //  - AI 답변: 왼쪽에 AI 아바타, 버블 없이 마크다운 그대로(넓은 폭)
 //  - 작성자 기록이 없는 예전 질문(sql/029 이전, author=null)은 이전처럼 오른쪽 말풍선
@@ -24,30 +24,13 @@ export default function ChatMessage({
   const hasEvents = events && events.length > 0;
 
   if (role === "user") {
-    if (!author) {
-      // 작성자 기록(sql/029) 이전에 보낸 질문 — 누가 보냈는지 알 수 없어 프로필 없이 둔다.
+    if (mine || !author) {
+      // 내 질문(그리고 작성자 기록 sql/029 이전의 질문) — 오른쪽 말풍선만, 프로필·이름 없이.
       return (
         <div className="chat-message chat-message-user">
           <div className="chat-message-content">
             <div className="chat-message-bubble">{content}</div>
-            <span className="chat-message-time chat-message-time-right">
-              이전 메시지{createdAt ? ` · ${formatTime(createdAt)}` : ""}
-            </span>
-          </div>
-        </div>
-      );
-    }
-    if (mine) {
-      // 내 질문 — 오른쪽 정렬, 말풍선 오른쪽에 내 아바타(역할 모자), 위에 시간·닉네임.
-      return (
-        <div className="chat-message chat-message-mine">
-          <Avatar profile={author} size={34} role={author.role || undefined} className="chat-message-avatar" />
-          <div className="chat-message-content">
-            <div className="chat-message-meta chat-message-meta-mine">
-              {createdAt && <span className="chat-message-time">{formatTime(createdAt)}</span>}
-              <span className="chat-message-author">{author.nickname}</span>
-            </div>
-            <div className="chat-message-bubble chat-message-bubble-mine">{content}</div>
+            {createdAt && <span className="chat-message-time chat-message-time-right">{formatTime(createdAt)}</span>}
           </div>
         </div>
       );

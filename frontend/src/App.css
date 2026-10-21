@@ -3857,29 +3857,6 @@ tr.risk-row:hover { background: var(--surface-2); }
   margin: 0.3rem 0.4rem 0;
   line-height: 1.4;
 }
-
-/* 내 질문 — 오른쪽 정렬 + 말풍선 오른쪽에 내 아바타(팀원 질문과 대칭) */
-.chat-message-mine {
-  flex-direction: row-reverse;
-  justify-content: flex-start;
-  gap: 0.6rem;
-  align-items: flex-start;
-}
-.chat-message-mine .chat-message-content {
-  max-width: 82%;
-  gap: 0.25rem;
-  align-items: flex-end;
-}
-.chat-message-mine .avatar-has-hat {
-  margin-top: 0.55rem;
-}
-.chat-message-meta-mine {
-  justify-content: flex-end;
-}
-.chat-message-bubble-mine {
-  border-top-right-radius: 6px;
-}
-
 /* =====================================================================
    마이페이지 (pages/MyPage.jsx) — 가운데 정렬 설정 화면: 왼쪽 탭 + 오른쪽 본문
    버튼은 .mp-btn 계열만 쓴다(전역 .btn-primary 의 margin-top 영향을 받지 않게).
