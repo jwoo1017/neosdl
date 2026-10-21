@@ -65,7 +65,7 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
       <div className="sidebar-teamspace-header">
         <button type="button" className="sidebar-teamspace-toggle" onClick={() => setExpanded((v) => !v)}>
           <span className="sidebar-teamspace-caret">{expanded ? "▾" : "▸"}</span>{" "}
-          {personal && <PersonalSpaceIcon />} {teamspace.name}
+          {personal && <PersonalSpaceIcon />} {personal ? "내 프로젝트" : teamspace.name}
           {!personal && teamspace.visibility !== "open" && (
             <span className="badge sidebar-teamspace-badge">{VISIBILITY_BADGE[teamspace.visibility]}</span>
           )}

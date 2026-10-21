@@ -3733,146 +3733,6 @@ tr.risk-row:hover { background: var(--surface-2); }
 }
 
 /* =====================================================================
-   마이페이지 (pages/MyPage.jsx)
-   ===================================================================== */
-.mypage {
-  max-width: 760px;
-}
-.mypage h1 {
-  margin-bottom: 1.2rem;
-}
-.mypage-section {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: 10px;
-  padding: 1.1rem 1.25rem;
-  margin-bottom: 1rem;
-}
-.mypage-section-head h2 {
-  font-size: 1rem;
-  margin: 0 0 0.25rem;
-}
-.mypage-section-head p {
-  margin: 0 0 0.9rem;
-  font-size: 0.82rem;
-}
-.mypage-avatar-row {
-  display: flex;
-  gap: 1.1rem;
-  align-items: center;
-  margin-bottom: 1rem;
-  flex-wrap: wrap;
-}
-.mypage-avatar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-}
-.mypage-hint {
-  width: 100%;
-  margin: 0.2rem 0 0;
-  font-size: 0.78rem;
-}
-.mypage-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-}
-.mypage-form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-  font-size: 0.82rem;
-  color: var(--text-dim);
-}
-.mypage-form input {
-  background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 0.5rem 0.65rem;
-  font-size: 0.9rem;
-}
-.mypage-actions {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  margin-top: 0.3rem;
-}
-.mypage-ok {
-  color: var(--accent-strong);
-  font-size: 0.85rem;
-  margin: 0.6rem 0 0;
-}
-.mypage-list {
-  list-style: none;
-  padding: 0;
-  margin: 0 0 0.6rem;
-}
-.mypage-list li {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.45rem 0;
-  border-bottom: 1px solid var(--border);
-}
-.mypage-list li span {
-  flex: 1;
-}
-.mypage-gh-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-}
-
-.btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 0.45rem 0.85rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-  text-decoration: none;
-}
-.btn-secondary:hover {
-  background: var(--surface-3);
-}
-.btn-danger-text {
-  background: none;
-  border: none;
-  color: #f87171;
-  cursor: pointer;
-  font-size: 0.85rem;
-  padding: 0.45rem 0.3rem;
-}
-.btn-danger-text:hover {
-  text-decoration: underline;
-}
-button:disabled.btn-secondary,
-button:disabled.btn-danger-text {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-@media (max-width: 640px) {
-  .mypage-section {
-    padding: 0.9rem;
-  }
-  .mypage-actions {
-    justify-content: stretch;
-  }
-  .mypage-actions > * {
-    flex: 1;
-    justify-content: center;
-  }
-}
-
-/* =====================================================================
    팀 채팅방 형식 (chat/ChatMessage.jsx) — 팀원 질문은 왼쪽 + 프로필, AI 답변은 AI 아바타
    ===================================================================== */
 .chat-message-other {
@@ -3996,4 +3856,523 @@ button:disabled.btn-danger-text {
   font-size: 0.72rem;
   margin: 0.3rem 0.4rem 0;
   line-height: 1.4;
+}
+
+/* 내 질문 — 오른쪽 정렬 + 말풍선 오른쪽에 내 아바타(팀원 질문과 대칭) */
+.chat-message-mine {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+.chat-message-mine .chat-message-content {
+  max-width: 82%;
+  gap: 0.25rem;
+  align-items: flex-end;
+}
+.chat-message-mine .avatar-has-hat {
+  margin-top: 0.55rem;
+}
+.chat-message-meta-mine {
+  justify-content: flex-end;
+}
+.chat-message-bubble-mine {
+  border-top-right-radius: 6px;
+}
+
+/* =====================================================================
+   마이페이지 (pages/MyPage.jsx) — 가운데 정렬 설정 화면: 왼쪽 탭 + 오른쪽 본문
+   버튼은 .mp-btn 계열만 쓴다(전역 .btn-primary 의 margin-top 영향을 받지 않게).
+   ===================================================================== */
+.mp-page {
+  overflow-y: auto;
+  height: 100%;
+  padding: 2rem 1.5rem 3rem;
+}
+.mp-container {
+  max-width: 960px;
+  margin: 0 auto;
+}
+.mp-hero {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0 0 1.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.mp-hero-text h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 650;
+}
+.mp-hero-text p {
+  margin: 0.25rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+}
+.mp-hero-text p span + span::before {
+  content: "·";
+  margin-right: 0.75rem;
+  color: var(--text-faint);
+}
+.mp-layout {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 2rem;
+  align-items: start;
+}
+
+/* 왼쪽 탭 */
+.mp-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+}
+.mp-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+.mp-tab:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.mp-tab.active {
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.mp-tab-danger,
+.mp-tab-danger.active {
+  color: #f87171;
+}
+.mp-tab-danger.active {
+  box-shadow: inset 2px 0 0 #f87171;
+}
+
+/* 카드 */
+.mp-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.mp-card-head {
+  padding: 1.1rem 1.4rem;
+  border-bottom: 1px solid var(--border);
+}
+.mp-card-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+}
+.mp-card-head p {
+  margin: 0.3rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.83rem;
+}
+.mp-card-danger {
+  border-color: rgba(248, 113, 113, 0.45);
+}
+.mp-card-danger .mp-card-head {
+  border-bottom-color: rgba(248, 113, 113, 0.3);
+}
+.mp-card-danger .mp-card-head h2 {
+  color: #f87171;
+}
+.mp-card-foot {
+  padding: 1rem 1.4rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+}
+.mp-empty {
+  padding: 1.2rem 1.4rem;
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 0.88rem;
+}
+
+/* 설정 행: 라벨 | 값 | 동작 */
+.mp-row {
+  padding: 1rem 1.4rem;
+  border-bottom: 1px solid var(--border);
+}
+.mp-row:last-child {
+  border-bottom: none;
+}
+.mp-row-main {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  min-height: 36px;
+}
+.mp-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.mp-row-label small {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+.mp-row-value {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+.mp-value {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-value-mask {
+  letter-spacing: 2px;
+}
+.mp-row-action {
+  display: flex;
+  justify-content: flex-end;
+}
+.mp-row-expand {
+  margin-top: 0.9rem;
+  margin-left: calc(180px + 1rem);
+}
+.mp-row > .mp-msg {
+  margin-left: calc(180px + 1rem);
+}
+.mp-avatar-busy {
+  opacity: 0.5;
+}
+
+/* 인라인 편집 폼 */
+.mp-inline-form,
+.mp-modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 440px;
+}
+.mp-inline-form input,
+.mp-modal-form input {
+  height: 36px;
+  padding: 0 0.7rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+.mp-inline-form input:focus,
+.mp-modal-form input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(63, 184, 172, 0.2);
+}
+.mp-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+}
+.mp-modal-form {
+  max-width: none;
+}
+.mp-modal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+.mp-modal-warn {
+  margin: 0 0 0.3rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.1);
+  color: #fca5a5;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* 이메일 변경 2단계 진행 표시 */
+.mp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+.mp-stepper {
+  display: flex;
+  gap: 1.2rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  counter-reset: step;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+.mp-stepper li {
+  counter-increment: step;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.mp-stepper li::before {
+  content: counter(step);
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: var(--surface-3);
+  color: var(--text-dim);
+}
+.mp-stepper li.current {
+  color: var(--text);
+  font-weight: 600;
+}
+.mp-stepper li.current::before {
+  background: var(--accent);
+  color: #04211d;
+}
+.mp-stepper li.done::before {
+  content: "✓";
+  background: rgba(63, 184, 172, 0.25);
+  color: var(--accent-strong);
+}
+
+/* 결과 메시지 */
+.mp-msg {
+  margin: 0.7rem 0 0;
+  font-size: 0.83rem;
+}
+.mp-msg-ok {
+  color: var(--accent-strong);
+}
+.mp-msg-error {
+  color: #f87171;
+}
+.mp-card-body > .mp-msg {
+  padding: 0 1.4rem 0.8rem;
+}
+
+/* 버튼 — 모두 같은 높이/정렬 */
+.mp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  height: 32px;
+  padding: 0 0.85rem;
+  margin: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  text-decoration: none;
+}
+.mp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.mp-btn-primary {
+  background: var(--accent);
+  color: #04211d;
+}
+.mp-btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+.mp-btn-secondary {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.mp-btn-secondary:hover:not(:disabled) {
+  background: var(--surface-3);
+}
+.mp-btn-ghost {
+  background: none;
+  border-color: var(--border-strong);
+  color: var(--text);
+  font-weight: 500;
+}
+.mp-btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+.mp-btn-danger {
+  background: #dc2626;
+  color: #fff;
+}
+.mp-btn-danger:hover:not(:disabled) {
+  background: #ef4444;
+}
+.mp-btn-danger-text {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.45);
+}
+
+/* 사진 변경 드롭다운 */
+.mp-menu {
+  position: relative;
+}
+.mp-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 190px;
+  padding: 0.3rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+}
+.mp-menu-list button {
+  text-align: left;
+  padding: 0.5rem 0.65rem;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.mp-menu-list button:hover {
+  background: var(--surface-3);
+}
+.mp-menu-list .mp-menu-danger {
+  color: #f87171;
+}
+
+/* 연결된 계정 */
+.mp-gh-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.mp-gh-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.mp-gh-account img {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+}
+
+/* 위험 구역 */
+.mp-danger-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.4rem;
+}
+.mp-danger-row strong {
+  font-size: 0.9rem;
+}
+.mp-danger-row p {
+  margin: 0.25rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+.mp-blockers {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 6px;
+  font-size: 0.83rem;
+}
+.mp-blockers p {
+  margin: 0 0 0.4rem;
+}
+.mp-blockers ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+.mp-blockers li span {
+  color: var(--text-faint);
+  margin-right: 0.4rem;
+}
+
+/* 좁은 화면: 탭은 위 가로 스크롤, 행은 세로로 */
+@media (max-width: 720px) {
+  .mp-page {
+    padding: 1.2rem 1rem 2rem;
+  }
+  .mp-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .mp-tabs {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+    gap: 0;
+  }
+  .mp-tab {
+    width: auto;
+    flex: none;
+    border-radius: 0;
+    padding: 0.6rem 0.8rem;
+  }
+  .mp-tab.active {
+    background: none;
+    box-shadow: inset 0 -2px 0 var(--accent);
+  }
+  .mp-tab-danger.active {
+    box-shadow: inset 0 -2px 0 #f87171;
+  }
+  .mp-row-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .mp-row-label {
+    grid-column: 1 / -1;
+  }
+  .mp-row-expand,
+  .mp-row > .mp-msg {
+    margin-left: 0;
+  }
+  .mp-danger-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .mp-hero-text p {
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .mp-hero-text p span + span::before {
+    content: none; /* 세로로 쌓이면 구분점이 줄 맨 앞에 남으므로 뺀다 */
+  }
 }
