@@ -19,7 +19,7 @@ def _fake_generate(responses):
     calls = []
 
     def generate(model, prompt, *, json_mode=False, response_schema=None,
-                 project_id=None, purpose="qa", scan_id=None):
+                 project_id=None, purpose="qa", scan_id=None, system=None):
         calls.append(prompt)
         idx = len(calls) - 1
         if idx >= len(responses):
@@ -70,7 +70,7 @@ def test_run_agentic_stops_at_max_steps(monkeypatch):
     call_n = {"n": 0}
 
     def generate(model, prompt, *, json_mode=False, response_schema=None,
-                 project_id=None, purpose="qa", scan_id=None):
+                 project_id=None, purpose="qa", scan_id=None, system=None):
         call_n["n"] += 1
         return json.dumps({"action": "call_tool", "tool": "semantic_search", "params": {"q": f"질의{call_n['n']}"}})
 
@@ -87,7 +87,7 @@ def test_run_agentic_stops_at_max_steps(monkeypatch):
 
 def test_run_agentic_stops_on_repeated_identical_call(monkeypatch):
     def generate(model, prompt, *, json_mode=False, response_schema=None,
-                 project_id=None, purpose="qa", scan_id=None):
+                 project_id=None, purpose="qa", scan_id=None, system=None):
         return json.dumps({"action": "call_tool", "tool": "semantic_search", "params": {"q": "같은 질의"}})
 
     monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
@@ -113,7 +113,7 @@ def test_run_agentic_stops_on_repeated_identical_call(monkeypatch):
 
 def test_run_agentic_fail_open_on_bad_json(monkeypatch):
     def generate(model, prompt, *, json_mode=False, response_schema=None,
-                 project_id=None, purpose="qa", scan_id=None):
+                 project_id=None, purpose="qa", scan_id=None, system=None):
         return "이건 JSON이 아니다"
 
     monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
@@ -234,7 +234,7 @@ def test_run_agentic_on_step_failure_does_not_break_loop(monkeypatch):
 
 def test_build_plan_fails_open_on_bad_json(monkeypatch):
     def generate(model, prompt, *, json_mode=False, response_schema=None,
-                 project_id=None, purpose="qa", scan_id=None):
+                 project_id=None, purpose="qa", scan_id=None, system=None):
         return "이건 JSON이 아니다"
 
     monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
@@ -313,8 +313,9 @@ def test_run_agentic_backstop_skipped_without_scan(monkeypatch):
     assert [u["name"] for u in used] == ["repo_commits"]
 
 
-def test_run_agentic_backstop_not_triggered_when_analysis_tool_ran(monkeypatch):
-    """분석 도구가 이미 한 번이라도 돌았으면 백스톱은 붙지 않는다."""
+def test_run_agentic_backstop_fills_skipped_cheap_tool_even_after_search(monkeypatch):
+    """계획에 있던 dataflow/call_graph(LLM 호출 없는 싼 도구)는 semantic_search가 이미 돌았어도
+    채워 넣는다 — 베이스라인에서 보안 질문에 semantic_search만 보고 "위험 없음"이라 답한 거짓 음성."""
     responses = [
         {"steps": ["1. semantic_search로 검색", "2. dataflow_security로 탐지"]},
         {"action": "call_tool", "tool": "semantic_search", "params": {"q": "x"}},
@@ -330,7 +331,46 @@ def test_run_agentic_backstop_not_triggered_when_analysis_tool_ran(monkeypatch):
         model="qwen2.5-coder", on_step=lambda e: None,
     )
 
-    assert [u["name"] for u in used] == ["semantic_search"]
+    assert [u["name"] for u in used] == ["semantic_search", "dataflow_security"]
+
+
+def test_run_agentic_backstop_not_triggered_for_skipped_search_when_analysis_ran(monkeypatch):
+    """비싼 도구(semantic_search, 임베딩 호출)는 다른 분석 도구가 이미 돌았으면 채우지 않는다."""
+    responses = [
+        {"steps": [{"text": "호출 관계", "tool": "call_graph"}, {"text": "검색", "tool": "semantic_search"}]},
+        {"action": "call_tool", "tool": "call_graph", "params": {"symbol": "f"}},
+        {"action": "finish"},
+    ]
+    generate, _ = _fake_generate(responses)
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    monkeypatch.setattr(orchestrator, "_execute_tool",
+                         lambda cur, ctx, name, params, question: [{"dummy": name}])
+    used, _ = orchestrator.run_agentic(cur=None, ctx={"scan_id": "s1"}, question="f 누가 불러?",
+                                       model="m", on_step=lambda e: None)
+    assert [u["name"] for u in used] == ["call_graph"]
+
+
+def test_run_agentic_forces_search_when_code_tools_all_empty(monkeypatch):
+    """dataflow가 0건(키워드 필터로 전부 걸러짐)인 채 끝나려 하면 semantic_search를 1회 돌린다."""
+    responses = [
+        {"action": "call_tool", "tool": "dataflow_security", "params": {"keywords": ["pii"]}},
+        {"action": "finish"},
+        {"action": "finish"},
+    ]
+    generate, _ = _fake_generate(responses)
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    monkeypatch.setattr(orchestrator, "_execute_tool",
+                        lambda cur, ctx, name, params, question: [] if name == "dataflow_security" else [{"d": 1}])
+    used, _ = orchestrator.run_agentic(cur=None, ctx={"scan_id": "s1"}, question="개인정보 어디서 탐지해?", model="m")
+    assert [u["name"] for u in used] == ["dataflow_security", "semantic_search"]
+
+
+def test_empty_evidence_after_tools_gets_fixed_answer_not_llm(monkeypatch):
+    monkeypatch.setattr(orchestrator.ai_providers, "generate",
+                        lambda *a, **k: pytest.fail("근거가 비면 LLM을 부르지 않는다"))
+    out = orchestrator.synthesize_answer("개인정보 어디서 탐지해?", {"project_info": [{"name": "p"}]},
+                                         model="m", executed_tools=["dataflow_security"], analysis_available=True)
+    assert "찾지 못" in out and "스캔이 없어" not in out
 
 
 def test_run_agentic_forces_semantic_search_after_codebase_structure_only(monkeypatch):
@@ -375,7 +415,7 @@ def test_run_agentic_forces_semantic_search_on_unparseable_response_too(monkeypa
     call_n = {"n": 0}
 
     def generate(model, prompt, *, json_mode=False, response_schema=None,
-                 project_id=None, purpose="qa", scan_id=None):
+                 project_id=None, purpose="qa", scan_id=None, system=None):
         call_n["n"] += 1
         if call_n["n"] == 1:
             return json.dumps({"action": "call_tool", "tool": "codebase_structure", "params": {}})
@@ -498,7 +538,7 @@ def test_execute_tool_passes_domain_to_search_symbols(monkeypatch):
         calls.append({"q": q, "limit": limit, "domain": domain})
         return [{"dummy": True}]
 
-    monkeypatch.setattr(orchestrator, "search_symbols", fake_search_symbols)
+    monkeypatch.setattr(orchestrator, "hybrid_search_symbols", fake_search_symbols)
 
     orchestrator._execute_tool(
         cur=None, ctx={"scan_id": "s1"}, name="semantic_search",
@@ -512,6 +552,197 @@ def test_execute_tool_passes_domain_to_search_symbols(monkeypatch):
         params={"q": "회원가입"}, question="회원가입 정책 설명해주세요",
     )
     assert calls == [{"q": "회원가입", "limit": 10, "domain": None}]
+
+
+def test_semantic_search_retries_without_domain_when_scoped_search_is_empty(monkeypatch):
+    """도메인 태깅이 틀려 범위 검색이 0건이면 전체에서 한 번 더 찾는다."""
+    calls = []
+
+    def fake_search_symbols(cur, scan_id, q, limit, domain=None):
+        calls.append(domain)
+        return [] if domain else [{"qualified_name": "login"}]
+
+    monkeypatch.setattr(orchestrator, "hybrid_search_symbols", fake_search_symbols)
+    out = orchestrator._execute_tool(None, {"scan_id": "s1"}, "semantic_search",
+                                     {"q": "로그인", "domain": "잘못된 도메인"}, "로그인 어디서 해?")
+    assert calls == ["잘못된 도메인", None]
+    assert out == [{"qualified_name": "login"}]
+
+
+def test_query_terms_strip_particles_and_generic_words():
+    from app.scan_queries import _query_terms
+
+    assert _query_terms("금지어 필터링은 어떻게 구현돼 있어?") == ["금지어", "필터링", "구현돼"]
+    assert _query_terms("presigned URL은 어디서 만들어?") == ["presigned", "url", "만들어"]
+    assert _query_terms("주민등록번호나 전화번호 탐지") == ["주민등록번호", "전화번호", "탐지"]
+
+
+# --------------------------------------------------------------------- params 정규화
+
+def test_normalize_params_fixes_shapes_local_models_emit():
+    n = orchestrator._normalize_params
+    assert n(["not", "a", "dict"]) == {}
+    assert n(None) == {}
+    # keywords 문자열 → 리스트(예전엔 글자 단위로 순회해 필터가 무력화됐다)
+    assert n({"keywords": "sql, query execute"}) == {"keywords": ["sql", "query", "execute"]}
+    assert n({"keywords": ["a", "a", " ", "b"]}) == {"keywords": ["a", "b"]}
+    assert n({"state": "OPEN"}) == {"state": "open"}
+    assert n({"state": "머지"}) == {"state": "merged"}
+    assert n({"state": "all"}) == {}
+    assert n({"direction": "Callee"}) == {"direction": "callees"}
+    assert n({"start_line": "12", "end_line": "x"}) == {"start_line": 12}
+    assert n({"q": "  로그인 ", "domain": ""}) == {"q": "로그인"}
+
+
+def test_fallback_parser_normalizes_params_and_survives_non_dict():
+    raw = json.dumps({"action": "dataflow_security", "params": {"keywords": "sql,인젝션"}})
+    assert orchestrator._parse_step_decision(raw) == ("dataflow_security", {"keywords": ["sql", "인젝션"]})
+    assert orchestrator._parse_step_decision(json.dumps(["call_tool"])) is None
+    assert orchestrator._parse_step_decision_ex(json.dumps({"action": "call_tool", "tool": "x"}))[1] == "fail"
+
+
+def test_run_agentic_survives_non_dict_params(monkeypatch):
+    """폴백 경로에서 params가 리스트로 와도 루프가 죽지 않는다(예전엔 tool_target_text에서 AttributeError)."""
+    responses = [{"steps": []},  # on_step이 있으면 계획 호출이 먼저
+                 {"action": "call_tool", "tool": "call_graph", "params": ["login"]}, {"action": "finish"}]
+    generate, _ = _fake_generate(responses)
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    executed = []
+    monkeypatch.setattr(orchestrator, "_execute_tool",
+                        lambda cur, ctx, name, params, question: executed.append((name, params)) or [{"x": 1}])
+    used, _ = orchestrator.run_agentic(cur=None, ctx={"scan_id": "s1"}, question="login 누가 호출해?",
+                                       model="m", on_step=lambda e: None)
+    assert executed == [("call_graph", {})]
+
+
+# --------------------------------------------------------------------- 계획 tool 필드 / 백스톱
+
+def test_plan_steps_carry_tool_and_backstop_uses_it(monkeypatch):
+    """계획 문장이 자연어여도(도구 이름이 없어도) tool 필드로 백스톱이 동작한다 —
+    예전엔 문장 안에서 도구 이름을 찾아서 거의 발동하지 않았다."""
+    responses = [
+        {"steps": [{"text": "위험한 데이터 흐름 확인", "tool": "dataflow_security"}]},
+        {"action": "call_tool", "tool": "repo_commits", "params": {}},
+        {"action": "finish"},
+    ]
+    generate, _ = _fake_generate(responses)
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    executed = []
+    monkeypatch.setattr(orchestrator, "_execute_tool",
+                        lambda cur, ctx, name, params, question: executed.append(name) or [{"d": name}])
+    events = []
+    orchestrator.run_agentic(cur=None, ctx={"scan_id": "s1"}, question="보안 점검해줘",
+                             model="m", on_step=events.append)
+    assert executed == ["repo_commits", "dataflow_security"]
+    plan_done = next(e for e in events if e["type"] == "plan" and e["status"] == "done")
+    assert plan_done["plan_steps"] == ["위험한 데이터 흐름 확인"]  # 화면엔 문장만
+
+
+def test_step_summary_shows_top_results():
+    s = orchestrator._summarize_step("semantic_search", {"q": "x"},
+                                     [{"qualified_name": "login", "path": "a/auth.js"},
+                                      {"qualified_name": "logout", "path": "a/auth.js"}])
+    assert s["result"] == "2건"
+    assert s["top"] == ["login (a/auth.js)", "logout (a/auth.js)"]
+
+
+def test_conversation_is_injected_into_plan_and_step_prompts(monkeypatch):
+    responses = [{"steps": [{"text": "호출 관계 확인", "tool": "call_graph"}]}, {"action": "finish"}]
+    generate, calls = _fake_generate(responses)
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    monkeypatch.setattr(orchestrator, "_execute_tool", lambda *a, **k: None)
+    orchestrator.run_agentic(cur=None, ctx={"scan_id": "s1"}, question="그 함수 누가 호출해?",
+                             model="m", on_step=lambda e: None,
+                             conversation="사용자: 로그인 어디서 해?\n어시스턴트: auth.service.js의 login")
+    assert "auth.service.js의 login" in calls[0]
+    assert "auth.service.js의 login" in calls[1]
+
+
+def test_repeated_search_results_are_deduplicated(monkeypatch):
+    responses = [
+        {"action": "call_tool", "tool": "semantic_search", "params": {"q": "a"}},
+        {"action": "call_tool", "tool": "semantic_search", "params": {"q": "b"}},
+        {"action": "finish"},
+    ]
+    generate, _ = _fake_generate(responses)
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    monkeypatch.setattr(orchestrator, "_execute_tool",
+                        lambda cur, ctx, name, params, question: [{"k": 1}, {"k": params["q"]}])
+    _, results = orchestrator.run_agentic(cur=None, ctx={"scan_id": "s1"}, question="q", model="m")
+    assert results["semantic_search"] == [{"k": 1}, {"k": "a"}, {"k": "b"}]
+
+
+# --------------------------------------------------------------------- 관련성 필터 견고화
+
+@pytest.mark.parametrize("response, expected", [
+    ({"semantic_search": [1]}, [{"n": 1}]),
+    ({"semantic_search": 1}, [{"n": 1}]),            # 예전: set(1) → TypeError로 턴 전체 실패
+    ({"semantic_search": ["0", "2"]}, [{"n": 0}, {"n": 2}]),  # 예전: 문자열이라 전부 버려짐
+    ({"semantic_search": [{"idx": 2}]}, [{"n": 2}]),
+    ({"semantic_search": ["login"]}, [{"n": 0}, {"n": 1}, {"n": 2}]),  # 해석 불가 → 원본 유지
+    ({"semantic_search": []}, None),                  # 명시적으로 모두 무관 → 그룹 제거
+    (["not", "dict"], [{"n": 0}, {"n": 1}, {"n": 2}]),  # 예전: AttributeError
+])
+def test_check_relevance_tolerates_odd_index_shapes(monkeypatch, response, expected):
+    generate, _ = _fake_generate([response])
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    out = orchestrator.check_relevance("q", {"semantic_search": [{"n": 0}, {"n": 1}, {"n": 2}],
+                                             "project_info": [{"name": "p"}]}, model="m")
+    assert out.get("semantic_search") == expected
+    assert out["project_info"] == [{"name": "p"}]  # 메타데이터는 거르지 않는다
+
+
+def test_check_relevance_keeps_read_code_untouched(monkeypatch):
+    generate, calls = _fake_generate([{"semantic_search": []}])
+    monkeypatch.setattr(orchestrator.ai_providers, "generate", generate)
+    code = [{"path": "a.js", "start_line": 1, "end_line": 3, "code": "1| x"}]
+    out = orchestrator.check_relevance("q", {"semantic_search": [{"n": 0}], "read_code": code}, model="m")
+    assert out == {"read_code": code}
+    assert "1| x" not in calls[0]  # 코드는 관련성 판단 프롬프트에 싣지 않는다
+
+
+# --------------------------------------------------------------------- 코드 자동 첨부 / 예산
+
+def test_attach_code_picks_sinks_targets_then_search_hits(monkeypatch):
+    read = []
+
+    def fake_read_symbol(cur, scan_id, key, *, focus_line=None, max_lines=80):
+        read.append((key, focus_line))
+        return {"symbol_key": key, "path": f"{key}.js", "start_line": 1, "end_line": 2, "code": "1| x"}
+
+    monkeypatch.setattr(orchestrator.source_reader, "read_symbol", fake_read_symbol)
+    evidence = {
+        "semantic_search": [{"symbol_key": "s1", "kind": "function"}, {"symbol_key": "m", "kind": "module"}],
+        "call_graph": [{"relation": "caller", "symbol_key": "c1"}, {"relation": "target", "symbol_key": "t1"}],
+        "dataflow_security": [{"sink_symbol_key": "k1", "sink_line": 17}],
+    }
+    events = []
+    out = orchestrator.attach_code(None, "scan", evidence, on_step=events.append)
+    assert read == [("k1", 17), ("t1", None), ("s1", None)]
+    assert [c["symbol_key"] for c in out["read_code"]] == ["k1", "t1", "s1"]
+    assert [(e["type"], e["tool"]) for e in events] == [("tool_call", "read_code"), ("tool_result", "read_code")]
+
+
+def test_attach_code_noop_without_scan():
+    ev = {"semantic_search": [{"symbol_key": "s1"}]}
+    assert orchestrator.attach_code(None, None, ev) is ev
+
+
+def test_synthesize_prompt_respects_local_context_budget():
+    """도구 결과가 아무리 커도 로컬 모델(8192) 프롬프트는 예산 안에 든다 — 베이스라인에서
+    Ollama가 앞부분(지시문)을 잘라 '코드 조회가 필요 없어 보입니다'로 답한 원인."""
+    from app import context_budget
+
+    big = {"dataflow_security": [{"category": "sql_injection", "sink_path": f"src/f{i}.js",
+                                  "path": [{"path": f"src/h{j}.js", "line": j} for j in range(12)],
+                                  "sink_symbol_key": "x" * 200} for i in range(40)],
+           "repo_commits": [{"message": "m" * 2000} for _ in range(20)]}
+    prompt = orchestrator._synthesize_prompt("SQL 인젝션 있어?", big, ["dataflow_security"], True,
+                                             model="local-qwen-coder")
+    budget = 8192 - orchestrator._OUTPUT_RESERVE
+    assert context_budget.estimate_tokens(prompt + orchestrator._SYNTHESIZE_SYSTEM) < budget
+    assert "생략" in prompt  # 잘라낸 사실을 모델에 알린다
+    assert "x" * 200 not in prompt  # 내부 키는 빠진다
 
 
 def test_tool_target_text_is_human_readable():
@@ -590,7 +821,7 @@ def _capturing_generate(responses):
     calls = []
 
     def generate(model, prompt, *, json_mode=False, response_schema=None,
-                 project_id=None, purpose="qa", scan_id=None):
+                 project_id=None, purpose="qa", scan_id=None, system=None):
         calls.append({"response_schema": response_schema, "json_mode": json_mode})
         idx = len(calls) - 1
         if idx >= len(responses):

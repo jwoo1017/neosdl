@@ -33,3 +33,17 @@ def provider_of(alias: str) -> str:
     if alias in _PROVIDER_BY_ID:
         return _PROVIDER_BY_ID[alias]
     return "local" if alias.startswith("local-") else "other"
+
+
+# 외부 모델은 모두 128k 이상이지만, 근거를 많이 싣는다고 답이 좋아지지 않고 비용·지연만
+# 는다 — 채팅 근거 예산 계산용 상한으로 32k를 쓴다.
+_EXTERNAL_CONTEXT_CAP = 32768
+
+
+def context_window(alias: str) -> int:
+    """채팅 프롬프트 예산(app/context_budget.py)의 기준이 되는 컨텍스트 길이(토큰)."""
+    from app.config import settings
+
+    if provider_of(alias) == "local":
+        return settings().local_model_context
+    return _EXTERNAL_CONTEXT_CAP

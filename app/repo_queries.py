@@ -110,9 +110,17 @@ def list_repo_branches(repo_info: dict) -> list[dict]:
 # 보다 실제로 물어본 걸 답해주는 쪽이 사용자에게 낫다.
 # ---------------------------------------------------------------------------
 
+def _has_rows(cur, table: str, repository_id: UUID) -> bool:
+    # table은 아래 호출부의 고정 문자열만 들어온다(사용자 입력 아님).
+    cur.execute(f"SELECT 1 FROM {table} WHERE repository_id=%s LIMIT 1", (str(repository_id),))
+    return cur.fetchone() is not None
+
+
 def list_commits_for_chat(cur, repository_id: UUID, *, limit: int = 20, query: str | None = None) -> list[dict]:
+    """로컬에 동기화된 커밋이 하나도 없을 때만 GitHub로 폴백한다 — "키워드에 맞는 커밋이
+    없다"(정상적인 빈 결과)를 "동기화 안 됨"으로 오인해 라이브 조회하지 않는다."""
     rows = list_commits(cur, repository_id, limit=limit, query=query)
-    if rows:
+    if rows or _has_rows(cur, "git_commit", repository_id):
         return rows
     repo = repo_github_info(cur, repository_id)
     _, commits = _gh_list_recent_commits(repo["github_installation_id"], repo["namespace"], repo["name"],
@@ -135,12 +143,20 @@ def list_commits_for_chat(cur, repository_id: UUID, *, limit: int = 20, query: s
 
 def list_pull_requests_for_chat(cur, repository_id: UUID, *, state: str | None = None,
                                  limit: int = 20) -> list[dict]:
-    rows = list_pull_requests(cur, repository_id, state=state, limit=limit)
-    if rows:
+    """state: open|closed|merged|None(전체). merged는 GitHub에 별도 state가 없어
+    closed 중 merged인 것으로 거른다. 폴백 규칙은 list_commits_for_chat과 같다."""
+    merged_only = state == "merged"
+    db_state = "closed" if merged_only else state
+    rows = list_pull_requests(cur, repository_id, state=db_state, limit=None if merged_only else limit)
+    if merged_only:
+        rows = [r for r in rows if r.get("merged")][:limit]
+    if rows or _has_rows(cur, "pull_request", repository_id):
         return rows
     repo = repo_github_info(cur, repository_id)
     prs = _gh_list_pull_requests(repo["github_installation_id"], repo["namespace"], repo["name"],
-                                  state=state or "all", limit=limit)
+                                  state=db_state or "all", limit=limit)
+    if merged_only:
+        prs = [pr for pr in prs if pr.get("merged_at")]
     return [
         {
             "number": pr["number"], "title": pr["title"], "state": pr["state"],
@@ -156,7 +172,7 @@ def list_pull_requests_for_chat(cur, repository_id: UUID, *, state: str | None =
 
 def list_releases_for_chat(cur, repository_id: UUID, *, limit: int = 10) -> list[dict]:
     rows = list_releases(cur, repository_id, limit=limit)
-    if rows:
+    if rows or _has_rows(cur, "release", repository_id):
         return rows
     repo = repo_github_info(cur, repository_id)
     gh_releases = _gh_list_releases(repo["github_installation_id"], repo["namespace"], repo["name"])

@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     litellm_api_key: str = ""            # 게이트웨이 virtual key (없으면 인증 없이 시도)
     # 요청에 모델이 없거나 "auto" 일 때 쓰는 전역 기본값. 로컬 모델이라 키가 없어도 동작.
     default_chat_model: str = "local-qwen-coder"
+    # 로컬 모델(local-*)의 컨텍스트 길이(토큰). vLLM --max-model-len(deploy/compose.llm.yml)과
+    # dev Ollama num_ctx(litellm/config.yaml)에 맞춘다 — app/context_budget.py 예산의 기준.
+    local_model_context: int = 8192
     # 임베딩 전용 게이트웨이 별칭 (vector(1024) 유지 위해 mxbai-embed-large 로 라우팅).
     embed_model: str = "local-embed"
 

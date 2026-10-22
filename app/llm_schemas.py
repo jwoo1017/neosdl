@@ -21,14 +21,33 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+ToolName = Literal[
+    "codebase_structure", "semantic_search", "call_graph", "read_code",
+    "dataflow_security", "dataflow_business", "repo_commits",
+    "repo_pull_requests", "repo_releases", "repo_branches",
+]
+
+
+class PlanStep(BaseModel):
+    """계획 한 단계 — 화면에 보일 문장(text)과 그 단계가 실행할 도구(tool).
+
+    예전엔 문장만 받아서, 계획 커버리지 백스톱이 문장 안에서 도구 이름 문자열을
+    찾았다 — 그런데 프롬프트가 "관련 파일 탐색" 같은 자연어를 요구하니 거의 매칭되지
+    않았다. 도구를 별도 필드로 받아 백스톱이 실제로 동작하게 한다.
+    """
+
+    text: str
+    tool: ToolName | None = None
+
+
 class PlanSteps(BaseModel):
     """`app/orchestrator.py::_build_plan`의 응답 스키마."""
 
-    steps: list[str]
+    steps: list[PlanStep]
 
 
 class StepParams(BaseModel):
-    """`StepDecision.params` — 9개 도구의 파라미터 모양을 전부 optional로 담는
+    """`StepDecision.params` — 10개 도구의 파라미터 모양을 전부 optional로 담는
     평평한 합집합. discriminated union(도구별 중첩 모델)이 더 "정확"하지만,
     JSON-Schema의 `oneOf`가 llama.cpp의 GBNF 변환에서 온전히 지원되는지
     검증되지 않아 1차 구현에서는 피한다 — `app/orchestrator.py::_execute_tool`이
@@ -42,22 +61,22 @@ class StepParams(BaseModel):
     keywords: list[str] | None = None
     query: str | None = None
     state: str | None = None
+    direction: str | None = None
+    path: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 class StepDecision(BaseModel):
     """`app/orchestrator.py::run_agentic` 스텝 루프(`_STEP_PROMPT`)의 응답 스키마.
 
-    `tool`의 9개 값은 `app/orchestrator.py::TOOLS`의 도구명과 반드시 일치해야
+    `tool`의 값(`ToolName`)은 `app/orchestrator.py::TOOLS`의 도구명과 반드시 일치해야
     한다 — 새 도구를 추가하면 여기도 같이 고쳐야 한다(테스트
     `test_step_decision_tool_names_match_tools`가 드리프트를 감지한다).
     """
 
     action: Literal["call_tool", "finish"]
-    tool: Literal[
-        "codebase_structure", "semantic_search", "call_graph",
-        "dataflow_security", "dataflow_business", "repo_commits",
-        "repo_pull_requests", "repo_releases", "repo_branches",
-    ] | None = None
+    tool: ToolName | None = None
     params: StepParams | None = None
 
 

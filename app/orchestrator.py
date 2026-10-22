@@ -22,23 +22,34 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Callable
 
 from pydantic import ValidationError
 
-from app import ai_providers, llm_schemas, observability, repo_queries
+from app import ai_providers, context_budget, decision_log, llm_schemas, observability, repo_queries, source_reader
 from app.agent_events import (
     AgentEvent, mark_done, new_event, thinking_text, tool_result_text, tool_target_text,
 )
-from app.scan_queries import call_graph_paths, domain_overview, run_dataflow, search_symbols
+from app.model_catalog import context_window
+from app.scan_queries import call_graph_paths, domain_overview, hybrid_search_symbols, resolve_symbols, run_dataflow
 
 log = logging.getLogger("app.orchestrator")
 
 MAX_STEPS = 5
 
+# 답변 합성 직전, 근거에서 뽑아 실제 소스를 자동으로 붙이는 심볼 수(app/source_reader.py).
+_AUTO_CODE_SYMBOLS = 3
+
+# 프롬프트 예산(토큰): 컨텍스트에서 출력·지시문 몫을 뺀 나머지를 근거에 쓴다.
+_OUTPUT_RESERVE = 1200
+_PROMPT_OVERHEAD = 1300
+
 # 계획이 이 도구들 중 하나라도 지목했는데 루프가 하나도 실행하지 않고 끝나면,
 # run_agentic 말미의 계획 커버리지 백스톱이 계획에 등장한 첫 번째 미실행 도구를 1회 강제 실행한다.
 _ANALYSIS_TOOLS = ("dataflow_security", "dataflow_business", "semantic_search", "call_graph")
+# 그중 LLM/임베딩 호출 없이 DB만 읽는 도구 — 다른 분석 도구가 이미 돌았어도 계획대로 채워 넣는다.
+_CHEAP_ANALYSIS_TOOLS = ("dataflow_security", "dataflow_business", "call_graph")
 
 # codebase_structure는 도메인/파일수 개요만 주고 파일 경로·코드·심볼이 없다 — 이것만
 # 보고 finish하면 synthesize_answer가 얇은 근거를 그럴듯한 환각으로 채운 사례가 실전
@@ -52,10 +63,10 @@ TOOLS = [
     {
         "name": "codebase_structure",
         "description": "이 코드베이스가 어떤 도메인/모듈로 구성되어 있는지 개요(도메인별 파일 수) 조회 — "
-                        "semantic_search/call_graph에 넣을 정확한 이름/키워드를 모르겠거나, 방금 쓴 검색이 "
-                        "엉뚱한 결과만 줬을 때 먼저 이걸로 방향을 잡는다. 여기서 관련 도메인을 찾으면 그 "
-                        "자체로 답하지 말고, 그 도메인 이름을 semantic_search의 domain 파라미터에 넣어 "
-                        "그 안에서 실제 파일/함수를 찾아야 한다 — 도메인을 찾은 것과 근거를 찾은 것은 다르다",
+                        "질문이 프로젝트 전체 구성을 묻거나, semantic_search가 엉뚱한 결과만 줬을 때만 쓴다"
+                        "(특정 기능/함수 위치를 묻는 질문은 바로 semantic_search부터). 여기서 관련 도메인을 "
+                        "찾으면 그 자체로 답하지 말고, 그 도메인 이름을 semantic_search의 domain 파라미터에 "
+                        "넣어 실제 파일/함수를 찾아야 한다 — 도메인을 찾은 것과 근거를 찾은 것은 다르다",
         "params": {},
     },
     {
@@ -70,8 +81,18 @@ TOOLS = [
     },
     {
         "name": "call_graph",
-        "description": "특정 함수를 누가 호출하는지, 또는 그 함수까지의 호출 경로(위험도 전파 경로)를 조회",
-        "params": {"symbol": "찾을 함수/메서드 이름 또는 설명"},
+        "description": "특정 함수를 누가 호출하는지(callers), 그 함수가 내부에서 무엇을 호출하는지(callees) "
+                        "호출 관계와 경로를 조회 — 결과에 각 함수의 파일 경로와 줄 범위가 포함된다",
+        "params": {"symbol": "함수/메서드 이름(파일 힌트를 붙여도 됨, 예: 'auth.service.login')",
+                   "direction": "(선택) 'callers'(누가 호출) | 'callees'(무엇을 호출) | 'both'(기본)"},
+    },
+    {
+        "name": "read_code",
+        "description": "함수의 실제 소스 코드를 줄 번호와 함께 읽는다 — 동작 방식·조건·검증 로직처럼 "
+                        "코드 내용을 봐야 답할 수 있을 때. 다른 도구로 찾은 함수 이름이나 파일 경로를 넣는다",
+        "params": {"symbol": "읽을 함수/메서드 이름(예: 'createPresignedUploads')",
+                   "path": "(선택) symbol 대신 파일 경로",
+                   "start_line": "(선택) path와 함께 줄 범위 시작", "end_line": "(선택) 줄 범위 끝"},
     },
     {
         "name": "dataflow_security",
@@ -106,11 +127,12 @@ TOOLS = [
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOLS}
+TOOLS_ORDER = [t["name"] for t in TOOLS]
 
 _STEP_PROMPT = """사용자 질문에 답할 근거를 모으는 중이다. 지금까지 실행한 도구와 결과 요약을 보고,
 도구를 하나 더 불러야 하는지 판단하시오.
 
-질문: {question}
+{conversation_block}질문: {question}
 
 사용 가능한 도구:
 {tools_block}
@@ -118,14 +140,19 @@ _STEP_PROMPT = """사용자 질문에 답할 근거를 모으는 중이다. 지�
 이 질문에 대해 세운 조사 계획:
 {plan_block}
 
-지금까지 실행한 도구(요약):
+지금까지 실행한 도구(요약 — top은 상위 결과 일부):
 {history_json}
 
 규칙:
+- 질문이 이 코드베이스와 무관한 일반 지식/인사이면 도구 없이 바로 finish 한다.
 - 계획의 조사 단계 중 아직 실행하지 않은 도구가 있으면 finish 하지 마라 — 남은 단계에 해당하는 도구를 골라라.
 - 지금까지 도구를 한 번도 성공적으로 실행하지 못했다면 finish 하지 마라(어떤 도구도 이 질문에 명백히 무의미한 경우만 예외).
 - 위 두 경우가 아니고, 이미 답하는 데 충분한 근거를 모았거나 이 질문에 어떤 도구도 도움이 안 되면 그만 모은다(action: finish).
 - 이미 시도한 도구를 같은 params로 다시 부르지 마라 — 더 얻을 근거가 없다는 뜻이다.
+- 질문에 함수/메서드 이름이 있고 "누가 호출/어디서 불려/무엇을 호출/내부 동작"을 물으면
+  semantic_search 대신 바로 call_graph를 써라(params.symbol에 그 이름, params.direction에
+  'callers'(누가 호출) 또는 'callees'(무엇을 호출)).
+- 코드가 "어떻게 동작/검증/처리하는지" 내용을 물으면, 위치를 찾은 뒤 read_code로 실제 코드를 읽어라.
 - semantic_search나 call_graph를 이미 불렀는데 결과가 질문과 무관해 보이거나(엉뚱한 파일/도메인)
   비어 있으면, 같은 검색어를 바꿔가며 반복하지 말고 codebase_structure로 이 코드베이스에
   실제로 어떤 도메인이 있는지 먼저 확인한 뒤 그 도메인 이름으로 다시 검색하라.
@@ -135,7 +162,8 @@ _STEP_PROMPT = """사용자 질문에 답할 근거를 모으는 중이다. 지�
 - semantic_search를 고를 땐 params.q에 질문을 그대로 옮기지 말고, 검색 적중률을 높이도록
   관련 동의어/영어 용어 등을 보태 확장한 질의를 넣는다
   (예: "사진은 어디에 저장되나요?" → "사진 이미지 저장 upload storage S3 파일 저장").
-- call_graph를 고를 땐 params.symbol에 찾으려는 함수/메서드 이름을 최대한 정확히 넣는다.
+- call_graph/read_code를 고를 땐 params.symbol에 찾으려는 함수/메서드 이름을 최대한 정확히 넣는다
+  (설명 문장이 아니라 식별자. 같은 이름이 여러 파일에 있으면 'auth.service.login'처럼 파일 힌트를 앞에 붙인다).
 - dataflow_security/dataflow_business를 고를 땐 params.keywords에 이 질문의 "구체적" 관심사를
   나타내는 키워드 3~6개를 넣는다(한국어/영어 혼용 가능) — 일반적인 "보안"/"취약점" 같은 단어
   말고, 질문에서 실제로 뭘 찾는지 나타내는 명사를 넣는다
@@ -147,30 +175,40 @@ _STEP_PROMPT = """사용자 질문에 답할 근거를 모으는 중이다. 지�
 "call_tool" 또는 "finish" 둘 중 하나여야 한다 — 도구 이름을 "action" 자리에 직접
 쓰지 마라(예: "action": "dataflow_security"는 틀렸다. "action": "call_tool",
 "tool": "dataflow_security"가 맞다):
-{{"action": "call_tool", "tool": "도구이름", "params": {{"q": "..."}} 또는 {{"q": "...", "domain": "..."}} 또는 {{"keywords": ["..."]}} 또는 {{"symbol": "..."}} 또는 {{}}}}
+{{"action": "call_tool", "tool": "도구이름", "params": {{"q": "..."}} 또는 {{"q": "...", "domain": "..."}} 또는 {{"keywords": ["..."]}} 또는 {{"symbol": "...", "direction": "callers"}} 또는 {{"symbol": "..."}} 또는 {{}}}}
 또는
 {{"action": "finish"}}
 """
 
 _PLAN_PROMPT = """사용자 질문에 답하기 위해 어떤 순서로 조사할지 1~4개의 짧은 계획을 세워라.
 
-질문: {question}
+{conversation_block}질문: {question}
 
 사용 가능한 도구:
 {tools_block}
 
 규칙:
-- 실제로 이 시스템이 할 수 있는 일만 계획에 넣어라(코드 검색, 호출 관계 분석, 데이터 흐름 분석,
-  저장소 이력 확인 등) — 파일 수정이나 코드 실행 같은 건 이 시스템이 할 수 없다.
-- 각 항목은 한국어 한 문장으로, 실제 수행할 조사 단계처럼 간결하게 쓴다
-  (예: "관련 파일 탐색", "API 호출 구조 확인", "관련 커밋 이력 확인").
-- 항목 앞에 "1.", "2." 같은 번호를 붙이지 마라 — 순서는 배열 순서로 이미 정해진다.
-- 각 단계는 위 도구 중 하나를 실제로 실행하는 것에 대응해야 한다. "키워드 정리", "생각 정리"
-  같은 도구 실행이 없는 단계는 넣지 마라.
-- 질문이 매우 단순해서 계획이랄 게 없으면 steps를 1개만 넣어도 된다.
+- 실제로 이 시스템이 할 수 있는 일만 계획에 넣어라(코드 검색, 호출 관계 분석, 코드 읽기, 데이터 흐름
+  분석, 저장소 이력 확인 등) — 파일 수정이나 코드 실행 같은 건 이 시스템이 할 수 없다.
+- 각 단계의 text는 한국어 한 문장으로, 실제 수행할 조사 단계처럼 간결하게 쓴다
+  (예: "관련 파일 탐색", "호출 관계 확인", "관련 커밋 이력 확인"). 번호를 붙이지 마라.
+- 각 단계의 tool에는 그 단계에서 실행할 도구 이름을 위 목록에서 정확히 하나 넣는다.
+  도구 실행이 없는 단계("키워드 정리", "생각 정리")는 넣지 마라.
+- 특정 기능/함수의 위치를 묻는 질문은 codebase_structure 없이 semantic_search부터 시작한다.
+- 보안 취약점·인젝션·위험한 입력 처리를 묻는 질문에는 반드시 dataflow_security 단계를 넣는다.
+  도메인 간 데이터 이동·비즈니스 흐름을 묻는 질문에는 반드시 dataflow_business 단계를 넣는다.
+- 질문이 이 코드베이스와 무관한 일반 지식이나 인사면 steps를 빈 배열로 낸다.
+
+질문 유형별 예시(그대로 베끼지 말고 질문에 맞게 쓴다):
+- "issueToken 누가 호출해?" → [{{"text": "issueToken 호출하는 곳 확인", "tool": "call_graph"}}]
+- "SQL 인젝션 위험 있어?" → [{{"text": "외부 입력이 쿼리까지 가는 흐름 탐지", "tool": "dataflow_security"}}, {{"text": "위험 지점 코드 확인", "tool": "read_code"}}]
+- "결제 도메인에서 주문 도메인으로 뭐가 넘어가?" → [{{"text": "도메인 경계를 넘는 호출 탐지", "tool": "dataflow_business"}}]
+- "비밀번호 재설정은 어떻게 동작해?" → [{{"text": "비밀번호 재설정 코드 검색", "tool": "semantic_search"}}, {{"text": "핵심 함수 코드 읽기", "tool": "read_code"}}]
+- "최근 머지된 PR 뭐야?" → [{{"text": "머지된 PR 확인", "tool": "repo_pull_requests"}}]
+- "안녕" / "REST가 뭐야?" → []
 
 아래 JSON 스키마로만 답하라 (다른 설명 금지, 코드블록 금지):
-{{"steps": ["관련 파일 탐색", "API 호출 구조 확인"]}}
+{{"steps": [{{"text": "...", "tool": "도구이름"}}]}}
 """
 
 _RELEVANCE_PROMPT = """아래는 사용자 질문과, 도구로 수집한 근거 후보들이다. 각 그룹에서 질문에
@@ -186,33 +224,41 @@ _RELEVANCE_PROMPT = """아래는 사용자 질문과, 도구로 수집한 근거
 {{"도구이름": [관련 idx, ...], ...}}
 """
 
-_SYNTHESIZE_PROMPT = """아래는 사용자 질문과, 그 질문에 답하기 위해 코드베이스에서 실제로 조회한 근거(evidence)다.
+# 답변 합성: 역할·규칙은 system, 질문·근거는 user(_SYNTHESIZE_PROMPT)로 나눈다 — 근거 JSON이
+# 길어져도 규칙이 묻히지 않는다.
+_SYNTHESIZE_SYSTEM = """너는 사내 코드베이스를 정적 분석한 결과로 질문에 답하는 시니어 엔지니어다.
+사용자가 주는 근거(evidence)는 이 시스템이 코드베이스에서 실제로 조회한 결과다.
 
-질문: {question}
+규칙:
+- 반드시 근거만 사용해서 답하라. 근거에 없는 파일·함수·줄 번호를 지어내지 마라(환각 금지).
+- 답변 형식(마크다운):
+  1. 첫 문단에 질문에 대한 결론을 1~3문장으로.
+  2. 이어서 근거별 글머리표: 파일 경로(가능하면 `경로:줄`)와 함수 이름, 그리고 그 근거가 말해주는 것.
+     줄 번호는 근거에 start_line/end_line/sink_line/call_line 이 있거나, read_code 의 code 에
+     "123| " 처럼 표시된 줄만 인용한다. 그런 줄 정보가 없으면 파일 경로와 함수 이름까지만 쓴다.
+  3. 동작 방식을 설명할 때는 read_code 의 코드에서 핵심 몇 줄을 코드블록으로 인용해도 된다.
+- 호출 관계(call_graph)는 relation=target 이 대상 함수, caller 가 그것을 호출하는 쪽, callee 가
+  그것이 호출하는 쪽이다.
+- 보안 문제(dataflow_security)는 어떤 입력(source)이 어떤 위험 호출(sink)까지 어떤 경로로 가는지와
+  간단한 개선 방향을 함께 말하라.
+- read_code 의 stale=true 항목은 스캔 시점이 아니라 현재 코드 기준이라고 밝혀라.
+- 근거가 부족할 때는 아래를 구분해서 솔직히 답하라(아는 척 금지):
+  - 실행한 도구가 없고 질문이 이 코드베이스와 무관한 일반 지식이면: 일반 지식으로 짧게 답하되,
+    이 코드베이스에 대한 사실처럼 말하지 마라.
+  - 질문이 코드/보안 분석을 요구하는데 '코드 분석 도구 사용 가능 여부'가 False이면:
+    "이 프로젝트에는 완료된 코드 스캔이 없어 요청하신 분석을 수행할 수 없습니다".
+  - 관련 분석 도구를 실행했으나 근거가 비어 있으면: "분석했으나 해당 위험/항목이 발견되지 않았습니다".
+  - 근거에 codebase_structure(도메인 개요) 결과만 있으면, 구체적인 파일 경로나 함수 이름을 절대
+    지어내지 마라 — 관련 도메인 이름까지만 언급하고 정확한 위치는 확인하지 못했다고 명시하라.
+- 한국어로 답하라. 근거 JSON을 그대로 옮겨 적지 마라."""
+
+_SYNTHESIZE_PROMPT = """{conversation_block}질문: {question}
 
 실행한 도구: {executed_tools}
 코드 분석 도구 사용 가능 여부(이 프로젝트에 완료된 스캔이 있는가): {analysis_available}
-
+{truncation_note}
 근거(JSON):
 {evidence_json}
-
-규칙:
-- 반드시 위 근거만 사용해서 답하라. 근거에 없는 내용을 지어내지 마라(환각 금지).
-- 답변에는 가능하면 구체적인 파일 경로, 함수 이름, 줄 번호, 도메인 이름을 인용하라.
-- 근거가 부족할 때는 아래를 구분해서 솔직히 답하라(아는 척 금지):
-  - 실행한 도구가 없고 질문도 코드 조회가 필요 없어 보이면: "이 질문은 코드 조회가 필요 없어 보입니다".
-  - 질문이 코드/보안 분석을 요구하는데 '코드 분석 도구 사용 가능 여부'가 False이면:
-    "이 프로젝트에는 완료된 코드 스캔이 없어 요청하신 분석을 수행할 수 없습니다".
-  - 질문이 코드/보안 분석을 요구하는데 관련 분석 도구(dataflow_security, semantic_search, call_graph 등)를
-    실행하지 않았으면: "요청하신 분석을 아직 수행하지 못했습니다. 다시 시도해 주세요".
-  - 관련 분석 도구를 실행했으나 결과가 비어 있으면: "분석했으나 해당 위험/항목이 발견되지 않았습니다"
-    (이때 "근거를 찾지 못했다"거나 "코드 조회가 필요 없다"고 말하지 마라).
-  - 근거에 codebase_structure(도메인 개요) 결과만 있고 semantic_search/call_graph/
-    dataflow_security/dataflow_business 결과가 전혀 없으면, 구체적인 파일 경로나
-    함수 이름을 절대 지어내지 마라 — 이때는 관련 도메인 이름까지만 언급하고
-    ("관련 도메인은 '{{도메인 이름}}'으로 보입니다") 정확한 파일/함수 위치는
-    확인하지 못했다고 명시하라.
-- 한국어로, 3~6문장 이내로 간결하게 답하라. 코드블록/JSON 형식 없이 자연어 문장으로만 답하라.
 
 답변:
 """
@@ -259,12 +305,24 @@ def _execute_tool(cur, ctx: dict, name: str, params: dict, question: str):
             return None
         q = params.get("q") or question
         domain = params.get("domain") or None
-        return search_symbols(cur, scan_id, q, limit=10, domain=domain)
+        # 임베딩 + 키워드 혼합 검색(scan_queries.hybrid_search_symbols 참고 — 영어 전용 임베딩
+        # 모델이 한국어 요약에서 변별력이 거의 없다).
+        rows = hybrid_search_symbols(cur, scan_id, q, limit=10, domain=domain)
+        if not rows and domain:
+            # 도메인 태깅은 LLM이 파일 단위로 붙인 것이라 틀릴 수 있다 — 범위를 좁혀 0건이면
+            # 전체에서 한 번 더 찾는다(스코핑이 검색을 망치는 역효과 방지).
+            rows = hybrid_search_symbols(cur, scan_id, q, limit=10)
+        return rows
     if name == "call_graph":
         if not scan_id:
             return None
         symbol_query = params.get("symbol") or question
-        return call_graph_paths(cur, scan_id, symbol_query, depth=3)
+        direction = params.get("direction") or "both"
+        return call_graph_paths(cur, scan_id, symbol_query, depth=3, direction=direction)
+    if name == "read_code":
+        if not scan_id:
+            return None
+        return _read_code(cur, scan_id, params, question)
     if name == "dataflow_security":
         if not scan_id:
             return None
@@ -297,6 +355,80 @@ def _execute_tool(cur, ctx: dict, name: str, params: dict, question: str):
     return None
 
 
+def _read_code(cur, scan_id: str, params: dict, question: str) -> list[dict]:
+    """read_code 도구 — symbol 이름(우선) 또는 path+줄 범위로 실제 소스를 읽는다."""
+    path = params.get("path")
+    if path and not params.get("symbol"):
+        start = params.get("start_line") or 1
+        end = params.get("end_line") or start + source_reader.MAX_LINES - 1
+        got = source_reader.read_lines(cur, scan_id, path, start, end)
+        return [got] if got else []
+    targets = resolve_symbols(cur, scan_id, params.get("symbol") or question, limit=2)
+    out = []
+    for t in targets:
+        got = source_reader.read_symbol(cur, scan_id, t["symbol_key"])
+        if got:
+            out.append(got)
+    return out
+
+
+_PR_STATES = {"open": "open", "opened": "open", "열린": "open", "closed": "closed", "닫힌": "closed",
+              "merged": "merged", "머지": "merged", "병합": "merged"}
+_DIRECTIONS = {"callers": "callers", "caller": "callers", "up": "callers",
+               "callees": "callees", "callee": "callees", "down": "callees", "both": "both"}
+
+
+def _normalize_params(params: object) -> dict:
+    """LLM이 준 params를 도구가 기대하는 모양으로 정리한다.
+
+    스키마 제약이 풀린 폴백 경로(json_mode)에서는 로컬 7B가 `keywords`를 문자열로,
+    `params`를 리스트로 주는 등 모양이 흔들린다 — 그대로 넘기면 `_filter_by_keywords`가
+    문자열을 글자 단위로 순회해 필터가 무력화되거나, `.get` 에서 터져 루프가 죽었다.
+    """
+    if not isinstance(params, dict):
+        return {}
+    out: dict = {}
+    for k, v in params.items():
+        if isinstance(v, str):
+            v = v.strip()
+        if v is None or v == "" or v == []:
+            continue
+        out[k] = v
+    if "keywords" in out:
+        kws = out["keywords"]
+        if isinstance(kws, str):
+            kws = re.split(r"[,\s/]+", kws)
+        elif not isinstance(kws, list):
+            kws = [kws]
+        kws = list(dict.fromkeys(str(k).strip() for k in kws if str(k).strip()))[:8]
+        if kws:
+            out["keywords"] = kws
+        else:
+            out.pop("keywords")
+    if "state" in out:
+        state = _PR_STATES.get(str(out["state"]).lower())
+        if state:
+            out["state"] = state
+        else:
+            out.pop("state")  # all/전체/알 수 없는 값 → 필터 없음
+    if "direction" in out:
+        direction = _DIRECTIONS.get(str(out["direction"]).lower())
+        if direction:
+            out["direction"] = direction
+        else:
+            out.pop("direction")
+    for k in ("start_line", "end_line"):
+        if k in out:
+            try:
+                out[k] = int(out[k])
+            except (TypeError, ValueError):
+                out.pop(k)
+    for k in ("q", "domain", "symbol", "query", "path"):
+        if k in out and not isinstance(out[k], str):
+            out[k] = str(out[k])
+    return out
+
+
 def _parse_step_action(parsed: dict) -> tuple[str, dict] | None:
     """`{"action":"call_tool","tool":"..."}`가 정석이지만, 로컬 7B 모델은 종종
     중첩 스키마를 평평하게 접어 도구 이름을 "action" 자리에 바로 써버린다
@@ -306,6 +438,8 @@ def _parse_step_action(parsed: dict) -> tuple[str, dict] | None:
     `_STEP_PROMPT`가 요구하는 스키마 자체를 흉내 내는 게 아니라, 모델이
     실제로 내놓는 동등한 의미의 변형만 관대하게 받아들이는 것이다.
     """
+    if not isinstance(parsed, dict):
+        return None
     action = parsed.get("action")
     if action == "call_tool":
         name = parsed.get("tool")
@@ -317,7 +451,7 @@ def _parse_step_action(parsed: dict) -> tuple[str, dict] | None:
         return None
     if name not in _TOOL_NAMES:
         return None
-    return name, (parsed.get("params") or {})
+    return name, _normalize_params(parsed.get("params"))
 
 
 def _parse_step_decision(raw: str) -> tuple[str, dict] | None:
@@ -331,54 +465,105 @@ def _parse_step_decision(raw: str) -> tuple[str, dict] | None:
     없으므로 로컬 7B가 여전히 예전처럼 평평한 모양을 낼 수 있다) 기존 관대한
     파서(`_parse_step_action`)로 한 번 더 시도한다. 이 폴백 경로가 있는 한
     `_parse_step_action`은 죽은 코드가 아니다 — 지우면 안 된다.
+    두 경로 모두 params는 `_normalize_params`를 거친다.
     """
+    return _parse_step_decision_ex(raw)[0]
+
+
+def _parse_step_decision_ex(raw: str) -> tuple[tuple[str, dict] | None, str]:
+    """`_parse_step_decision` + 어느 경로로 파싱됐는지("schema"|"fallback"|"fail") —
+    decision_log에 남겨 스키마 제약이 실제로 얼마나 지켜지는지 측정한다."""
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return None
+        return None, "fail"
     try:
         decision = llm_schemas.StepDecision.model_validate(parsed)
     except ValidationError:
-        return _parse_step_action(parsed)
+        result = _parse_step_action(parsed)
+        if result is None and not (isinstance(parsed, dict) and parsed.get("action") == "finish"):
+            return None, "fail"
+        return result, "fallback"
     if decision.action == "finish" or decision.tool is None:
-        return None
+        return None, "schema"
     params = decision.params.model_dump(exclude_none=True) if decision.params else {}
-    return decision.tool, params
+    return (decision.tool, _normalize_params(params)), "schema"
+
+
+def _plan_step(raw: object) -> dict | None:
+    """계획 한 항목 → {"text", "tool"}. 문자열만 온 경우(스키마 폴백 경로)엔 문장 안의
+    도구 이름으로 tool을 추정한다."""
+    if isinstance(raw, dict):
+        text, tool = str(raw.get("text") or "").strip(), raw.get("tool")
+    else:
+        text, tool = str(raw).strip(), None
+    # 모델이 "1. ", "2) " 같은 번호를 붙여 오는 경우가 잦다 — 화면은 ol로 다시
+    # 번호를 매기므로 그대로 두면 "1. 1. ..."로 이중 표시된다. 여기서 제거한다.
+    text = re.sub(r"^\s*\d+[.)]\s*", "", text)
+    if tool not in _TOOL_NAMES:
+        tool = next((t for t in TOOLS_ORDER if t in text), None)
+    if not text:
+        return None
+    return {"text": text, "tool": tool}
 
 
 @observability.observe(name="plan")
 def _build_plan(question: str, tools_block: str, *, model: str,
-                 project_id: str | None, scan_id: str | None) -> list[str] | None:
+                 project_id: str | None, scan_id: str | None,
+                 conversation: str | None = None) -> list[dict] | None:
     """계획 수립 전용 LLM 호출 — 실패해도 전체 흐름을 막지 않는다(fail-open).
 
-    실패/파싱 오류/빈 응답이면 None을 돌려주고, 호출부는 plan 이벤트를 그냥
-    건너뛴다 — 이 파일 전체의 fail-open 철학과 동일하게, "계획을 못 세웠다"가
-    "질문에 답을 못 한다"가 되지 않게 한다.
+    반환: [{"text": 화면 문장, "tool": 실행할 도구|None}, ...]. 실패/파싱 오류/빈 응답이면
+    None을 돌려주고, 호출부는 plan 이벤트를 그냥 건너뛴다 — 이 파일 전체의 fail-open
+    철학과 동일하게, "계획을 못 세웠다"가 "질문에 답을 못 한다"가 되지 않게 한다.
     """
-    prompt = _PLAN_PROMPT.format(question=question, tools_block=tools_block)
+    prompt = _PLAN_PROMPT.format(question=question, tools_block=tools_block,
+                                 conversation_block=_conversation_block(conversation))
     try:
         raw = ai_providers.generate(model, prompt, response_schema=llm_schemas.PlanSteps,
-                                     project_id=project_id, purpose="qa", scan_id=scan_id)
+                                     project_id=project_id, purpose="qa_plan", scan_id=scan_id)
         parsed = json.loads(raw)
-        steps = parsed.get("steps")
+        steps = parsed.get("steps") if isinstance(parsed, dict) else None
         if not isinstance(steps, list) or not steps:
             return None
-        # 모델이 "1. ", "2) " 같은 번호를 붙여 오는 경우가 잦다 — 화면은 ol로 다시
-        # 번호를 매기므로 그대로 두면 "1. 1. ..."로 이중 표시된다. 여기서 제거한다.
-        steps = [re.sub(r"^\s*\d+[.)]\s*", "", str(s).strip()) for s in steps if str(s).strip()]
-        steps = [s for s in steps if s][:4]
+        steps = [s for s in (_plan_step(x) for x in steps) if s][:4]
         return steps or None
     except Exception:
         log.exception("계획 수립 실패 — plan 이벤트 없이 진행")
         return None
 
 
+def _top_labels(name: str, value: object, n: int = 3) -> list[str]:
+    """스텝 요약에 넣을 상위 결과 n개의 짧은 표시 — 다음 스텝에서 LLM이 "결과가 질문과
+    맞는지"를 실제로 판단할 수 있게(예전엔 건수만 보여서 판단 근거가 없었다)."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value[:n]:
+        if not isinstance(item, dict):
+            continue
+        if name.startswith("repo_"):
+            label = item.get("title") or item.get("tag_name") or item.get("name") \
+                or str(item.get("message") or "").split("\n")[0]
+        elif name == "dataflow_security":
+            label = f"{item.get('category')}: {item.get('sink_qualified_name')} ({item.get('sink_path')})"
+        elif name == "dataflow_business":
+            label = f"{item.get('caller_qualified_name')} → {item.get('callee_qualified_name')}"
+        elif name == "call_graph":
+            label = f"{item.get('relation')}: {item.get('qualified_name')} ({item.get('path')})"
+        else:
+            label = f"{item.get('qualified_name')} ({item.get('path')})"
+        if label:
+            out.append(str(label)[:120])
+    return out
+
+
 def _summarize_step(name: str, params: dict, value: object) -> dict:
     """다음 스텝 프롬프트에 넣을 압축 요약.
 
     전체 evidence를 매번 다시 프롬프트에 실으면 스텝마다 입력이 커지므로,
-    "무엇을 어떤 params로 불렀고 몇 건 나왔는지"만 남긴다 — 최종 답변 합성
-    (`synthesize_answer`)에는 여전히 원본 `tool_results`가 그대로 쓰인다.
+    "무엇을 어떤 params로 불렀고 몇 건 나왔는지 + 상위 3건의 이름/위치"만 남긴다 —
+    최종 답변 합성에는 원본 `tool_results`가 예산 안에서 쓰인다.
 
     codebase_structure만 예외: 결과의 실제 도메인 이름 목록을 남긴다. 단순
     "37건"으로만 압축하면, 다음 스텝에서 semantic_search의 domain 파라미터에
@@ -389,28 +574,45 @@ def _summarize_step(name: str, params: dict, value: object) -> dict:
     """
     if name == _ORIENTATION_ONLY_TOOL and isinstance(value, list) and value:
         domains = list(dict.fromkeys(str(v.get("domain")) for v in value if v.get("domain")))
-        result = f"{len(value)}건 — 도메인: {', '.join(domains[:10])}"
-    elif isinstance(value, list):
-        result = f"{len(value)}건"
-    elif value:
-        result = "결과 있음"
-    else:
-        result = "결과 없음"
-    return {"tool": name, "params": params, "result": result}
+        return {"tool": name, "params": params, "result": f"{len(value)}건 — 도메인: {', '.join(domains[:10])}"}
+    if isinstance(value, list):
+        summary = {"tool": name, "params": params, "result": f"{len(value)}건"}
+        top = _top_labels(name, value)
+        if top:
+            summary["top"] = top
+        return summary
+    return {"tool": name, "params": params, "result": "결과 있음" if value else "결과 없음"}
 
 
-def _should_force_semantic_followup(used: list[dict], ctx: dict) -> bool:
-    """codebase_structure만 실행된 채 루프가 끝나려는 참인지 판단한다.
+def _conversation_block(conversation: str | None) -> str:
+    """직전 대화(후속 질문의 "그 함수", "거기" 같은 지시어 해석용)를 프롬프트 머리에 붙인다."""
+    if not conversation:
+        return ""
+    return f"이전 대화(참고용 — 지금 질문의 지시어를 해석할 때만 쓴다):\n{conversation}\n\n"
+
+
+def _should_force_semantic_followup(used: list[dict], ctx: dict, tool_results: dict | None = None) -> bool:
+    """근거가 얇은 채 루프가 끝나려는 참인지 판단한다 — 두 경우다.
+
+    1. codebase_structure만 실행됐다(도메인 개요는 근거가 아니다).
+    2. 코드 분석 도구(dataflow/call_graph/read_code)만 돌았는데 전부 0건이고 semantic_search는
+       아직 안 돌았다 — 예: 개인정보 탐지 위치를 물었는데 dataflow 키워드 필터가 전부 걸러
+       0건이 되자 그대로 끝나 "찾지 못함"으로 답한 사례(평가셋 lo-2).
 
     도구를 하나도 안 부르고 finish하는 건(used가 비어있음) "코드 조회가 필요
-    없다"는 정당한 케이스이므로 건드리지 않는다 — used가 정확히
-    {"codebase_structure"} 하나뿐일 때만 개입한다. scan_id가 없으면
-    semantic_search도 `_execute_tool`과 같은 가드로 결과 없이 끝나므로
-    트리거하지 않는다.
+    없다"는 정당한 케이스이므로 건드리지 않는다. 저장소 이력 도구가 섞여 있으면 코드
+    질문이 아니므로 건드리지 않는다. scan_id가 없으면 semantic_search도 결과 없이
+    끝나므로 트리거하지 않는다.
     """
-    if not ctx.get("scan_id"):
+    if not ctx.get("scan_id") or not used:
         return False
-    return bool(used) and {u["name"] for u in used} == {_ORIENTATION_ONLY_TOOL}
+    names = {u["name"] for u in used}
+    if names == {_ORIENTATION_ONLY_TOOL}:
+        return True
+    code_tools = {"dataflow_security", "dataflow_business", "call_graph", "read_code"}
+    if tool_results is None or _ORIENTATION_FOLLOWUP_TOOL in names or not names <= code_tools | {_ORIENTATION_ONLY_TOOL}:
+        return False
+    return not any(tool_results.get(n) for n in names & code_tools)
 
 
 def _force_tool_call(cur, ctx: dict, question: str, name: str, params: dict, event_id: str,
@@ -437,11 +639,7 @@ def _force_tool_call(cur, ctx: dict, question: str, name: str, params: dict, eve
     if seen is not None:
         seen.add((name, json.dumps(params, sort_keys=True, ensure_ascii=False)))
     if value:
-        existing = tool_results.get(name)
-        if isinstance(existing, list) and isinstance(value, list):
-            tool_results[name] = existing + value
-        else:
-            tool_results[name] = value
+        _merge_result(tool_results, name, value)
 
 
 @observability.observe(name="agentic_loop")
@@ -449,7 +647,8 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
                  project_id: str | None = None, scan_id: str | None = None,
                  max_steps: int = MAX_STEPS,
                  on_step: Callable[[AgentEvent], None] | None = None,
-                 forced_tool: str | None = None) -> tuple[list[dict], dict]:
+                 forced_tool: str | None = None,
+                 conversation: str | None = None) -> tuple[list[dict], dict]:
     """LLM이 매 스텝 도구를 하나씩 고르고, 근거가 충분하면 스스로 멈춘다.
 
     intent 분류나 "intent→도구" 하드코딩 없이, "지금까지 뭘 모았는지"를 보고
@@ -474,6 +673,12 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
     비워서 `_execute_tool`이 question으로 폴백하게 둔다). 이후 스텝은 평소처럼
     LLM이 이어서 판단한다 — 스킬은 "이 도구는 반드시 포함" 힌트일 뿐, 전체
     루프를 그 도구 하나로 제한하는 게 아니다.
+
+    `conversation`은 같은 채팅 세션의 직전 대화 요약(app/chat.py) — "그 함수 누가 불러?"
+    같은 후속 질문의 지시어를 계획/스텝 판단이 해석할 수 있게 한다.
+
+    스텝 결정마다 `decision_log`에 1행을 남긴다(project_id가 있을 때만, fail-open) —
+    결정 모델(Laya) 학습·평가 데이터의 원천이다.
     """
     def emit(event: AgentEvent) -> None:
         if on_step is None:
@@ -498,7 +703,7 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
     # 추가 LLM 왕복 비용을 치르지 않게 한다. 세운 계획은 화면 표시뿐 아니라
     # 매 스텝 프롬프트(_STEP_PROMPT)와 루프 종료 후 계획 커버리지 백스톱(아래)
     # 에도 쓰인다 — "계획 따로, 실행 따로"를 막는다.
-    plan_steps: list[str] | None = None
+    plan_steps: list[dict] | None = None
     if on_step is not None:
         # running -> done 두 번 내보낸다(도구 이벤트와 같은 패턴) — 그래야 plan
         # 이벤트에 finished_at이 채워져 화면의 경과 시간이 계획 수립에 실제로
@@ -506,12 +711,15 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
         plan_event = new_event("plan-0", "plan", "running", summary="조사 계획을 세우는 중...")
         emit(plan_event)
         plan_steps = _build_plan(question, tools_block, model=model,
-                                  project_id=project_id, scan_id=scan_id)
+                                  project_id=project_id, scan_id=scan_id, conversation=conversation)
         if plan_steps:
-            emit(mark_done(plan_event, plan_steps=plan_steps, summary="계획을 세웠습니다"))
+            emit(mark_done(plan_event, plan_steps=[s["text"] for s in plan_steps], summary="계획을 세웠습니다"))
         else:
             emit(mark_done(plan_event, summary="계획 없이 조사를 시작합니다"))
-    plan_block = "\n".join(plan_steps) if plan_steps else "(계획 없음)"
+        decision_log.record(project_id, scan_id, "plan", model, question,
+                            {"steps": plan_steps}, "schema" if plan_steps else "fail")
+    plan_block = ("\n".join(f"- {s['text']}" + (f" → {s['tool']}" if s["tool"] else "") for s in plan_steps)
+                  if plan_steps else "(계획 없음)")
 
     used: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -530,24 +738,35 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
                 plan_block=plan_block,
                 question=question,
                 history_json=json.dumps(history, ensure_ascii=False) if history else "(아직 없음)",
+                conversation_block=_conversation_block(conversation),
             )
 
+            started = time.monotonic()
             try:
                 raw = ai_providers.generate(model, prompt, response_schema=llm_schemas.StepDecision,
-                                             project_id=project_id, purpose="qa", scan_id=scan_id)
+                                             project_id=project_id, purpose="qa_step", scan_id=scan_id)
             except Exception:
                 log.exception("에이전틱 스텝 실패 — 지금까지 모은 근거로 종료")
                 emit(mark_done(thinking_event, status="error"))
-                if _should_force_semantic_followup(used, ctx):
+                decision_log.record(project_id, scan_id, "step", model, question, {"step": step_index},
+                                    "error", latency_ms=int((time.monotonic() - started) * 1000))
+                if _should_force_semantic_followup(used, ctx, tool_results):
                     _force_tool_call(cur, ctx, question, _ORIENTATION_FOLLOWUP_TOOL, {},
                                       f"tool-{step_index}-forced", emit, used, tool_results, seen)
                     continue
                 break
 
-            step_action = _parse_step_decision(raw)
+            step_action, parse_path = _parse_step_decision_ex(raw)
+            guard = "orientation_followup" if step_action is None and _should_force_semantic_followup(used, ctx, tool_results) else None
+            decision_log.record(
+                project_id, scan_id, "step", model, question,
+                {"step": step_index, "history": history,
+                 "decision": {"tool": step_action[0], "params": step_action[1]} if step_action else "finish"},
+                parse_path, guard_fired=guard, latency_ms=int((time.monotonic() - started) * 1000),
+            )
             if step_action is None:
                 emit(mark_done(thinking_event))
-                if _should_force_semantic_followup(used, ctx):
+                if _should_force_semantic_followup(used, ctx, tool_results):
                     _force_tool_call(cur, ctx, question, _ORIENTATION_FOLLOWUP_TOOL, {},
                                       f"tool-{step_index}-forced", emit, used, tool_results, seen)
                     continue
@@ -561,7 +780,7 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
             # 원래는 그냥 멈춘다 — 단, codebase_structure만 실행한 채 그 codebase_structure를
             # 또 고른 경우(실전 관측: 로컬 7B가 다음 수를 못 정하고 방금 한 걸 반복)는
             # 여전히 얇은 근거뿐이므로 finish/파싱실패와 동일하게 게이트를 거친다.
-            if _should_force_semantic_followup(used, ctx):
+            if _should_force_semantic_followup(used, ctx, tool_results):
                 _force_tool_call(cur, ctx, question, _ORIENTATION_FOLLOWUP_TOOL, {},
                                   f"tool-{step_index}-forced", emit, used, tool_results, seen)
                 continue
@@ -569,8 +788,11 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
         seen.add(step_key)
 
         tool_event = new_event(f"tool-{step_index}", "tool_call", "running", tool=name,
-                                target=tool_target_text(name, params),
                                 summary=thinking_text(name))
+        try:
+            tool_event["target"] = tool_target_text(name, params)
+        except Exception:
+            tool_event["target"] = None
         emit(tool_event)
         try:
             value = _execute_tool(cur, ctx, name, params, question)
@@ -585,29 +807,50 @@ def run_agentic(cur, ctx: dict, question: str, *, model: str,
 
         used.append({"name": name, "params": params})
         if value:
-            existing = tool_results.get(name)
-            # 같은 도구를 다른 params로 두 번 이상 고를 수 있다(예: semantic_search를
-            # 검색어를 바꿔가며 재시도) — 두 번째 호출 결과로 덮어쓰면 첫 근거를
-            # 잃으므로, 둘 다 리스트면 이어붙인다.
-            if isinstance(existing, list) and isinstance(value, list):
-                tool_results[name] = existing + value
-            else:
-                tool_results[name] = value
+            _merge_result(tool_results, name, value)
 
     # 계획 커버리지 백스톱 — 계획이 코드 분석 도구를 지목했는데 루프가 하나도
     # 실행하지 않고 끝났으면(7B가 계획을 무시하고 엉뚱한 도구만 고른 뒤 조기
     # 종료한 사례), 계획에 등장한 첫 번째 미실행 분석 도구를 1회만 강제 실행한다.
     # intent 분류나 키워드 하드코딩이 아니라 "LLM이 스스로 세운 계획을 이행"하는
     # 것이고, 스캔이 있어야(=분석 도구가 실제로 돌 수 있어야) 트리거한다
-    # (`_execute_tool`이 보는 것과 같은 `ctx["scan_id"]`).
+    # (`_execute_tool`이 보는 것과 같은 `ctx["scan_id"]`). 계획의 각 단계가 실행할
+    # 도구를 `tool` 필드로 명시하므로(PlanStep) 문장 매칭에 기대지 않는다.
+    #
+    # 단, dataflow/call_graph는 LLM 호출 없이 DB만 읽는 싸고 결정적인 도구라, semantic_search가
+    # 이미 돌았어도 계획이 지목했는데 빠졌으면 실행한다 — 베이스라인 평가에서 7B가 보안 질문에
+    # semantic_search만 보고 "SQL 인젝션 위험 없음"이라는 거짓 음성을 낸 사례(dataflow는 5건 탐지).
     if plan_steps and ctx.get("scan_id"):
         ran = {u["name"] for u in used}
-        plan_text = " ".join(plan_steps)
-        pending = [t for t in _ANALYSIS_TOOLS if t in plan_text and t not in ran]
-        if pending and not (ran & set(_ANALYSIS_TOOLS)):
+        planned = [s["tool"] for s in plan_steps if s.get("tool")]
+        pending = [t for t in planned if t in _ANALYSIS_TOOLS and t not in ran]
+        cheap_pending = [t for t in pending if t in _CHEAP_ANALYSIS_TOOLS]
+        if cheap_pending or (pending and not (ran & set(_ANALYSIS_TOOLS))):
+            pending = cheap_pending or pending
+            decision_log.record(project_id, scan_id, "step", model, question,
+                                {"decision": {"tool": pending[0], "params": {}}}, "guard",
+                                guard_fired="plan_backstop")
             _force_tool_call(cur, ctx, question, pending[0], {}, "tool-backstop", emit, used, tool_results)
 
     return used, tool_results
+
+
+def _merge_result(tool_results: dict, name: str, value: object) -> None:
+    """같은 도구를 다른 params로 두 번 이상 고를 수 있다(예: semantic_search를 검색어를
+    바꿔가며 재시도) — 덮어쓰면 첫 근거를 잃으므로 리스트면 이어붙이되, 같은 항목
+    (검색어만 달라 같은 심볼이 다시 걸린 경우)은 한 번만 남긴다."""
+    existing = tool_results.get(name)
+    if not (isinstance(existing, list) and isinstance(value, list)):
+        tool_results[name] = value
+        return
+    seen = {json.dumps(x, sort_keys=True, ensure_ascii=False, default=str) for x in existing}
+    merged = list(existing)
+    for item in value:
+        key = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+        if key not in seen:
+            seen.add(key)
+            merged.append(item)
+    tool_results[name] = merged
 
 
 @observability.observe(name="relevance_filter")
@@ -624,44 +867,187 @@ def check_relevance(question: str, tool_results: dict, *, model: str,
     빠뜨렸으면) "관련 없음"이 아니라 원본을 그대로 유지한다 — "관련
     없다고 명시함"과 "실수로 빠뜨림"을 구분해서, 후자로 근거를 잃지 않는다.
     """
-    tool_results = {k: v for k, v in tool_results.items() if isinstance(v, list) and v}
-    if not tool_results:
-        return tool_results
+    # 질문과 무관하게 항상 유지할 그룹 — 프로젝트 메타데이터와, 이미 골라 읽은 코드.
+    passthrough = {k: v for k, v in tool_results.items()
+                   if k in _RELEVANCE_EXEMPT and v}
+    candidates = {k: v[:_RELEVANCE_MAX_ITEMS] for k, v in tool_results.items()
+                  if k not in _RELEVANCE_EXEMPT and isinstance(v, list) and v}
+    if not candidates:
+        return passthrough
 
-    indexed = {name: [{"idx": i, **item} for i, item in enumerate(items)]
-               for name, items in tool_results.items()}
+    # LLM이 보는 후보는 슬림화한 사본(내부 키·긴 경로 제거)이고, 예산을 넘는 꼬리는
+    # 판단 대상에서 빠진다 — 그 항목은 어차피 답변 프롬프트에도 못 들어간다.
+    window = context_window(model)
+    view = {name: [{"idx": i, **context_budget.slim_item(item)} if isinstance(item, dict) else {"idx": i, "value": item}
+                   for i, item in enumerate(items)]
+            for name, items in candidates.items()}
+    view, _ = context_budget.pack_evidence(view, window - _RELEVANCE_RESERVE - context_budget.estimate_tokens(question))
     prompt = _RELEVANCE_PROMPT.format(
         question=question,
-        indexed_json=json.dumps(indexed, ensure_ascii=False, default=str),
+        indexed_json=json.dumps(view, ensure_ascii=False, default=str),
     )
 
+    started = time.monotonic()
     try:
         raw = ai_providers.generate(model, prompt, json_mode=True,
-                                     project_id=project_id, purpose="qa", scan_id=scan_id)
+                                     project_id=project_id, purpose="qa_relevance", scan_id=scan_id)
         parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError(f"관련성 응답이 dict가 아님: {type(parsed).__name__}")
     except Exception:
         log.exception("근거 관련성 검증 실패 — 원본 그대로 진행")
-        return tool_results
+        decision_log.record(project_id, scan_id, "relevance", model, question, {}, "fail",
+                            latency_ms=int((time.monotonic() - started) * 1000))
+        return {**passthrough, **candidates}
 
-    filtered: dict[str, object] = {}
-    for name, items in tool_results.items():
-        if name not in parsed:
-            filtered[name] = items  # LLM이 언급 안 함 — fail-open, 원본 유지
+    filtered: dict[str, object] = dict(passthrough)
+    kept_counts: dict[str, list[int]] = {}
+    for name, items in candidates.items():
+        shown = {v["idx"] for v in view.get(name) or []}
+        keep_idx = _coerce_indices(parsed.get(name), shown) if name in parsed else None
+        if keep_idx is None:
+            # LLM이 언급 안 했거나 알아볼 수 없는 값 — fail-open, LLM에게 보여준 항목은 유지
+            filtered[name] = [item for i, item in enumerate(items) if i in shown] or items
             continue
-        keep_idx = set(parsed.get(name) or [])
+        kept_counts[name] = sorted(keep_idx)
         kept = [item for i, item in enumerate(items) if i in keep_idx]
         if kept:
             filtered[name] = kept
+    decision_log.record(project_id, scan_id, "relevance", model, question,
+                        {"candidates": {k: len(v) for k, v in candidates.items()}, "kept": kept_counts},
+                        "json", latency_ms=int((time.monotonic() - started) * 1000))
     return filtered
 
 
-def _synthesize_prompt(question: str, tool_results: dict, executed_tools, analysis_available: bool) -> str:
+# check_relevance가 거르지 않는 그룹 / 그룹당 판단 대상 상한 / 관련성 응답·지시문 몫(토큰)
+_RELEVANCE_EXEMPT = {"project_info", "mentioned_projects", "read_code"}
+_RELEVANCE_MAX_ITEMS = 20
+_RELEVANCE_RESERVE = 1500
+
+
+def _coerce_indices(value: object, allowed: set[int]) -> set[int] | None:
+    """관련성 응답의 인덱스 목록을 int 집합으로. 로컬 모델은 `[0, 2]` 대신 `"0"`, `3`,
+    `["0","2"]`, `[{"idx": 0}]` 같은 모양도 낸다 — 예전엔 `set(3)`에서 TypeError가 나
+    채팅 턴 전체가 실패했고, `"0"`은 아무것과도 안 맞아 근거가 통째로 사라졌다.
+    하나도 해석 못 하면 None(=판단 불가, 호출부가 원본 유지)."""
+    if isinstance(value, (int, str, dict)):
+        value = [value]
+    if not isinstance(value, list):
+        return None
+    out: set[int] = set()
+    understood = False
+    for x in value:
+        if isinstance(x, dict):
+            x = x.get("idx")
+        try:
+            i = int(x)
+        except (TypeError, ValueError):
+            continue
+        understood = True
+        if i in allowed:
+            out.add(i)
+    if not understood and value:
+        return None
+    return out
+
+
+def _code_targets(evidence: dict) -> list[tuple[str, int | None]]:
+    """자동으로 소스를 붙일 심볼 후보(symbol_key, 강조할 줄) — 근거로서 가치가 큰 순서:
+    보안 흐름의 sink → 호출 관계의 대상 → 도메인 경계 호출부 → 의미 검색 상위."""
+    picks: list[tuple[str, int | None]] = []
+    have = {c.get("symbol_key") for c in evidence.get("read_code") or [] if isinstance(c, dict)}
+
+    def add(key, focus=None):
+        if isinstance(key, str) and key and key not in have and all(key != k for k, _ in picks):
+            picks.append((key, focus))
+
+    for f in evidence.get("dataflow_security") or []:
+        add(f.get("sink_symbol_key"), f.get("sink_line"))
+    for c in evidence.get("call_graph") or []:
+        if c.get("relation") == "target":
+            add(c.get("symbol_key"))
+    for f in evidence.get("dataflow_business") or []:
+        add(f.get("caller_symbol_key"), f.get("call_line"))
+    for s in evidence.get("semantic_search") or []:
+        if s.get("kind") != "module":
+            add(s.get("symbol_key"))
+    return picks
+
+
+@observability.observe(name="attach_code")
+def attach_code(cur, scan_id: str | None, evidence: dict, *, limit: int = _AUTO_CODE_SYMBOLS,
+                on_step: Callable[[AgentEvent], None] | None = None) -> dict:
+    """관련성 필터를 통과한 근거 중 상위 심볼의 실제 소스(줄 번호 포함)를 `read_code`로 붙인다.
+
+    모델이 read_code를 고르지 않아도 결정적으로 실행한다 — 근거가 심볼 이름·LLM 요약뿐이면
+    답변이 "어떻게 동작하는지"를 지어내고 줄 번호를 환각한다(베이스라인 평가에서 관측).
+    실제로 보여준 줄 범위만 근거에 남으므로 답변의 줄 인용이 검증 가능해진다.
+    합성 프롬프트 예산(context_budget)에서 read_code가 최우선이라 예산을 넘지 않는다.
+    """
+    if not scan_id:
+        return evidence
+    picks = _code_targets(evidence)[:limit]
+    if not picks:
+        return evidence
+
+    event = new_event("tool-autocode", "tool_call", "running", tool="read_code",
+                      target=f"근거 코드 {len(picks)}곳 확인", summary=thinking_text("read_code"))
+    if on_step:
+        try:
+            on_step(event)
+        except Exception:
+            log.exception("on_step 콜백 실패 — 무시하고 계속")
+    codes = []
+    for key, focus in picks:
+        try:
+            got = source_reader.read_symbol(cur, scan_id, key, focus_line=focus, max_lines=60)
+        except Exception:
+            log.exception("자동 코드 첨부 실패: %s", key)
+            got = None
+        if got:
+            codes.append(got)
+    if on_step:
+        try:
+            on_step(mark_done(event, type="tool_result",
+                              summary=tool_result_text("read_code", True, len(codes))))
+        except Exception:
+            log.exception("on_step 콜백 실패 — 무시하고 계속")
+    if not codes:
+        return evidence
+    return {**evidence, "read_code": [*(evidence.get("read_code") or []), *codes]}
+
+
+def _synthesize_prompt(question: str, tool_results: dict, executed_tools, analysis_available: bool,
+                       *, model: str = "", conversation: str | None = None) -> str:
+    """근거를 모델 컨텍스트 예산 안으로 담아 답변 프롬프트를 만든다(app/context_budget.py)."""
+    conv = _conversation_block(conversation)
+    budget = (context_window(model) - _OUTPUT_RESERVE - _PROMPT_OVERHEAD
+              - context_budget.estimate_tokens(question + conv))
+    packed, truncated = context_budget.pack_evidence(tool_results, max(budget, 800))
+    note = context_budget.truncation_note(truncated)
     return _SYNTHESIZE_PROMPT.format(
+        conversation_block=conv,
         question=question,
         executed_tools=", ".join(executed_tools) if executed_tools else "(없음)",
         analysis_available="True" if analysis_available else "False",
-        evidence_json=json.dumps(tool_results, ensure_ascii=False, default=str),
+        truncation_note=f"{note}\n" if note else "",
+        evidence_json=json.dumps(packed, ensure_ascii=False, default=str),
     )
+
+
+_META_KEYS = {"project_info", "mentioned_projects"}
+
+
+def _evidence_missing(tool_results: dict, executed_tools) -> bool:
+    """근거가 없어 정해진 문구로 답해야 하는가.
+
+    도구를 실행했는데 남은 근거가 프로젝트 메타데이터뿐이면 LLM에 맡기지 않는다 — 7B가
+    규칙 문구를 잘못 골라 "완료된 스캔이 없다"고 답한 사례(스캔이 있었는데도)가 있었다.
+    도구를 안 썼으면(일반 질문) 메타데이터만 있어도 LLM이 답한다.
+    """
+    if not tool_results:
+        return True
+    return bool(executed_tools) and not any(v for k, v in tool_results.items() if k not in _META_KEYS)
 
 
 def _no_evidence_answer(executed_tools, analysis_available: bool) -> str:
@@ -675,14 +1061,16 @@ def _no_evidence_answer(executed_tools, analysis_available: bool) -> str:
 @observability.observe(name="synthesize")
 def synthesize_answer(question: str, tool_results: dict, *, model: str,
                        project_id: str | None = None, scan_id: str | None = None,
-                       executed_tools=(), analysis_available: bool = True) -> str:
-    if not tool_results:
+                       executed_tools=(), analysis_available: bool = True,
+                       conversation: str | None = None) -> str:
+    if _evidence_missing(tool_results, executed_tools):
         return _no_evidence_answer(executed_tools, analysis_available)
 
-    prompt = _synthesize_prompt(question, tool_results, executed_tools, analysis_available)
+    prompt = _synthesize_prompt(question, tool_results, executed_tools, analysis_available,
+                                model=model, conversation=conversation)
     try:
-        return ai_providers.generate(model, prompt, json_mode=False,
-                                      project_id=project_id, purpose="qa", scan_id=scan_id).strip()
+        return ai_providers.generate(model, prompt, json_mode=False, system=_SYNTHESIZE_SYSTEM,
+                                      project_id=project_id, purpose="qa_synthesize", scan_id=scan_id).strip()
     except Exception:
         log.exception("답변 합성 실패")
         return "근거는 찾았지만 답변을 생성하는 중 오류가 발생했습니다."
@@ -691,21 +1079,24 @@ def synthesize_answer(question: str, tool_results: dict, *, model: str,
 @observability.observe(name="synthesize")
 async def synthesize_answer_stream(question: str, tool_results: dict, *, model: str,
                                     project_id: str | None = None, scan_id: str | None = None,
-                                    executed_tools=(), analysis_available: bool = True):
+                                    executed_tools=(), analysis_available: bool = True,
+                                    conversation: str | None = None):
     """synthesize_answer의 스트리밍 버전 — WebSocket 채팅(app/chat.py) 전용.
 
     프롬프트/근거-없음 처리는 동기 버전과 동일하게 맞춘다. 실패해도 흐름이
     끊기면 안 되므로 예외 시 안내 문구 하나를 통째로 yield하고 끝낸다(부분
     출력 후 에러가 나도 최소한 사용자에게 상태를 알린다).
     """
-    if not tool_results:
+    if _evidence_missing(tool_results, executed_tools):
         yield _no_evidence_answer(executed_tools, analysis_available)
         return
 
-    prompt = _synthesize_prompt(question, tool_results, executed_tools, analysis_available)
+    prompt = _synthesize_prompt(question, tool_results, executed_tools, analysis_available,
+                                model=model, conversation=conversation)
     try:
-        async for chunk in ai_providers.agenerate_stream(model, prompt, project_id=project_id,
-                                                           purpose="qa", scan_id=scan_id):
+        async for chunk in ai_providers.agenerate_stream(model, prompt, system=_SYNTHESIZE_SYSTEM,
+                                                           project_id=project_id,
+                                                           purpose="qa_synthesize", scan_id=scan_id):
             yield chunk
     except Exception:
         log.exception("답변 합성(스트리밍) 실패")

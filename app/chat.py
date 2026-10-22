@@ -277,9 +277,39 @@ def _insert_user_message(session_id: str, project_id: str, question: str, member
         chat_bus.notify_chat_event(cur, session_id, message_id)
         ctx = _resolve_chat_ctx(cur, project_id)
         ctx["is_first_message"] = is_first_message
+        ctx["conversation"] = None if is_first_message else _load_conversation(cur, session_id, message_id)
         if mentioned:
             ctx["mentioned_projects"] = [{"name": p["name"], "description": p["description"]} for p in mentioned]
     return ctx
+
+
+_HISTORY_TURNS = 3
+_HISTORY_ANSWER_CHARS = 300
+
+
+def _load_conversation(cur, session_id: str, before_message_id: int) -> str | None:
+    """같은 세션의 직전 대화(최근 3턴)를 짧은 텍스트로 — 후속 질문("그 함수 누가 호출해?")의
+    지시어를 에이전트가 해석할 수 있게 한다. 답변은 앞부분만 싣는다(프롬프트 예산)."""
+    cur.execute(
+        """
+        SELECT role, content FROM chat_message
+         WHERE session_id=%s AND id < %s AND role IN ('user', 'assistant')
+         ORDER BY id DESC LIMIT %s
+        """,
+        (session_id, before_message_id, _HISTORY_TURNS * 2),
+    )
+    rows = list(reversed(cur.fetchall()))
+    if not rows:
+        return None
+    lines = []
+    for r in rows:
+        text = " ".join((r["content"] or "").split())
+        if r["role"] == "assistant":
+            text = text[:_HISTORY_ANSWER_CHARS] + ("…" if len(text) > _HISTORY_ANSWER_CHARS else "")
+            lines.append(f"어시스턴트: {text}")
+        else:
+            lines.append(f"사용자: {text}")
+    return "\n".join(lines)
 
 
 def _generate_and_store_chat_title(session_id: str, project_id: str, question: str,
@@ -292,7 +322,7 @@ def _generate_and_store_chat_title(session_id: str, project_id: str, question: s
     (title IS NOT NULL) 덮어쓰지 않는다.
     """
     raw = ai_providers.generate(model, _CHAT_TITLE_PROMPT.format(question=question),
-                                 json_mode=False, project_id=project_id, purpose="qa")
+                                 json_mode=False, project_id=project_id, purpose="qa_title")
     title = raw.strip().strip('"').strip("'").strip()[:40]
     if not title:
         return None
@@ -378,9 +408,13 @@ def _run_pipeline_sync(question: str, ctx: dict, *, model: str, project_id: str,
     with tx() as cur:
         used, evidence = orchestrator.run_agentic(cur, ctx, question, model=model,
                                                     project_id=project_id, scan_id=ctx["scan_id"],
-                                                    on_step=on_step, forced_tool=forced_tool)
+                                                    on_step=on_step, forced_tool=forced_tool,
+                                                    conversation=ctx.get("conversation"))
         evidence = orchestrator.check_relevance(question, evidence, model=model,
                                                   project_id=project_id, scan_id=ctx["scan_id"])
+        # 근거 상위 심볼의 실제 소스(스캔 커밋 기준, 줄 번호 포함)를 붙인다 — 답변이 동작을
+        # 지어내지 않고 실제 줄을 인용할 수 있게(app/source_reader.py).
+        evidence = orchestrator.attach_code(cur, ctx["scan_id"], evidence, on_step=on_step)
 
         risk = None
         scan_id = ctx.get("scan_id")
@@ -460,7 +494,8 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
                                                                     model=model, project_id=project_id,
                                                                     scan_id=ctx["scan_id"],
                                                                     executed_tools=[t["name"] for t in tools_used],
-                                                                    analysis_available=bool(ctx["scan_id"])):
+                                                                    analysis_available=bool(ctx["scan_id"]),
+                                                                    conversation=ctx.get("conversation")):
             chunks.append(delta)
             await queue.put({"type": "answer_chunk", "client_msg_id": client_msg_id, "delta": delta})
 
@@ -521,6 +556,7 @@ async def chat_socket(websocket: WebSocket, project_id: UUID, session_id: UUID):
     forwarder = asyncio.create_task(forward())
     # 비밀번호 변경·탈퇴 후에도 열린 소켓이 남지 않게 주기적으로 세션 재검증(무효면 4401 로 닫힘).
     watcher = asyncio.create_task(watch_ws_session(websocket, member))
+    running: asyncio.Task | None = None
     try:
         while True:
             try:
@@ -553,8 +589,15 @@ async def chat_socket(websocket: WebSocket, project_id: UUID, session_id: UUID):
                 forced_tool = None
             # 잘못된 model 값은 에러로 막지 않는다 — resolve_requested_model 이 기본으로 폴백.
             model_override = data.get("model") if isinstance(data.get("model"), str) else None
-            asyncio.create_task(_handle_question(sid, pid, question, client_msg_id, queue, member["id"],
-                                                  mentioned_project_ids, forced_tool, model_override))
+            # 한 연결에서 답변은 한 번에 하나만 — 예전엔 프레임마다 태스크를 무제한 띄워
+            # 연타·악성 클라이언트가 로컬 GPU 한 장을 독점할 수 있었다. 화면도 답변 중엔
+            # 입력을 막으므로 정상 사용에는 영향이 없다.
+            if running is not None and not running.done():
+                await queue.put({"type": "error", "client_msg_id": client_msg_id,
+                                 "error": "이전 질문에 답하는 중입니다. 답변이 끝난 뒤 다시 보내 주세요"})
+                continue
+            running = asyncio.create_task(_handle_question(sid, pid, question, client_msg_id, queue, member["id"],
+                                                            mentioned_project_ids, forced_tool, model_override))
     finally:
         forwarder.cancel()
         watcher.cancel()

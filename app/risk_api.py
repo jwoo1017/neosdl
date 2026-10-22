@@ -20,13 +20,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app import ai_providers
+from app import ai_providers, source_reader
 from app.auth import assert_scan_access, get_current_member
 from app.db import tx
 from app.queue import enqueue
 from app.risk import synthesis
 from app.risk.schema import REPRESENTATIONS
-from worker.handlers.clone import workdir_for
 
 router = APIRouter(tags=["risk"])
 
@@ -49,19 +48,9 @@ def _llm_ctx(cur, scan_id: UUID) -> tuple[str, str | None]:
 
 
 def _source_reader(cur, scan_id: UUID):
-    cur.execute("SELECT repository_id FROM scan WHERE id=%s", (str(scan_id),))
-    row = cur.fetchone()
-    if row is None:
-        return None
-    root = workdir_for(str(row["repository_id"]))
-
-    def reader(path: str) -> str | None:
-        try:
-            return (root / path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return None
-
-    return reader
+    # 레포 캐시의 작업 트리는 기본 브랜치 tip이라 스캔 커밋과 다를 수 있다 — 스캔 커밋의
+    # blob을 읽어야 symbol의 줄 범위와 맞는다(app/source_reader.py).
+    return source_reader.file_reader(cur, str(scan_id))
 
 
 def _summarize(objects: list[dict]) -> dict:

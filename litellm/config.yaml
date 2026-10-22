@@ -89,6 +89,9 @@ model_list:
     litellm_params:
       model: ollama_chat/qwen2.5-coder:7b
       api_base: os.environ/OLLAMA_BASE_URL
+      # Ollama 기본 컨텍스트(4096)를 넘는 프롬프트는 앞부분(지시문)이 조용히 잘린다 —
+      # 운영 vLLM --max-model-len 8192 와 맞춘다(app/config.py local_model_context).
+      num_ctx: 8192
   - model_name: local-embed
     litellm_params:
       model: ollama/mxbai-embed-large

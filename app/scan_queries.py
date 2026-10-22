@@ -9,6 +9,7 @@ main.py 안에 두면 orchestrator.py가 main을 import해야 해서 순환 임�
 from __future__ import annotations
 
 import json
+import re
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -41,7 +42,21 @@ def _filter_by_keywords(findings: list[dict], keywords: list[str] | None) -> lis
     return kept
 
 
-def search_symbols(cur, scan_id: UUID, q: str, limit: int, domain: str | None = None) -> list[dict]:
+def _enable_iterative_scan(cur) -> None:
+    """pgvector ≥0.8 반복 스캔 — HNSW 인덱스는 모든 스캔의 임베딩을 한데 담고 있어서,
+    `scan_id`/`domain` 필터가 인덱스 탐색 *후에* 적용되면 ef_search(기본 40) 후보가
+    대부분 다른 스캔 것이라 결과가 limit보다 적거나 0건이 된다. relaxed_order는 필터를
+    통과한 결과가 limit만큼 찰 때까지 인덱스를 계속 훑는다. 지원 안 하는 버전이면
+    savepoint로 감싸 트랜잭션을 깨지 않고 무시한다."""
+    try:
+        with cur.connection.transaction():
+            cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
+    except Exception:
+        pass
+
+
+def search_symbols(cur, scan_id: UUID, q: str, limit: int, domain: str | None = None,
+                   min_similarity: float | None = None) -> list[dict]:
     """symbol_embedding(symbol.embed 잡이 채움)에 대한 코사인 유사도 검색.
 
     자연어 질의를 같은 임베딩 모델로 변환해서 pgvector HNSW 인덱스로
@@ -78,9 +93,10 @@ def search_symbols(cur, scan_id: UUID, q: str, limit: int, domain: str | None = 
         if cur.fetchone() is None:
             domain = None
 
+    _enable_iterative_scan(cur)
     cur.execute(
         """
-        SELECT s.symbol_key, s.qualified_name, s.kind, s.path, sem.summary,
+        SELECT s.symbol_key, s.qualified_name, s.kind, s.path, s.start_line, s.end_line, sem.summary,
                1 - (se.embedding <=> %s::vector) AS similarity
           FROM symbol_embedding se
           JOIN symbol s ON s.symbol_key = se.symbol_key AND s.scan_id = se.scan_id
@@ -97,7 +113,94 @@ def search_symbols(cur, scan_id: UUID, q: str, limit: int, domain: str | None = 
         """,
         (qvec, str(scan_id), model, domain, domain, qvec, limit),
     )
-    return cur.fetchall()
+    # relaxed_order는 순서를 느슨하게 보장하므로 유사도로 다시 정렬한다.
+    rows = sorted(cur.fetchall(), key=lambda r: r["similarity"], reverse=True)
+    if min_similarity is not None:
+        rows = [r for r in rows if r["similarity"] >= min_similarity]
+    return rows
+
+
+# 검색어에서 뺄 일반어 — 어느 심볼 요약에나 걸려서 키워드 점수를 흐린다.
+_STOP_TERMS = {
+    "함수", "코드", "로직", "관련", "처리", "어디", "어디서", "어디에", "있어", "있나", "하는", "방법",
+    "구현", "기능", "파일", "어떻게", "뭐야", "무엇", "찾아", "알려줘", "그리고", "부분", "곳",
+    "the", "and", "for", "code", "function", "logic",
+}
+_KO_PARTICLE_RE = re.compile(r"(에서|으로|하는|되는|하고|이나|에게|까지|부터|은|는|이|가|을|를|의|에|로|와|과|도|만|나)$")
+
+
+def _query_terms(q: str) -> list[str]:
+    """키워드 매칭용 검색어 — 영문 식별자 조각과 조사를 뗀 한국어 낱말."""
+    out = []
+    for t in re.findall(r"[A-Za-z0-9_$]+|[가-힣]+", q or ""):
+        if re.match(r"[가-힣]", t) and len(t) >= 3:
+            t = _KO_PARTICLE_RE.sub("", t)
+        t = t.lower()
+        if len(t) >= 2 and t not in _STOP_TERMS:
+            out.append(t)
+    return list(dict.fromkeys(out))[:10]
+
+
+def hybrid_search_symbols(cur, scan_id: UUID, q: str, limit: int, domain: str | None = None) -> list[dict]:
+    """채팅용 검색 — 임베딩 유사도 + 이름/경로/요약 키워드 매칭을 섞어 순위를 매긴다.
+
+    임베딩 모델(mxbai-embed-large)은 영어 전용인데 symbol 요약과 질문은 한국어라,
+    실측 유사도가 관련·무관 가릴 것 없이 0.75~1.0에 몰린다("날씨 API" 같은 무관한
+    질의도 0.8). 그래서 임베딩만으로는 "금지어 필터링"에 Projects/App이 1위로 올라왔다.
+    키워드 점수(질의 낱말이 함수명·경로에 있으면 1, 요약에만 있으면 0.6)를 섞으면
+    textMatcher.matchBannedWord처럼 이름·요약에 낱말이 실제로 있는 심볼이 올라온다.
+    유사도는 후보 집합 안에서 0~1로 정규화해서(절대값이 의미 없으므로) 더한다.
+
+    REST `/scans/{id}/search`(순수 의미 검색 화면)는 계속 `search_symbols`를 쓴다.
+    """
+    vector_rows = search_symbols(cur, scan_id, q, limit=40, domain=domain)
+    terms = _query_terms(q)
+    lexical_rows: list[dict] = []
+    if terms:
+        patterns = [f"%{_like_escape(t)}%" for t in terms]
+        qvec = to_vector_literal(embed_text(q))
+        model = f"ollama/{settings().ollama_embed_model}"
+        cur.execute(
+            """
+            SELECT s.symbol_key, s.qualified_name, s.kind, s.path, s.start_line, s.end_line, sem.summary,
+                   1 - (se.embedding <=> %s::vector) AS similarity
+              FROM symbol s
+              LEFT JOIN symbol_semantic sem ON sem.scan_id = s.scan_id AND sem.symbol_key = s.symbol_key
+              LEFT JOIN symbol_embedding se
+                     ON se.scan_id = s.scan_id AND se.symbol_key = s.symbol_key AND se.model = %s
+              LEFT JOIN symbol mod_s
+                     ON mod_s.scan_id = s.scan_id AND mod_s.path = s.path AND mod_s.kind = 'module'
+              LEFT JOIN symbol_semantic mod_sem
+                     ON mod_sem.scan_id = s.scan_id AND mod_sem.symbol_key = mod_s.symbol_key
+             WHERE s.scan_id = %s
+               AND (%s::text IS NULL OR mod_sem.domain = %s)
+               AND (s.qualified_name ILIKE ANY(%s) OR s.path ILIKE ANY(%s) OR sem.summary ILIKE ANY(%s))
+             LIMIT 80
+            """,
+            (qvec, model, str(scan_id), domain, domain, patterns, patterns, patterns),
+        )
+        lexical_rows = cur.fetchall()
+
+    by_key: dict[str, dict] = {}
+    for r in [*vector_rows, *lexical_rows]:
+        by_key.setdefault(r["symbol_key"], dict(r))
+    if not by_key:
+        return []
+    sims = [r["similarity"] for r in by_key.values() if r.get("similarity") is not None]
+    lo, hi = (min(sims), max(sims)) if sims else (0.0, 1.0)
+
+    def lexical(r: dict) -> float:
+        if not terms:
+            return 0.0
+        name = f"{r.get('qualified_name') or ''} {r.get('path') or ''}".lower()
+        summary = (r.get("summary") or "").lower()
+        return sum(1.0 if t in name else 0.6 if t in summary else 0.0 for t in terms) / len(terms)
+
+    for r in by_key.values():
+        sim = r.get("similarity")
+        sim_norm = (sim - lo) / (hi - lo) if sim is not None and hi > lo else 0.0
+        r["score"] = round(0.45 * sim_norm + 0.55 * lexical(r), 3)
+    return sorted(by_key.values(), key=lambda r: r["score"], reverse=True)[:limit]
 
 
 def domain_overview(cur, scan_id: UUID) -> list[dict]:
@@ -124,42 +227,160 @@ def domain_overview(cur, scan_id: UUID) -> list[dict]:
     return cur.fetchall()
 
 
-def call_graph_paths(cur, scan_id: UUID, symbol_query: str, depth: int = 3, candidates: int = 3) -> list[dict]:
-    """`symbol_query`(함수/메서드 이름 또는 자연어 설명)를 심볼로 해석한 뒤,
-    그 심볼을 depth 단계 안에서 호출하는 경로를 그래프에서 순회한다.
+# ASCII 식별자만 — `\w`는 한글도 잡아서 "auth.service의"가 한 토큰이 되면 파일 힌트가 깨진다.
+_IDENT_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*(?:[./#][A-Za-z_$][A-Za-z0-9_$]*)*")
 
-    이름 매칭을 먼저 시도한다 — 호출 그래프 질문은 보통 질문에 함수명이
-    그대로 들어있어서(예: "runPiiForPost를 누가 호출해?") ILIKE 가 임베딩
-    검색보다 정확하다. 매칭이 없을 때만 `search_symbols`의 의미 검색으로
-    후보를 좁힌다. `GraphStore.callers_within`이 반환하는 path 가 그대로
-    Risk Evidence 다([[app.graph.CallerPath]], `/scans/{id}/callers`와 동일).
+
+def _like_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def resolve_symbols(cur, scan_id: UUID, query: str, limit: int = 3) -> list[dict]:
+    """함수/메서드 이름(또는 `auth.service.login`·`UserService#login` 같은 경로 힌트 포함
+    이름)을 symbol 행으로 해석한다. 이름으로 못 찾으면 [].
+
+    질문 문장이 통째로 들어와도(예: "auth.service의 login 함수") 식별자 토큰만 뽑아
+    뒤에서부터(보통 함수명이 뒤에 온다) 시도한다. 토큰의 마지막 세그먼트가 이름이고,
+    앞부분과 다른 토큰들은 파일 경로 힌트다 — 같은 이름(login)이 controller/service/api에
+    다 있을 때 힌트에 맞는 파일만 남긴다(맞는 게 없으면 전부). LIKE 와일드카드는 이스케이프.
+    """
+    tokens = _IDENT_RE.findall(query or "")
+    for pos in range(len(tokens) - 1, -1, -1):
+        parts = re.split(r"[./#]", tokens[pos])
+        name = parts[-1]
+        if len(name) < 3:
+            continue
+        hints = ["/".join(parts[:-1])] + [t.replace(".", "/") for i, t in enumerate(tokens) if i != pos]
+        hints = [h.lower() for h in hints if len(h) >= 3]
+        cur.execute(
+            r"""
+            SELECT symbol_key, path, qualified_name, kind, start_line, end_line
+              FROM symbol
+             WHERE scan_id=%s AND kind <> 'module'
+               AND (qualified_name = %s OR qualified_name ILIKE %s ESCAPE '\')
+             ORDER BY (qualified_name = %s) DESC, length(qualified_name), path
+             LIMIT 20
+            """,
+            (str(scan_id), name, f"%.{_like_escape(name)}", name),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            continue
+        if hints:
+            hinted = [r for r in rows if any(h in r["path"].lower().replace(".", "/") for h in hints)]
+            rows = hinted or rows
+        return rows[:limit]
+    return []
+
+
+def _callees_within(cur, scan_id: UUID, symbol_key: str, depth: int) -> list[dict]:
+    """symbol_key가 depth 단계 안에서 호출하는 심볼들(심볼당 최단 경로 하나).
+
+    `callers_within`(sql/001_init.sql)의 반대 방향이다. GraphStore 계약은 callers만
+    정의하므로 정본(symbol_edge)에서 바로 순회한다 — Neo4j 동등성 요구가 없는 채팅 전용.
     """
     cur.execute(
-        "SELECT symbol_key FROM symbol WHERE scan_id=%s AND qualified_name ILIKE %s LIMIT %s",
-        (str(scan_id), f"%{symbol_query}%", candidates),
+        """
+        WITH RECURSIVE down AS (
+            SELECT e.dst_symbol_key AS symbol_key, 1 AS hops,
+                   ARRAY[e.src_symbol_key, e.dst_symbol_key] AS path, e.call_line
+              FROM symbol_edge e
+             WHERE e.scan_id = %s AND e.resolved AND e.edge_type = 'calls' AND e.src_symbol_key = %s
+            UNION ALL
+            SELECT e.dst_symbol_key, d.hops + 1, d.path || e.dst_symbol_key, d.call_line
+              FROM symbol_edge e JOIN down d ON e.src_symbol_key = d.symbol_key
+             WHERE e.scan_id = %s AND e.resolved AND e.edge_type = 'calls'
+               AND d.hops < %s AND NOT e.dst_symbol_key = ANY(d.path)
+        )
+        SELECT DISTINCT ON (symbol_key) symbol_key, hops, path, call_line
+          FROM down ORDER BY symbol_key, hops, call_line
+        """,
+        (str(scan_id), symbol_key, str(scan_id), depth),
     )
-    rows = cur.fetchall()
-    if rows:
-        target_keys = [r["symbol_key"] for r in rows]
-    else:
-        target_keys = [r["symbol_key"] for r in search_symbols(cur, scan_id, symbol_query, limit=candidates)]
+    return sorted(cur.fetchall(), key=lambda r: (r["hops"], r["call_line"] or 0))
 
-    store = make_graph_store()
-    try:
+
+def call_graph_paths(cur, scan_id: UUID, symbol_query: str, depth: int = 3, candidates: int = 3,
+                     direction: str = "both", max_items: int = 30) -> list[dict]:
+    """`symbol_query`(함수/메서드 이름 또는 자연어 설명)를 심볼로 해석한 뒤 호출 관계를 순회한다.
+
+    - callers: 그 심볼을 depth 단계 안에서 호출하는 경로(`GraphStore.callers_within`,
+      `/scans/{id}/callers`와 동일 — path가 그대로 Risk Evidence다).
+    - callees: 그 심볼이 내부에서 호출하는 함수(최대 2단계, call_line 순).
+    - 결과 맨 앞에 해석된 대상 심볼 자체(relation=target)를 넣는다 — "어느 login을
+      말하는지"와 그 위치(path/줄 범위)가 근거에 남아야 답변이 정확히 인용할 수 있다.
+
+    이름 매칭(`resolve_symbols`)을 먼저 시도하고, 실패할 때만 의미 검색으로 후보를 찾는다.
+    모든 항목에 path/qualified_name/start_line/end_line을 붙인다 — 예전엔 symbol_key만
+    돌려줘서 LLM이 파일 위치를 추측해야 했다.
+    """
+    targets = resolve_symbols(cur, scan_id, symbol_query, limit=candidates)
+    if not targets:
+        targets = hybrid_search_symbols(cur, scan_id, symbol_query, limit=candidates)
+    if not targets:
+        return []
+
+    want_callers = direction in ("callers", "both")
+    want_callees = direction in ("callees", "both")
+    raw: list[tuple[str, dict, dict]] = []  # (relation, target_row, edge_row)
+
+    if want_callers:
+        store = make_graph_store()
         if not store.health():
-            return []
-        results: list[dict] = []
-        for symbol_key in target_keys:
-            try:
-                paths = store.callers_within(str(scan_id), symbol_key, depth)
-            except ValueError:
-                continue
-            results.extend(p.as_dict() for p in paths)
-        return results
-    finally:
-        close = getattr(store, "close", None)
-        if close:
-            close()
+            # Neo4j가 설정돼 있지만 죽어 있으면 정본(Postgres)으로 — 두 구현은 같은 결과를
+            # 내도록 보장된다(tests/test_graph_equivalence.py). 예전엔 빈 결과를 돌려줘서
+            # "호출하는 곳 없음"으로 잘못 답했다.
+            from app.graph.postgres import PostgresGraphStore
+
+            close = getattr(store, "close", None)
+            if close:
+                close()
+            store = PostgresGraphStore()
+        try:
+            if store.health():
+                for t in targets:
+                    try:
+                        for p in store.callers_within(str(scan_id), t["symbol_key"], depth):
+                            raw.append(("caller", t, p.as_dict()))
+                    except ValueError:
+                        continue
+        finally:
+            close = getattr(store, "close", None)
+            if close:
+                close()
+    if want_callees:
+        for t in targets:
+            for r in _callees_within(cur, scan_id, t["symbol_key"], min(depth, 2)):
+                raw.append(("callee", t, r))
+
+    keys = {k for _, _, r in raw for k in r["path"]} | {t["symbol_key"] for t in targets}
+    cur.execute(
+        "SELECT symbol_key, path, qualified_name, start_line, end_line FROM symbol "
+        "WHERE scan_id=%s AND symbol_key = ANY(%s)",
+        (str(scan_id), list(keys)),
+    )
+    meta = {r["symbol_key"]: r for r in cur.fetchall()}
+
+    def label(key: str) -> str:
+        m = meta.get(key)
+        return f"{m['qualified_name']} ({m['path']})" if m else key
+
+    results: list[dict] = []
+    for t in targets:
+        m = meta.get(t["symbol_key"], t)
+        results.append({"relation": "target", "symbol_key": t["symbol_key"],
+                        "qualified_name": m.get("qualified_name"), "path": m.get("path"),
+                        "start_line": m.get("start_line"), "end_line": m.get("end_line")})
+    for relation, t, r in raw:
+        m = meta.get(r["symbol_key"], {})
+        item = {"relation": relation, "target": label(t["symbol_key"]), "hops": r["hops"],
+                "symbol_key": r["symbol_key"], "qualified_name": m.get("qualified_name"),
+                "path": m.get("path"), "start_line": m.get("start_line"), "end_line": m.get("end_line"),
+                "chain": [label(k) for k in r["path"]]}
+        if relation == "callee" and r.get("call_line"):
+            item["call_line"] = r["call_line"]
+        results.append(item)
+    return results[:max_items]
 
 
 def run_dataflow(cur, scan_id: UUID, mode: str, limit: int, keywords: list[str] | None = None) -> dict:

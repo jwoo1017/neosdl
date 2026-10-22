@@ -46,8 +46,9 @@ def load_ask_context(scan_id: UUID, member_id: str, requested_model: str | None 
                    p.qa_model_name, s.repository_id
               FROM scan s
               JOIN project_repository pr ON pr.repository_id = s.repository_id
-              JOIN project p ON p.id = pr.project_id
-             WHERE s.id=%s LIMIT 1
+              JOIN project p ON p.id = pr.project_id AND p.deleted_at IS NULL
+             WHERE s.id=%s
+             ORDER BY pr.attached_at DESC LIMIT 1
             """,
             (str(scan_id),),
         )
@@ -80,6 +81,7 @@ def _run_pipeline_sync(question: str, ask_ctx: dict, *, on_step) -> dict:
             question, evidence, model=ask_ctx["model"],
             project_id=ask_ctx["project_id"], scan_id=ask_ctx["scan_id"],
         )
+        evidence = orchestrator.attach_code(cur, ask_ctx["scan_id"], evidence, on_step=on_step)
     return {"used": used, "evidence": evidence}
 
 

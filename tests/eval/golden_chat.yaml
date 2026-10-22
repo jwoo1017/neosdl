@@ -1,0 +1,210 @@
+# 채팅 파이프라인 골든 평가셋 — scripts/eval_chat.py 가 읽는다.
+#
+# 대상: jwoo1017/acts-gallery 스캔(095bb9c1…, commit e133f0e). 정답은 그 커밋의
+# 소스와 symbol_edge/security_finding 으로 사람이 확인했다.
+#
+# 필드
+#   id              고유 id
+#   type            질의 유형 — structure|locate|callers|callees|security|business|repo|general
+#                   (모델 점수표를 유형별로 집계할 때의 축)
+#   question        사용자 질문 그대로
+#   expect_tools    이 중 하나라도 실행되면 도구 선택 성공(any-of). 비우면 "도구 불필요".
+#   expect_paths    근거/답변에 나와야 할 파일 경로(recall 계산)
+#   expect_terms    답변에 나와야 할 핵심어(함수명 등, any-of 아님 — 각각 채점)
+scan_id: 095bb9c1-2880-48af-8cb5-ab50c80bf4ce
+cases:
+  # ── structure ──────────────────────────────────────────────
+  - id: st-1
+    type: structure
+    question: 이 프로젝트는 어떤 모듈들로 구성되어 있어?
+    expect_tools: [codebase_structure]
+    expect_paths: []
+    expect_terms: [ai-moderation, back, front]
+  - id: st-2
+    type: structure
+    question: 백엔드 서버는 어떤 계층 구조(controller/service/repository)로 되어 있어?
+    expect_tools: [codebase_structure, semantic_search]
+    expect_paths: [back/src/controllers/auth.controller.js, back/src/services/auth.service.js]
+    expect_terms: [controller, service, repository]
+
+  # ── locate ─────────────────────────────────────────────────
+  - id: lo-1
+    type: locate
+    question: 로그인 처리는 어디서 해?
+    expect_tools: [semantic_search, call_graph]
+    expect_paths: [back/src/controllers/auth.controller.js, back/src/services/auth.service.js]
+    expect_terms: [login]
+  - id: lo-2
+    type: locate
+    question: 주민등록번호나 전화번호 같은 개인정보는 어디서 탐지해?
+    expect_tools: [semantic_search, dataflow_security]
+    expect_paths: [ai-moderation/pii/piiPatterns.js]
+    expect_terms: [hasRrn, hasPhone]
+  - id: lo-3
+    type: locate
+    question: 이미지 업로드용 presigned URL은 어디서 만들어?
+    expect_tools: [semantic_search, call_graph]
+    expect_paths: [back/src/services/upload.service.js]
+    expect_terms: [createPresignedUploads]
+  - id: lo-4
+    type: locate
+    question: HEIC 이미지를 JPEG로 변환하는 코드 어디 있어?
+    expect_tools: [semantic_search]
+    expect_paths: [back/src/services/image.service.js]
+    expect_terms: [toModerationCompatibleJpeg]
+  - id: lo-5
+    type: locate
+    question: 금지어 필터링은 어떻게 구현돼 있어?
+    expect_tools: [semantic_search]
+    expect_paths: [ai-moderation/text/textMatcher.js]
+    expect_terms: [matchBannedWord]
+  - id: lo-6
+    type: locate
+    question: JWT 액세스 토큰은 어디서 발급해?
+    expect_tools: [semantic_search, call_graph]
+    expect_paths: [back/src/services/auth.service.js]
+    expect_terms: [issueAccessToken]
+  - id: lo-7
+    type: locate
+    question: 관리자 권한 체크 미들웨어는 어디야?
+    expect_tools: [semantic_search, call_graph]
+    expect_paths: [back/src/middlewares/requireRole.js]
+    expect_terms: [requireRole]
+  - id: lo-8
+    type: locate
+    question: AI 자동 검토에서 승인/반려 결정은 어떤 기준으로 내려?
+    expect_tools: [semantic_search, call_graph]
+    expect_paths: [ai-auto-review/engine/decision.js]
+    expect_terms: [gateDecision]
+  - id: lo-9
+    type: locate
+    question: 상업성 홍보 글 검사는 어디서 해?
+    expect_tools: [semantic_search]
+    expect_paths: [ai-moderation/commercial/commercialCheck.js]
+    expect_terms: [runCommercialForPost]
+  - id: lo-10
+    type: locate
+    question: 게시물 목록 조회 시 검색 필터 조건은 어떻게 만들어?
+    expect_tools: [semantic_search]
+    expect_paths: [back/src/repositories/history.repository.js]
+    expect_terms: [buildFilters]
+  - id: lo-11
+    type: locate
+    question: API 키 인증은 어떻게 검사해?
+    expect_tools: [semantic_search]
+    expect_paths: [back/src/middlewares/apiKeyAuth.js, ai-moderation/api/auth.js]
+    expect_terms: [apiKeyAuth]
+
+  # ── callers ────────────────────────────────────────────────
+  - id: cr-1
+    type: callers
+    question: issueAccessToken 함수를 누가 호출해?
+    expect_tools: [call_graph]
+    expect_paths: [back/src/services/auth.service.js]
+    expect_terms: [login, refresh]
+  - id: cr-2
+    type: callers
+    question: createPresignedUploads는 어디서 불려?
+    expect_tools: [call_graph]
+    expect_paths: [back/src/services/history.service.js]
+    expect_terms: [presignUploads]
+  - id: cr-3
+    type: callers
+    question: processUploadedImage를 호출하는 곳은?
+    expect_tools: [call_graph]
+    expect_paths: [back/src/services/history.service.js]
+    expect_terms: [createPost]
+  - id: cr-4
+    type: callers
+    question: gateDecision은 누가 써?
+    expect_tools: [call_graph]
+    expect_paths: [ai-auto-review/engine/engine.js]
+    expect_terms: [createEngine]
+
+  # ── callees ────────────────────────────────────────────────
+  - id: ce-1
+    type: callees
+    question: auth.service의 login 함수는 내부에서 어떤 함수들을 호출해?
+    expect_tools: [call_graph, read_code]
+    expect_paths: [back/src/services/auth.service.js]
+    expect_terms: [findByCredentials, issueAccessToken, issueRefreshToken]
+  - id: ce-2
+    type: callees
+    question: createPresignedUploads가 내부적으로 뭘 호출하는지 알려줘
+    expect_tools: [call_graph, read_code]
+    expect_paths: [back/src/services/upload.service.js]
+    expect_terms: [register, s3Client, toPublicUrl]
+  - id: ce-3
+    type: callees
+    question: history.service의 createPost는 어떤 순서로 처리돼?
+    expect_tools: [call_graph, read_code]
+    expect_paths: [back/src/services/history.service.js]
+    expect_terms: [consume, processUploadedImage]
+
+  # ── security ───────────────────────────────────────────────
+  - id: se-1
+    type: security
+    question: SQL 인젝션 위험 있는 코드 있어?
+    expect_tools: [dataflow_security]
+    expect_paths: [back/src/repositories/admin.repository.js, back/src/repositories/user.repository.js]
+    expect_terms: [findByCredentials]
+  - id: se-2
+    type: security
+    question: 관리자 API에서 요청 본문이 그대로 쿼리에 들어가는 곳 있어?
+    expect_tools: [dataflow_security]
+    expect_paths: [back/src/repositories/admin.repository.js]
+    expect_terms: [reject, hold]
+  - id: se-3
+    type: security
+    question: 로그인 아이디가 DB 쿼리까지 어떻게 흘러가?
+    expect_tools: [dataflow_security, call_graph]
+    expect_paths: [back/src/repositories/user.repository.js]
+    expect_terms: [findByCredentials]
+  - id: se-4
+    type: security
+    question: 리프레시 토큰 처리에 보안 문제 있어?
+    expect_tools: [dataflow_security, semantic_search]
+    expect_paths: [back/src/services/auth.service.js]
+    expect_terms: [refresh]
+
+  # ── business ───────────────────────────────────────────────
+  - id: bu-1
+    type: business
+    question: 콘텐츠 관리 도메인에서 다른 도메인으로 넘어가는 호출 있어?
+    expect_tools: [dataflow_business]
+    expect_paths: []
+    expect_terms: [콘텐츠 관리]
+  - id: bu-2
+    type: business
+    question: 인증 도메인과 회원 관리 도메인 사이에 어떤 데이터가 오가?
+    expect_tools: [dataflow_business]
+    expect_paths: [back/src/repositories/user.repository.js]
+    expect_terms: []
+
+  # ── repo ───────────────────────────────────────────────────
+  - id: re-1
+    type: repo
+    question: 최근 커밋 뭐 있어?
+    expect_tools: [repo_commits]
+    expect_paths: []
+    expect_terms: []
+  - id: re-2
+    type: repo
+    question: 지금 열려 있는 PR 있어?
+    expect_tools: [repo_pull_requests]
+    expect_paths: []
+    expect_terms: []
+
+  # ── general (도구 불필요) ──────────────────────────────────
+  - id: ge-1
+    type: general
+    question: SQL 인젝션이 뭐야? 일반적인 설명만 해줘
+    expect_tools: []
+    expect_paths: []
+    expect_terms: []
+  - id: ge-2
+    type: general
+    question: 안녕
+    expect_tools: []
+    expect_paths: []
+    expect_terms: []

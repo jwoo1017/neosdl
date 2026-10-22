@@ -2,6 +2,16 @@ import { useEffect, useState } from "react";
 import { fetchAiUsage, fetchModels, fetchProjectAiSettings, updateProjectAiSettings } from "../api";
 import { useProject } from "../ProjectContext";
 
+// ai_call_log.purpose → 표 라벨. 채팅 단계별(qa_*)로 나눠 기록한다(app/orchestrator.py).
+const PURPOSE_LABELS = {
+  qa: "질문",
+  qa_plan: "질문 · 계획",
+  qa_step: "질문 · 도구 선택",
+  qa_relevance: "질문 · 근거 선별",
+  qa_synthesize: "질문 · 답변",
+  qa_title: "채팅 제목",
+};
+
 export default function SecurityAiSettingsPage() {
   const { activeProject, hasProjectRole } = useProject();
   const [settings, setSettings] = useState(null);
@@ -105,7 +115,7 @@ export default function SecurityAiSettingsPage() {
               <tbody>
                 {usage.map((u, i) => (
                   <tr key={i}>
-                    <td>{u.purpose === "ci_annotate" ? "CI/CD" : "질문"}</td>
+                    <td>{PURPOSE_LABELS[u.purpose] || (u.purpose === "ci_annotate" ? "CI/CD" : "질문")}</td>
                     <td className="muted">{u.provider}</td>
                     <td className="muted">{u.model}</td>
                     <td>{u.calls}</td>

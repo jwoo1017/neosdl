@@ -4,6 +4,7 @@ export const TOOL_LABELS = {
   codebase_structure: "코드베이스 구조",
   semantic_search: "시맨틱 검색",
   call_graph: "호출 그래프",
+  read_code: "코드 읽기",
   dataflow_security: "보안 Dataflow",
   dataflow_business: "비즈니스 IP Dataflow",
   repo_commits: "커밋 이력",

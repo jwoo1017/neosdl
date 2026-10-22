@@ -76,10 +76,15 @@ def _schema_response_format(schema: type[BaseModel]) -> dict:
 
 
 def _payload(model: str, prompt: str, *, json_mode: bool, stream: bool,
-             response_schema: type[BaseModel] | None = None, metadata: dict | None = None) -> dict:
+             response_schema: type[BaseModel] | None = None, metadata: dict | None = None,
+             system: str | None = None) -> dict:
+    # system: 역할·규칙(매 호출 동일)을 질문·근거(user)와 분리한다 — 지시문이 근거 JSON에
+    # 섞여 묻히지 않고, 프롬프트 앞부분이 고정돼 게이트웨이/vLLM prefix 캐시도 잘 맞는다.
+    messages = [{"role": "system", "content": system}] if system else []
+    messages.append({"role": "user", "content": prompt})
     body: dict = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "stream": stream,
     }
     if response_schema is not None:
@@ -103,7 +108,8 @@ def _schema_retryable(exc: Exception) -> bool:
 
 def generate(model: str, prompt: str, *, json_mode: bool = False,
              response_schema: type[BaseModel] | None = None, timeout: int = 120,
-             project_id: str | None = None, purpose: str = "qa", scan_id: str | None = None) -> str:
+             project_id: str | None = None, purpose: str = "qa", scan_id: str | None = None,
+             system: str | None = None) -> str:
     """게이트웨이 별칭 `model` 로 LLM 을 1회 호출한다. project_id 가 있으면 성공/실패 무관 ai_call_log 1행.
 
     `response_schema`(Pydantic 모델)를 주면 grammar/schema-constrained decoding을
@@ -124,7 +130,7 @@ def generate(model: str, prompt: str, *, json_mode: bool = False,
             try:
                 resp = httpx.post(_chat_url(), headers=_headers(),
                                   json=_payload(resolved, prompt, json_mode=mode, response_schema=schema,
-                                                stream=False, metadata=meta),
+                                                stream=False, metadata=meta, system=system),
                                   timeout=timeout)
                 resp.raise_for_status()
                 data = resp.json()
@@ -151,12 +157,17 @@ def generate(model: str, prompt: str, *, json_mode: bool = False,
 
 
 async def agenerate_stream(model: str, prompt: str, *, timeout: int = 120,
-                           project_id: str | None = None, purpose: str = "qa", scan_id: str | None = None):
+                           project_id: str | None = None, purpose: str = "qa", scan_id: str | None = None,
+                           system: str | None = None, idle_timeout: int = 180):
     """게이트웨이 별칭 `model` 로 스트리밍 호출해 텍스트 조각을 그대로 yield 한다.
 
     구조화(JSON) 출력은 스트리밍할 이유가 없으므로(파싱은 완결된 문서가 필요)
     자유 형식 답변 합성(synthesize_answer_stream) 전용이다 — 라우팅/관련성
     판단은 여전히 동기 generate(json_mode=True)를 쓴다.
+
+    `idle_timeout`: 다음 조각이 이 시간(초) 안에 안 오면 끊는다. 예전엔 read=None이라
+    upstream이 멈추면 채팅 턴이 영원히 "답변 생성 중"에 머물렀다. 첫 토큰(긴 프롬프트
+    prefill)까지 포함한 간격이라 넉넉하게 잡는다.
     """
     resolved = _resolve_model(model)
     started = time.monotonic()
@@ -164,9 +175,10 @@ async def agenerate_stream(model: str, prompt: str, *, timeout: int = 120,
     usage: dict = {}
     meta = observability.litellm_trace_metadata(purpose, project_id, scan_id)
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, read=None)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, read=idle_timeout)) as client:
             async with client.stream("POST", _chat_url(), headers=_headers(),
-                                     json=_payload(resolved, prompt, json_mode=False, stream=True, metadata=meta)) as resp:
+                                     json=_payload(resolved, prompt, json_mode=False, stream=True, metadata=meta,
+                                                   system=system)) as resp:
                 if resp.is_error:
                     # 스트리밍 응답은 본문을 안 읽은 상태라 _describe() 가 text 에 접근하면
                     # ResponseNotRead 로 다시 터져 게이트웨이 에러 원문이 사라진다 — 먼저 읽어 둔다.

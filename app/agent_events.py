@@ -2,9 +2,9 @@
 
 `app/orchestrator.py`의 `run_agentic()`/`_build_plan()`이 만들고, `app/chat.py`가
 WebSocket 프레임(`{"type": "agent_event", ...}`)으로 그대로 중계한다. 이 시스템의
-채팅 에이전트는 파일을 읽거나 쓰거나 코드를 실행하지 않는 읽기 전용 DB/그래프
-조회 도구(`orchestrator.TOOLS`)만 가지고 있으므로, 이벤트 타입도 그 범위를
-정직하게 반영한다 — file_operation/code_change 같은 타입은 존재하지 않는다.
+채팅 에이전트는 파일을 쓰거나 코드를 실행하지 않는 읽기 전용 조회 도구
+(`orchestrator.TOOLS` — DB/그래프 조회와 스캔한 커밋의 소스 읽기)만 가지고 있으므로,
+이벤트 타입도 그 범위를 정직하게 반영한다 — file_operation/code_change 같은 타입은 존재하지 않는다.
 """
 
 from __future__ import annotations
@@ -55,6 +55,7 @@ _THINKING_TEXT = {
     "codebase_structure": "코드베이스 구조를 확인하는 중...",
     "semantic_search": "관련 코드를 검색하는 중...",
     "call_graph": "호출 관계를 분석하는 중...",
+    "read_code": "소스 코드를 읽는 중...",
     "dataflow_security": "데이터 흐름을 분석하는 중...",
     "dataflow_business": "데이터 흐름을 분석하는 중...",
     "repo_commits": "저장소 이력을 확인하는 중...",
@@ -108,7 +109,13 @@ def tool_target_text(tool_name: str, params: dict | None) -> str | None:
         return f"'{q}' 관련 코드 검색 ({domain} 도메인 내)" if domain else f"'{q}' 관련 코드 검색"
     if tool_name == "call_graph":
         sym = str(params.get("symbol") or "").strip()
-        return f"'{sym}' 호출 관계 추적" if sym else None
+        if not sym:
+            return None
+        direction = {"callers": " (호출하는 쪽)", "callees": " (호출되는 쪽)"}.get(str(params.get("direction") or ""), "")
+        return f"'{sym}' 호출 관계 추적{direction}"
+    if tool_name == "read_code":
+        target = str(params.get("symbol") or params.get("path") or "").strip()
+        return f"'{target}' 코드 읽기" if target else None
     if tool_name in ("dataflow_security", "dataflow_business"):
         terms = _clean_terms(params.get("keywords"))
         return f"관심 키워드: {', '.join(terms)}" if terms else None
