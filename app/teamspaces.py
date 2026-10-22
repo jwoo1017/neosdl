@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app import audit, profiles
+from app.signup_policy import OptionalEmail
 from app.auth import (
     assert_not_self_invite,
     assert_teamspace_role,
@@ -61,7 +62,7 @@ class TeamspaceMemberDisciplineIn(BaseModel):
 
 class TeamspaceInviteIn(BaseModel):
     role: str = Field(pattern=_ROLE_PATTERN, default="member")
-    target_email: str | None = None
+    target_email: OptionalEmail = None   # 비우면 링크 초대(외부인은 링크로 가입할 수 없다)
     # PM/frontend/backend — project 생성 마법사의 "담당자" 단계가 이 값을
     # 보여줘서, 어떤 teamspace 멤버가 어떤 직무인지 구분할 수 있게 한다.
     discipline: str | None = Field(pattern=_DISCIPLINE_PATTERN, default=None)

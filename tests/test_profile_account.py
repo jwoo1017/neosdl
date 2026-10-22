@@ -47,7 +47,8 @@ def env(db, monkeypatch, tmp_path):
     def signup(client, email=None):
         email = email or f"prof-{uuid.uuid4().hex[:10]}@example.com"
         r = client.post("/api/auth/signup",
-                        json={"email": email, "password": PW, "name": "홍길동", "nickname": "길동"})
+                        json={"email": email, "password": PW, "name": "홍길동", "nickname": "길동",
+                              "privacy_agreed": True})
         assert r.status_code == 201, r.text
         code = sent[-1][1]
         assert client.post("/api/auth/email-verification/verify", json={"code": code}).status_code == 204

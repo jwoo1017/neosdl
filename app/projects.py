@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app import analysis, audit, profiles
+from app.signup_policy import OptionalEmail
 from app.auth import (
     assert_not_self_invite,
     assert_project_role,
@@ -61,7 +62,7 @@ class ProjectSpecIn(BaseModel):
 
 class ProjectInviteIn(BaseModel):
     role: str = Field(pattern=_PROJECT_ROLES, default="developer")
-    target_email: str | None = None
+    target_email: OptionalEmail = None   # 비우면 링크 초대(외부인은 링크로 가입할 수 없다)
 
 
 class ProjectMemberRoleIn(BaseModel):

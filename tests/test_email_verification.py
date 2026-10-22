@@ -87,7 +87,8 @@ def client(db, monkeypatch):
 
 
 def _signup(client):
-    r = client.post("/api/auth/signup", json={"email": client.email, "password": "pw-12345678", "name": "검증", "nickname": "검증"})
+    r = client.post("/api/auth/signup", json={"email": client.email, "password": "pw-12345678", "name": "검증", "nickname": "검증",
+                                              "privacy_agreed": True})
     assert r.status_code == 201, r.text
     return r.json()
 

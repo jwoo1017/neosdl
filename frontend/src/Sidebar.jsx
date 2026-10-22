@@ -258,9 +258,12 @@ export default function Sidebar() {
             ))}
           </select>
         )}
-        <button type="button" className="team-switcher-new-btn" onClick={() => setShowCreateWorkspace(true)}>
-          + 새 워크스페이스
-        </button>
+        {/* 게스트(회사 도메인 밖, 초대로 가입)는 워크스페이스를 만들 수 없다(app/workspaces.py) */}
+        {!me?.is_guest && (
+          <button type="button" className="team-switcher-new-btn" onClick={() => setShowCreateWorkspace(true)}>
+            + 새 워크스페이스
+          </button>
+        )}
       </div>
 
       <div className="sidebar-scroll">
@@ -345,6 +348,11 @@ export default function Sidebar() {
           <button type="button" className="sidebar-nav-btn" onClick={() => setShowWorkspaceSettings(true)}>
             워크스페이스 관리
           </button>
+        )}
+        {me?.is_system_admin && (
+          <NavLink to="/admin/members" className={({ isActive }) => (isActive ? "active" : "")}>
+            회원 관리
+          </NavLink>
         )}
       </nav>
       {me && (

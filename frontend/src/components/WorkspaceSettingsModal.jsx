@@ -124,7 +124,7 @@ export default function WorkspaceSettingsModal({ onClose }) {
             <tbody>
               {workspace.members.map((m) => (
                 <tr key={m.member_id}>
-                  <td>{m.nickname}</td>
+                  <td>{m.nickname} {m.is_guest && <span className="guest-badge" title="회사 도메인 밖 계정 — 초대받은 공간만 이용">게스트</span>}</td>
                   <td>
                     {isWorkspaceAdmin ? (
                       <select value={m.role} onChange={(e) => changeMemberRole(m.member_id, e.target.value)}>

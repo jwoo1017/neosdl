@@ -16,6 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app import audit, profiles
+from app import signup_policy
+from app.signup_policy import OptionalEmail
 from app.auth import (
     assert_not_self_invite,
     assert_workspace_role,
@@ -39,7 +41,7 @@ class WorkspaceIn(BaseModel):
 
 class WorkspaceInviteIn(BaseModel):
     role: str = Field(pattern="^(admin|member)$", default="member")
-    target_email: str | None = None
+    target_email: OptionalEmail = None   # 비우면 링크 초대(외부인은 링크로 가입할 수 없다)
 
 
 class WorkspaceMemberRoleIn(BaseModel):
@@ -49,6 +51,9 @@ class WorkspaceMemberRoleIn(BaseModel):
 @router.post("/workspaces", status_code=201)
 def create_workspace(body: WorkspaceIn, member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
+    # 게스트(회사 도메인 밖, 초대로 가입)는 초대받은 공간만 쓴다 — Slack/Notion 게스트 관례.
+    if signup_policy.is_guest(member.get("email")):
+        raise HTTPException(403, "guest_cannot_create_workspace")
     with tx() as cur:
         cur.execute(
             "INSERT INTO workspace (name, created_by, type) VALUES (%s, %s, %s) "

@@ -20,6 +20,9 @@ import pytest
 # 읽지만, .env 없는 CI/샌드박스에서도 import 가 죽지 않도록 더미를 채운다(테스트는
 # 세션 서명을 검증하지 않는다).
 os.environ.setdefault("SESSION_SECRET", "test-" + "0" * 32)
+# 테스트 계정은 @example.com 이다 — 가입 정책(app/signup_policy.py)에서 회사 도메인으로 취급해
+# 기존 테스트가 도메인 제한에 걸리지 않게 한다. 정책 자체는 tests/test_signup_policy.py 가 검증한다.
+os.environ["ALLOWED_SIGNUP_DOMAINS"] = "aeonlab.kr,finble.io,zerokleek.com,example.com"
 
 _MARKERS = {
     "integration": "실제 Postgres(sql/001..020 적용) 필요 — 없으면 skip",
@@ -159,7 +162,7 @@ def api_users(db, monkeypatch):
         email = f"{nickname}-{uuid.uuid4().hex[:8]}@example.com"
         r = client.post("/api/auth/signup",
                         json={"email": email, "password": "pw-12345678", "name": f"{nickname} 실명",
-                              "nickname": nickname})
+                              "nickname": nickname, "privacy_agreed": True})
         assert r.status_code == 201, r.text
         assert client.post("/api/auth/email-verification/verify", json={"code": codes[-1]}).status_code == 204
         u = User()

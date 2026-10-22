@@ -48,6 +48,7 @@ def _generate_code() -> str:
 _PURPOSE_TEXT = {
     "signup": ("이메일 인증", "NeoSDL 가입을 완료하려면"),
     "email_change": ("이메일 변경 확인", "로그인 이메일을 이 주소로 바꾸려면"),
+    "password_reset": ("비밀번호 재설정", "비밀번호를 다시 설정하려면"),
 }
 
 
@@ -148,6 +149,13 @@ def issue_email_change_code(cur, member_id: str, new_email: str) -> dict:
     return _issue(cur, member_id, row["nickname"], new_email, "email_change", enforce_rate_limit=True)
 
 
+def issue_password_reset_code(cur, member_id: str) -> dict:
+    """비밀번호 찾기 — 계정 이메일로 재설정 코드를 보낸다(쿨다운·시간당 한도는 다른 용도와 같다)."""
+    cur.execute("SELECT email, nickname FROM member WHERE id=%s FOR UPDATE", (member_id,))
+    row = cur.fetchone()
+    return _issue(cur, member_id, row["nickname"], row["email"], "password_reset", enforce_rate_limit=True)
+
+
 def verify_code(cur, member_id: str, code: str, purpose: str = "signup") -> dict:
     """결과 dict 를 반환한다 — 성공: {"member": {...}}, 실패: {"error": "<사유>"}.
 
@@ -179,6 +187,11 @@ def verify_code(cur, member_id: str, code: str, purpose: str = "signup") -> dict
                     (row["id"],))
         remaining = MAX_ATTEMPTS - cur.fetchone()["attempts"]
         return {"error": "too_many_attempts" if remaining <= 0 else f"invalid_code:{remaining}"}
+
+    if purpose == "password_reset":
+        # 비밀번호 변경 자체는 호출부(app/github_oauth.py)가 같은 트랜잭션에서 한다.
+        cur.execute("UPDATE email_verification SET consumed_at=now() WHERE id=%s", (row["id"],))
+        return {"member": {"id": member_id}}
 
     if purpose == "email_change":
         # 코드를 보낸 뒤 그 사이 누가 그 주소로 가입했을 수 있다 — 확정 직전에 다시 확인.

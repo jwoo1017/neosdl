@@ -10,6 +10,8 @@ import {
   ChevronDownIcon, DangerTabIcon, GithubMarkIcon, KeyTabIcon, LinkTabIcon, UserTabIcon,
 } from "../icons/SettingsIcons";
 import { useMe } from "../MeContext";
+import { describeAccountError, passwordChecks } from "../auth/accountPolicy";
+import { PasswordChecklist } from "../auth/PrivacyNotice";
 
 // 설정 화면 — 가운데 정렬 컨테이너, 왼쪽 탭 + 오른쪽 본문(GitHub/Notion/Linear 설정 방식).
 // 각 항목은 "라벨 | 현재 값 | 변경" 행이고, 변경을 누르면 그 행 안에서 편집 영역이 펼쳐진다.
@@ -43,6 +45,10 @@ const CONFIRM_TEXT = "탈퇴합니다";
 
 function describe(err) {
   const d = err?.detail;
+  const policyText = describeAccountError(d);   // 비밀번호 규칙·잠금 등 계정 정책 문구(auth/accountPolicy.js)
+  if (policyText && !String(d).startsWith("invalid_code") && !String(d).startsWith("resend_cooldown")) {
+    return policyText;
+  }
   if (typeof d === "string") {
     const [kind, value] = d.split(":");
     if (kind === "invalid_code") return `인증 코드가 올바르지 않습니다. (남은 시도 ${value}회)`;
@@ -343,6 +349,8 @@ function PasswordRow() {
   const [next, setNext] = useState("");
   const [confirmNext, setConfirmNext] = useState("");
   const { busy, msg, setMsg, run } = useAction();
+  const { me } = useMe();
+  const checks = passwordChecks(next, me?.email);
 
   const close = () => {
     setOpen(false);
@@ -376,13 +384,16 @@ function PasswordRow() {
         <form className="mp-inline-form" onSubmit={submit}>
           <input type="password" placeholder="현재 비밀번호 (처음 설정이면 비워두세요)" value={current} autoFocus
                  autoComplete="current-password" onChange={(e) => setCurrent(e.target.value)} />
-          <input type="password" placeholder="새 비밀번호 (8자 이상)" value={next} minLength={8} required
+          <input type="password" placeholder="새 비밀번호" value={next} required
                  autoComplete="new-password" onChange={(e) => setNext(e.target.value)} />
-          <input type="password" placeholder="새 비밀번호 확인" value={confirmNext} minLength={8} required
+          <input type="password" placeholder="새 비밀번호 확인" value={confirmNext} required
                  autoComplete="new-password" onChange={(e) => setConfirmNext(e.target.value)} />
+          <PasswordChecklist checks={checks} />
           <div className="mp-form-actions">
             <button type="button" className="mp-btn mp-btn-secondary" onClick={close}>취소</button>
-            <button type="submit" className="mp-btn mp-btn-primary" disabled={busy || next.length < 8}>비밀번호 변경</button>
+            <button type="submit" className="mp-btn mp-btn-primary" disabled={busy || !checks.every((c) => c.ok)}>
+              비밀번호 변경
+            </button>
           </div>
         </form>
       )}

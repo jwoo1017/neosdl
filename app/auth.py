@@ -76,11 +76,12 @@ def _decode_session(session: str | None) -> dict | None:
 
 
 def _still_valid(member: dict) -> bool:
-    """탈퇴했거나 token_version 이 올라갔으면(비밀번호 변경 등) 그 세션은 무효."""
+    """탈퇴·관리자 비활성화했거나 token_version 이 올라갔으면(비밀번호 변경 등) 그 세션은 무효."""
     with tx() as cur:
-        cur.execute("SELECT token_version, deleted_at FROM member WHERE id=%s", (member["id"],))
+        cur.execute("SELECT token_version, deleted_at, suspended_at FROM member WHERE id=%s", (member["id"],))
         row = cur.fetchone()
-    return row is not None and row["deleted_at"] is None and row["token_version"] == member["token_version"]
+    return (row is not None and row["deleted_at"] is None and row["suspended_at"] is None
+            and row["token_version"] == member["token_version"])
 
 
 def _load_session(session: str | None) -> dict | None:

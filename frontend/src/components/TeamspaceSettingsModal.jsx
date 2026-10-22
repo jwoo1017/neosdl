@@ -177,7 +177,7 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
                       <Avatar profile={{ id: m.member_id, nickname: m.nickname, name: m.name, avatar_url: m.avatar_url }}
                               size={26} role={m.role} />
                       <span className="member-cell-names">
-                        <span>{m.nickname}</span>
+                        <span>{m.nickname} {m.is_guest && <span className="guest-badge" title="회사 도메인 밖 계정 — 초대받은 공간만 이용">게스트</span>}</span>
                         {m.name && m.name !== m.nickname && <span className="muted">{m.name}</span>}
                       </span>
                     </span>

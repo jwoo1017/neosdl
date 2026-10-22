@@ -27,7 +27,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
-from app import audit, email_verification, profiles
+from app import audit, email_verification, profiles, signup_policy
 from app.auth import (
     SESSION_COOKIE,
     SESSION_TTL_SECONDS,
@@ -56,14 +56,26 @@ _GITHUB_USER_EMAILS_URL = "https://api.github.com/user/emails"
 
 class SignupIn(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=200)
-    name: str = Field(min_length=1, max_length=50)       # 실명 — 프로필/멤버 목록에 표시
-    nickname: str = Field(min_length=1, max_length=100)  # 화면 표시용 별칭
+    # 길이·조합·이름 규칙은 app/signup_policy.py 가 검사한다(공백 제거 후 판단, 위반 코드를 돌려줌).
+    password: str = Field(max_length=200)
+    name: str = Field(max_length=200)        # 실명 — 프로필/멤버 목록에 표시
+    nickname: str = Field(max_length=200)    # 화면 표시용 별칭
+    privacy_agreed: bool = False             # 개인정보 수집·이용 동의(필수)
 
 
 class LoginIn(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(max_length=200)
+
+
+class PasswordResetRequestIn(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetConfirmIn(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=1, max_length=12)
+    new_password: str = Field(max_length=200)
 
 
 class VerifyEmailIn(BaseModel):
@@ -84,18 +96,26 @@ def _set_session_cookie(resp: Response, member: dict) -> None:
 @router.post("/auth/signup", status_code=201)
 def signup(body: SignupIn):
     email = body.email.lower()
+    name = signup_policy.clean_display_text(body.name, field="name", max_len=50)
+    nickname = signup_policy.clean_display_text(body.nickname, field="nickname", max_len=30)
+    if not body.privacy_agreed:
+        raise HTTPException(400, "privacy_agreement_required")
+    signup_policy.validate_password(body.password, email)
     with tx() as cur:
         cur.execute("SELECT 1 FROM member WHERE lower(email)=%s", (email,))
         if cur.fetchone() is not None:
             raise HTTPException(409, "email already registered")
+        # 회사 도메인이거나, 그 주소로 온 초대가 있어야 가입할 수 있다(게스트).
+        if not signup_policy.can_sign_up(cur, email):
+            raise HTTPException(403, "signup_not_allowed")
 
         cur.execute(
             """
-            INSERT INTO member (email, password_hash, name, nickname, last_login_at)
-            VALUES (%s, %s, %s, %s, now())
+            INSERT INTO member (email, password_hash, name, nickname, last_login_at, privacy_agreed_at)
+            VALUES (%s, %s, %s, %s, now(), now())
             RETURNING id, email, nickname, token_version
             """,
-            (email, hash_password(body.password), body.name.strip(), body.nickname.strip()),
+            (email, hash_password(body.password), name, nickname),
         )
         member = {**cur.fetchone(), "email_verified": False}
         audit.record(cur, actor=f"user:{member['nickname']}", action="member.signup",
@@ -109,27 +129,116 @@ def signup(body: SignupIn):
     return resp
 
 
+_LOGIN_ERRORS = {"invalid": (401, "invalid email or password"), "suspended": (403, "account_suspended")}
+
+
 @router.post("/auth/login")
 def login(body: LoginIn):
+    """연속 5회 실패하면 15분 잠근다(429 `account_locked:<남은 초>`). 비활성화 계정은 403.
+
+    실패 횟수 증가는 커밋돼야 하므로 실패도 예외 대신 값으로 받아 트랜잭션 밖에서 응답한다.
+    """
     email = body.email.lower()
+    error = None
     with tx() as cur:
         cur.execute(
-            "SELECT id, email, nickname, password_hash, email_verified_at, token_version "
-            "FROM member WHERE lower(email)=%s AND deleted_at IS NULL",
+            "SELECT id, email, nickname, password_hash, email_verified_at, token_version, suspended_at, "
+            "       failed_login_count, ceil(extract(epoch FROM locked_until - now()))::int AS lock_wait "
+            "FROM member WHERE lower(email)=%s AND deleted_at IS NULL FOR UPDATE",
             (email,),
         )
         member = cur.fetchone()
-        # 계정 존재 여부가 401 사유로 새지 않도록 실패 사유를 구분하지 않는다.
-        if member is None or not verify_password(body.password, member["password_hash"]):
-            raise HTTPException(401, "invalid email or password")
-        member = {**member, "email_verified": _is_verified(member)}
-        cur.execute("UPDATE member SET last_login_at=now() WHERE id=%s", (member["id"],))
-        audit.record(cur, actor=f"user:{member['nickname']}", action="member.login",
-                     subject={"member_id": str(member["id"])}, payload={"method": "email"})
+        # 계정 존재 여부가 401 사유로 새지 않도록 "없음"과 "비밀번호 틀림"을 구분하지 않는다.
+        if member is None:
+            error = "invalid"
+        elif (member["lock_wait"] or 0) > 0:
+            error = f"locked:{member['lock_wait']}"
+        elif not verify_password(body.password, member["password_hash"]):
+            failed = member["failed_login_count"] + 1
+            locked = failed >= signup_policy.MAX_FAILED_LOGINS
+            cur.execute(
+                "UPDATE member SET failed_login_count=%s, "
+                "       locked_until = CASE WHEN %s THEN now() + make_interval(secs => %s) ELSE NULL END "
+                "WHERE id=%s",
+                (0 if locked else failed, locked, signup_policy.LOCK_SECONDS, member["id"]),
+            )
+            audit.record(cur, actor=f"user:{member['nickname']}", action="member.login_failed",
+                         subject={"member_id": str(member["id"])}, payload={"locked": locked})
+            error = f"locked:{signup_policy.LOCK_SECONDS}" if locked else "invalid"
+        elif member["suspended_at"] is not None:
+            # 비밀번호가 맞을 때만 비활성 사실을 알려준다(남의 계정 상태를 떠보지 못하게).
+            error = "suspended"
+        else:
+            cur.execute("UPDATE member SET last_login_at=now(), failed_login_count=0, locked_until=NULL "
+                        "WHERE id=%s", (member["id"],))
+            audit.record(cur, actor=f"user:{member['nickname']}", action="member.login",
+                         subject={"member_id": str(member["id"])}, payload={"method": "email"})
+            member = {**member, "email_verified": _is_verified(member)}
 
+    if error is not None:
+        if error.startswith("locked:"):
+            raise HTTPException(429, "account_locked:" + error.split(":", 1)[1])
+        raise HTTPException(*_LOGIN_ERRORS[error])
     resp = Response(status_code=204)
     _set_session_cookie(resp, member)
     return resp
+
+
+@router.post("/auth/password-reset/request", status_code=202)
+def request_password_reset(body: PasswordResetRequestIn):
+    """비밀번호 찾기 1단계 — 계정이 있으면 재설정 코드를 메일로 보낸다.
+
+    가입 여부가 드러나지 않게 계정이 없어도, 재발송 제한에 걸려도 같은 응답을 준다.
+    """
+    with tx() as cur:
+        cur.execute(
+            "SELECT id FROM member WHERE lower(email)=%s AND deleted_at IS NULL AND suspended_at IS NULL",
+            (body.email.lower(),),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            try:
+                email_verification.issue_password_reset_code(cur, str(row["id"]))
+            except HTTPException as exc:
+                if exc.status_code != 429:   # 쿨다운/시간당 한도는 조용히 넘긴다
+                    raise
+    return {"expires_in": email_verification.CODE_TTL_SECONDS,
+            "resend_after": email_verification.RESEND_COOLDOWN_SECONDS}
+
+
+@router.post("/auth/password-reset/confirm", status_code=204)
+def confirm_password_reset(body: PasswordResetConfirmIn):
+    """비밀번호 찾기 2단계 — 코드가 맞으면 새 비밀번호로 바꾸고 모든 세션을 끊는다(잠금도 해제).
+
+    코드 오입력 횟수는 커밋돼야 하므로 실패는 트랜잭션 밖에서 400 으로 바꾼다.
+    """
+    email = body.email.lower()
+    signup_policy.validate_password(body.new_password, email)
+    with tx() as cur:
+        cur.execute(
+            "SELECT id, nickname FROM member WHERE lower(email)=%s AND deleted_at IS NULL AND suspended_at IS NULL",
+            (email,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            result = {"error": "code_expired"}   # 계정이 없을 때도 "코드 없음"과 같은 응답
+        else:
+            result = email_verification.verify_code(cur, str(row["id"]), body.code, purpose="password_reset")
+            if "error" not in result:
+                cur.execute(
+                    """
+                    UPDATE member SET password_hash=%s, token_version=token_version+1,
+                           failed_login_count=0, locked_until=NULL,
+                           email_verified_at=coalesce(email_verified_at, now()), updated_at=now()
+                     WHERE id=%s
+                    """,
+                    (hash_password(body.new_password), row["id"]),
+                )
+                audit.record(cur, actor=f"user:{row['nickname']}", action="member.password.reset",
+                             subject={"member_id": str(row["id"])}, payload={})
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return Response(status_code=204)
 
 
 def _make_state(next_path: str | None) -> str:
@@ -143,30 +252,40 @@ def _make_state(next_path: str | None) -> str:
     return jwt.encode(claims, settings().session_secret, algorithm="HS256")
 
 
-def _fetch_verified_email(client: httpx.Client, access_token: str, public_email: str | None) -> str | None:
-    """gh_user.email(프로필에 공개해 둔 이메일)이 없을 때만 /user/emails 로
+def _fetch_verified_emails(client: httpx.Client, access_token: str, public_email: str | None) -> list[str]:
+    """GitHub 가 인증한 이메일 목록(primary 먼저). 프로필 공개 이메일도 GitHub 에선 인증된 주소다.
 
-    검증된 primary 이메일을 추가 조회한다 — 프로필에 이메일을 비공개로
-    돌려놔도 GitHub 계정엔 거의 항상 인증된 이메일이 있다. GitHub App의
-    "Account permissions > Email addresses"가 꺼져 있으면 이 호출이
-    403이나 빈 배열로 돌아오는데, 그럴 땐 그냥 이메일 없이 진행한다(로그인
-    자체를 막을 이유는 없다).
+    회사 메일이 primary 가 아니라 보조 주소로 등록된 경우가 흔해서(개인 메일이 primary),
+    가입 자격 판단(_pick_signup_email)을 위해 primary 하나가 아니라 전체를 본다.
+    GitHub App 의 "Account permissions > Email addresses" 가 꺼져 있으면 /user/emails 가
+    403 이나 빈 배열이라 공개 이메일만 남는다.
     """
-    if public_email:
-        return public_email
+    emails: list[str] = []
     try:
         resp = client.get(_GITHUB_USER_EMAILS_URL, headers={
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/vnd.github+json",
         })
-        if resp.status_code != 200:
-            return None
-        emails = resp.json()
+        if resp.status_code == 200:
+            verified = [e for e in resp.json() if e.get("verified") and e.get("email")]
+            verified.sort(key=lambda e: not e.get("primary"))
+            emails = [e["email"] for e in verified]
     except (httpx.HTTPError, ValueError):
-        return None
-    verified = [e for e in emails if e.get("verified")]
-    primary = next((e["email"] for e in verified if e.get("primary")), None)
-    return primary or (verified[0]["email"] if verified else None)
+        pass
+    if public_email and public_email not in emails:
+        emails.append(public_email)
+    return emails
+
+
+def _pick_signup_email(cur, emails: list[str]) -> str | None:
+    """GitHub 신규 가입에 쓸 이메일 — 회사 도메인 우선, 없으면 초대가 와 있는 주소. 없으면 가입 불가."""
+    for e in emails:
+        if signup_policy.is_company_email(e):
+            return e
+    for e in emails:
+        if signup_policy.has_pending_invite(cur, e):
+            return e
+    return None
 
 
 def _apply_email_if_available(cur, member_id: str, candidate_email: str | None) -> None:
@@ -258,9 +377,13 @@ def github_callback(
         })
         user_resp.raise_for_status()
         gh_user = user_resp.json()
-        verified_email = _fetch_verified_email(client, access_token, gh_user.get("email"))
+        verified_emails = _fetch_verified_emails(client, access_token, gh_user.get("email"))
+    # 기존 계정 이메일 백필용 — 회사 메일이 있으면 그것을, 없으면 primary.
+    verified_email = next((e for e in verified_emails if signup_policy.is_company_email(e)),
+                          verified_emails[0] if verified_emails else None)
 
     redirect_error: str | None = None
+    member = None
     with tx() as cur:
         cur.execute("SELECT id, member_id FROM github_account WHERE github_user_id=%s", (gh_user["id"],))
         existing = cur.fetchone()
@@ -294,12 +417,19 @@ def github_callback(
             member = current_member
         else:
             # 로그인 세션 없음 — 로그인/가입 모드.
+            suspended = False
             if existing is not None:
+                cur.execute("SELECT suspended_at FROM member WHERE id=%s", (existing["member_id"],))
+                suspended = cur.fetchone()["suspended_at"] is not None
+            if suspended:
+                redirect_error = "account_suspended"
+            elif existing is not None:
                 cur.execute(
                     "UPDATE github_account SET github_login=%s, avatar_url=%s, updated_at=now() WHERE id=%s",
                     (gh_user["login"], gh_user.get("avatar_url"), existing["id"]),
                 )
-                cur.execute("UPDATE member SET last_login_at=now() WHERE id=%s", (existing["member_id"],))
+                cur.execute("UPDATE member SET last_login_at=now(), failed_login_count=0, locked_until=NULL "
+                            "WHERE id=%s", (existing["member_id"],))
                 # 예전에 이메일 없이 가입한 계정이면 이번 로그인에 딸려온
                 # 인증 이메일로 백필한다 — _apply_email_if_available이 이미
                 # 이메일이 있으면 건드리지 않는다.
@@ -311,22 +441,26 @@ def github_callback(
                 audit.record(cur, actor=f"user:{member['nickname']}", action="member.login",
                              subject={"member_id": str(member["id"])}, payload={"method": "github"})
             else:
-                email = verified_email
-                if email:
-                    # 이미 다른 계정이 쓰는 이메일이면 자동 병합하지 않고
-                    # 비워둔다 — 공개/인증 이메일만으로 계정을 가로챌 수 없게.
+                # 신규 가입은 GitHub 가 인증한 회사 메일(또는 초대받은 주소)이 있을 때만.
+                email = _pick_signup_email(cur, verified_emails)
+                if email is None:
+                    redirect_error = "github_signup_not_allowed"
+                else:
                     cur.execute("SELECT 1 FROM member WHERE lower(email)=%s", (email.lower(),))
                     if cur.fetchone() is not None:
-                        email = None
-                # GitHub 가 인증한 이메일이라 가입 즉시 인증 완료로 둔다(이메일이 없으면 대상 없음).
+                        # 이미 그 메일로 가입한 계정이 있다 — 자동 병합하지 않는다(계정 탈취 방지).
+                        # 그 계정으로 로그인한 뒤 마이페이지에서 GitHub 를 연결하게 안내한다.
+                        redirect_error = "github_email_in_use"
+            if redirect_error is None and existing is None:
+                # GitHub 가 인증한 이메일이라 가입 즉시 인증 완료. 개인정보 동의는 첫 화면에서 받는다
+                # (privacy_agreed_at NULL → 프론트 동의 화면 → POST /me/privacy-agreement).
                 cur.execute(
                     "INSERT INTO member (email, name, nickname, last_login_at, email_verified_at, avatar_source) "
-                    "VALUES (%s, %s, %s, now(), CASE WHEN %s::text IS NULL THEN NULL ELSE now() END, "
-                    "        CASE WHEN %s::text IS NULL THEN 'initials' ELSE 'github' END) "
+                    "VALUES (%s, %s, %s, now(), now(), CASE WHEN %s::text IS NULL THEN 'initials' ELSE 'github' END) "
                     "RETURNING id, nickname, email, token_version",
                     # GitHub 프로필 이름이 없으면 login 을 이름으로 쓴다(마이페이지에서 수정 가능).
                     # GitHub 사진이 있으면 그걸 기본 아바타로(마이페이지에서 바꿀 수 있음).
-                    (email, (gh_user.get("name") or gh_user["login"])[:50], gh_user["login"], email,
+                    (email.lower(), (gh_user.get("name") or gh_user["login"])[:50], gh_user["login"][:30],
                      gh_user.get("avatar_url")),
                 )
                 member = {**cur.fetchone(), "email_verified": True}
@@ -340,7 +474,10 @@ def github_callback(
                 audit.record(cur, actor=f"user:{member['nickname']}", action="member.signup",
                              subject={"member_id": str(member["id"])}, payload={"method": "github"})
 
-    if redirect_error:
+    if redirect_error and current_member is None:
+        # 로그인/가입 거절 — 세션을 만들지 않고 로그인 화면에서 사유를 보여준다.
+        redirect_to = f"{settings().frontend_url}/login?error={redirect_error}"
+    elif redirect_error:
         # next가 다시 /auth/github/setup 같은 백엔드 경로를 가리키는 경우,
         # 그걸 그대로 따라가면 같은 충돌이 반복돼 리다이렉트 루프가 될 수
         # 있다 — 충돌 시엔 항상 프론트 대시보드로 보낸다.
@@ -349,7 +486,7 @@ def github_callback(
         redirect_to = _safe_redirect_target(claims.get("next"))
 
     resp = RedirectResponse(redirect_to, status_code=302)
-    if current_member is None:
+    if current_member is None and member is not None:
         _set_session_cookie(resp, member)
     resp.delete_cookie(STATE_COOKIE, path="/api/auth/github")
     return resp
@@ -368,7 +505,22 @@ def me(member: dict = Depends(get_current_member_allow_unverified)):
     # 이름·아바타는 세션 클레임이 아니라 DB 에서 — 마이페이지에서 바꾸면 바로 반영되게.
     with tx() as cur:
         profile = profiles.load_profile(cur, member["id"])
-    return {**profile, "email_verified": member["email_verified"]}
+        cur.execute("SELECT is_system_admin, privacy_agreed_at FROM member WHERE id=%s", (member["id"],))
+        flags = cur.fetchone()
+    return {**profile, "email_verified": member["email_verified"],
+            "is_system_admin": flags["is_system_admin"],
+            "is_guest": signup_policy.is_guest(profile.get("email")),
+            "privacy_agreed": flags["privacy_agreed_at"] is not None}
+
+
+@router.post("/me/privacy-agreement", status_code=204)
+def agree_privacy(member: dict = Depends(get_current_member_allow_unverified)):
+    """개인정보 수집·이용 동의 — GitHub 로 가입했거나 정책 도입 전에 가입한 계정이 첫 화면에서 한다."""
+    with tx() as cur:
+        cur.execute("UPDATE member SET privacy_agreed_at=coalesce(privacy_agreed_at, now()) WHERE id=%s",
+                    (member["id"],))
+        audit.record(cur, actor=f"user:{member['nickname']}", action="member.privacy_agreed",
+                     subject={"member_id": member["id"]}, payload={})
 
 
 @router.post("/auth/email-verification/send")

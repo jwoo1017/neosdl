@@ -12,6 +12,9 @@ import MascotButton from "./mascot/MascotButton";
 import MascotPanel from "./mascot/MascotPanel";
 import LoginPage from "./pages/LoginPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import AdminMembersPage from "./pages/AdminMembersPage";
+import PrivacyGate from "./auth/PrivacyGate";
 import OnboardingPage from "./pages/OnboardingPage";
 import WorkspaceHomePage from "./pages/WorkspaceHomePage";
 import ProjectSettingsPage from "./pages/ProjectSettingsPage";
@@ -95,6 +98,11 @@ function AppLayout() {
     return <div className="app-empty">불러오는 중...</div>;
   }
 
+  // 개인정보 동의 전(GitHub 로 가입, 정책 도입 전 가입) — 동의해야 앱이 열린다.
+  if (me.privacy_agreed === false) {
+    return <PrivacyGate me={me} onAgreed={() => setMe({ ...me, privacy_agreed: true })} />;
+  }
+
   return (
     <MeContext.Provider value={{ me, setMe }}>
     <WorkspaceProvider>
@@ -120,6 +128,7 @@ function AppLayout() {
                     <Routes>
                       <Route path="/workspace" element={<WorkspaceHomePage />} />
                       <Route path="/me" element={<MyPage />} />
+                      <Route path="/admin/members" element={<AdminMembersPage />} />
                       <Route path="/projects/:projectId/settings" element={<ProjectSettingsPage />} />
                       {/* 채팅/상세는 라우트가 아니라 멀티페인 셸 안의 패널로 열린다.
                           아래 경로들은 딥링크 진입점으로만 남겨 둔다(셸이 패널을 열고 /panes로 정리). */}
@@ -150,6 +159,7 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/verify-email" element={<VerifyEmailPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         {/* 로그인 여부와 무관하게 미리보기를 보여줘야 해서 AppLayout(강제 로그인) 밖에 둔다 */}
         <Route path="/workspace-invites/:token" element={<WorkspaceInviteAcceptPage />} />
         <Route path="/teamspace-invites/:token" element={<TeamspaceInviteAcceptPage />} />

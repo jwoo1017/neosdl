@@ -4682,3 +4682,353 @@ tr.risk-row:hover { background: var(--surface-2); }
   color: var(--text);
   background: var(--surface-2);
 }
+
+/* ---------------------------------------------------------- 계정 정책(가입·비밀번호 찾기·동의·회원 관리) */
+.auth-page {
+  min-height: 100vh;
+  height: auto;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.pw-checklist {
+  list-style: none;
+  margin: -0.2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.pw-checklist li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.pw-checklist li.pw-check-ok {
+  color: var(--accent-strong);
+}
+
+.privacy-consent {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+}
+
+.privacy-consent-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+
+.privacy-consent-label input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.privacy-consent-label strong {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.privacy-consent-toggle {
+  margin-left: auto;
+  font-size: 0.78rem;
+}
+
+.privacy-details {
+  margin: 0.5rem 0 0;
+  padding: 0.7rem 0.8rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  text-align: left;
+}
+
+.privacy-details-row {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.privacy-details dt {
+  color: var(--text-faint);
+}
+
+.privacy-details dd {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.auth-card .privacy-details-note {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+.privacy-gate {
+  max-width: 440px;
+}
+
+.privacy-gate .privacy-details {
+  margin-bottom: 1rem;
+}
+
+.privacy-gate-leave {
+  margin: 0.9rem 0 0;
+}
+
+.auth-forgot {
+  align-self: center;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.auth-forgot:hover {
+  color: var(--accent-strong);
+}
+
+.auth-card .auth-footnote {
+  margin: 0.7rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+.auth-link-btn {
+  display: block;
+  box-sizing: border-box;
+  text-align: center;
+  text-decoration: none;
+}
+
+.auth-back-link {
+  margin: 0.6rem 0 0;
+  text-decoration: none;
+}
+
+.guest-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  color: #fbbf24;
+  border: 1px solid color-mix(in srgb, #fbbf24 40%, transparent);
+  background: color-mix(in srgb, #fbbf24 10%, transparent);
+  vertical-align: middle;
+}
+
+.guest-invites {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  text-align: left;
+}
+
+.guest-invite {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.guest-invite-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.guest-invite .btn-primary {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+
+.adm-page {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 1.6rem 1.5rem 3rem;
+  box-sizing: border-box;
+}
+
+.adm-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.2rem;
+  margin-bottom: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.adm-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.25rem;
+}
+
+.adm-desc {
+  margin: 0;
+  max-width: 620px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+.adm-search {
+  width: 260px;
+  max-width: 100%;
+  padding: 0.55rem 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+}
+
+.adm-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.adm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.adm-table th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+  padding: 0.65rem 0.9rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.adm-table td {
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.adm-table tr:last-child td {
+  border-bottom: none;
+}
+
+.adm-row-off td {
+  opacity: 0.6;
+}
+
+.adm-row-off .adm-action {
+  opacity: 1;
+}
+
+.adm-member {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 220px;
+}
+
+.adm-member-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.adm-member-name {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.adm-member-email {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
+
+.adm-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.adm-badge {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  color: var(--text-dim);
+  border: 1px solid var(--border-strong);
+}
+
+.adm-badge-on {
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.adm-badge-off {
+  color: #f87171;
+  border-color: color-mix(in srgb, #f87171 45%, transparent);
+}
+
+.adm-badge-guest {
+  color: #fbbf24;
+  border-color: color-mix(in srgb, #fbbf24 40%, transparent);
+}
+
+.adm-badge-warn {
+  color: #fb923c;
+  border-color: color-mix(in srgb, #fb923c 40%, transparent);
+}
+
+.adm-badge-dim {
+  color: var(--text-faint);
+}
+
+.adm-date {
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.adm-confirm-text {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+}
+
+@media (max-width: 640px) {
+  .adm-page {
+    padding: 1.2rem 1rem 2.5rem;
+  }
+
+  .adm-search {
+    width: 100%;
+  }
+}

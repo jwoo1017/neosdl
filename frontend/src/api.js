@@ -52,15 +52,35 @@ export function githubAppInstallUrl(appSlug, state) {
 }
 
 // ---------------------------------------------------------------- auth
-export async function signup(email, password, name, nickname) {
-  const res = await fetch(`${API_BASE}/api/auth/signup`, {
+// 로그인 전 인증 API 공통 — 실패 시 Error 에 `status`/`detail` 을 실어 던진다
+// (화면이 auth/accountPolicy.js describeAccountError 로 사유별 문구를 고른다).
+async function authPost(path, body) {
+  const res = await fetch(`${API_BASE}/api${path}`, {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password, name, nickname }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `signup failed: ${res.status}`);
-  return res.json(); // { email_verification_required, sent, expires_in, resend_after }
+  if (!res.ok) {
+    const raw = (await res.json().catch(() => ({}))).detail;
+    const detail = typeof raw === "string" ? raw : `${path} failed: ${res.status}`;
+    throw Object.assign(new Error(detail), { status: res.status, detail });
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+export function signup(email, password, name, nickname, privacyAgreed) {
+  // { email_verification_required, sent, expires_in, resend_after }
+  return authPost("/auth/signup", { email, password, name, nickname, privacy_agreed: privacyAgreed });
+}
+
+// 비밀번호 찾기 — 계정 유무와 관계없이 같은 응답(가입 여부를 드러내지 않는다).
+export function requestPasswordReset(email) {
+  return authPost("/auth/password-reset/request", { email });
+}
+
+export function confirmPasswordReset(email, code, newPassword) {
+  return authPost("/auth/password-reset/confirm", { email, code, new_password: newPassword });
 }
 
 // 이메일 인증 코드 — 실패 시 Error 에 `status`/`detail` 을 실어 던진다(화면이 사유별 문구를 고름).
@@ -86,14 +106,8 @@ export function verifyEmailCode(code) {
   return verificationCall("verify", { code });
 }
 
-export async function login(email, password) {
-  const res = await fetch(`${API_BASE}/api/auth/login`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `login failed: ${res.status}`);
+export function login(email, password) {
+  return authPost("/auth/login", { email, password });
 }
 
 export async function fetchMe() {
@@ -139,6 +153,14 @@ export const changePassword = (currentPassword, newPassword) =>
 export const requestEmailChange = (newEmail, password) =>
   meCall("/me/email", { body: { new_email: newEmail, password: password || null } });
 export const confirmEmailChange = (code) => meCall("/me/email/verify", { body: { code } });
+// 개인정보 수집·이용 동의(GitHub 가입·정책 도입 전 가입 계정이 첫 화면에서)
+export const agreePrivacy = () => meCall("/me/privacy-agreement");
+
+// 시스템 관리자 — 회원 비활성화(퇴사자 처리)/재활성화. app/admin.py
+export const fetchAdminMembers = (q = "") =>
+  meCall(`/admin/members${q ? `?q=${encodeURIComponent(q)}` : ""}`, { method: "GET" });
+export const suspendMember = (memberId) => meCall(`/admin/members/${memberId}/suspend`);
+export const reactivateMember = (memberId) => meCall(`/admin/members/${memberId}/reactivate`);
 export const withdrawAccount = (password, confirm) =>
   meCall("/me", { method: "DELETE", body: { password: password || null, confirm } });
 

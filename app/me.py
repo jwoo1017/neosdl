@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 
-from app import audit, email_verification, profiles
+from app import audit, email_verification, profiles, signup_policy
 from app.auth import SESSION_COOKIE, get_current_member
 from app.db import tx
 from app.github_oauth import _set_session_cookie
@@ -27,13 +27,14 @@ WITHDRAWN_NAME = "탈퇴한 사용자"
 
 
 class ProfileIn(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=50)
-    nickname: str | None = Field(default=None, min_length=1, max_length=100)
+    # 공백 제거·길이·제어문자 검사는 app/signup_policy.clean_display_text (가입과 같은 규칙)
+    name: str | None = Field(default=None, max_length=200)
+    nickname: str | None = Field(default=None, max_length=200)
 
 
 class PasswordIn(BaseModel):
     current_password: str | None = None          # 비밀번호가 없는 GitHub 전용 계정의 최초 설정이면 생략
-    new_password: str = Field(min_length=8, max_length=200)
+    new_password: str = Field(max_length=200)   # 규칙은 app/signup_policy.validate_password
 
 
 class EmailChangeIn(BaseModel):
@@ -68,11 +69,11 @@ def update_profile(body: ProfileIn, member: dict = Depends(get_current_member)):
     sets, args = [], []
     if body.name is not None:
         sets.append("name=%s")
-        args.append(body.name.strip())
+        args.append(signup_policy.clean_display_text(body.name, field="name", max_len=50))
     if body.nickname is not None:
         sets.append("nickname=%s")
-        args.append(body.nickname.strip())
-    if not sets or not all(a for a in args):
+        args.append(signup_policy.clean_display_text(body.nickname, field="nickname", max_len=30))
+    if not sets:
         raise HTTPException(400, "nothing_to_update")
     with tx() as cur:
         cur.execute(f"UPDATE member SET {', '.join(sets)}, updated_at=now() WHERE id=%s", (*args, member["id"]))
@@ -87,6 +88,7 @@ def update_profile(body: ProfileIn, member: dict = Depends(get_current_member)):
 
 @router.post("/me/password", status_code=204)
 def change_password(body: PasswordIn, member: dict = Depends(get_current_member)):
+    signup_policy.validate_password(body.new_password, member.get("email"))
     with tx() as cur:
         _require_password(cur, member["id"], body.current_password)
         cur.execute(
