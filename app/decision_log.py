@@ -20,8 +20,12 @@ log = logging.getLogger("app.decision_log")
 
 def record(project_id: str | None, scan_id: str | None, point: str, model: str, question: str,
            decision: dict, parse_path: str, *, guard_fired: str | None = None,
-           latency_ms: int | None = None) -> None:
-    """point: plan|step|relevance. parse_path: schema|fallback|json|guard|fail|error."""
+           latency_ms: int | None = None, engagement_id: str | None = None) -> None:
+    """point: plan|step|relevance|monitor. parse_path: schema|fallback|json|guard|fail|error.
+
+    engagement_id(sql/035)는 자동화 run 의 결정(실행 모니터링 StepMonitor/Reflector/Adviser 포함)을
+    engagement 에 묶는다. 채팅 경로는 None.
+    """
     if not project_id:
         return
     try:
@@ -29,11 +33,12 @@ def record(project_id: str | None, scan_id: str | None, point: str, model: str, 
             cur.execute(
                 """
                 INSERT INTO decision_log (project_id, scan_id, point, model, question, decision,
-                                          parse_path, guard_fired, latency_ms)
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                                          parse_path, guard_fired, latency_ms, engagement_id)
+                VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
                 """,
                 (project_id, scan_id, point, model, question[:2000],
-                 json.dumps(decision, ensure_ascii=False, default=str), parse_path, guard_fired, latency_ms),
+                 json.dumps(decision, ensure_ascii=False, default=str), parse_path, guard_fired,
+                 latency_ms, engagement_id),
             )
     except Exception:
         log.warning("decision_log 기록 실패 — 무시", exc_info=True)

@@ -80,6 +80,48 @@ class StepDecision(BaseModel):
     params: StepParams | None = None
 
 
+class EngagementPlan(BaseModel):
+    """`app/agents/planner.py`의 응답 스키마 — 검증 run 의 task 목록.
+
+    각 step 은 하나의 task 가 되고, assigned_role 이 그 task 를 수행할 에이전트 역할이다.
+    depends_on_idx 는 이 배열 안의 선행 step 인덱스(0부터) — task.depends_on 으로 변환된다.
+    """
+
+    class Step(BaseModel):
+        title: str
+        role: Literal["static_analyst", "pentester", "verifier", "reporter"]
+        description: str = ""
+        depends_on_idx: list[int] = []
+
+    steps: list[Step]
+
+
+class RouteBinding(BaseModel):
+    """`app/dynamic/entrypoint.py` — sink 를 가진 컨트롤러 소스에서 LLM 이 추출하는 HTTP 라우트.
+
+    결정적 정규식 추출이 애매할 때만 호출한다(결정적 결과가 있으면 그걸 우선).
+    """
+
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+    path_template: str              # 예: "/users/{id}" 또는 "/search"
+    param_name: str                 # sink 로 흘러가는 요청 필드
+    param_in: Literal["query", "path", "body", "header", "form"]
+    auth_required: bool
+    confidence: float
+
+
+class ProbePlan(BaseModel):
+    """`app/dynamic/probes.py` — LLM 은 안전 템플릿의 슬롯만 채운다(자유 생성 금지).
+
+    반환된 template_id·값은 probes.py 가 카테고리 allowlist 로 재검증한다(방어 심층화).
+    """
+
+    template_id: str
+    param_value_control: str        # 무해 기준값
+    param_value_probe: str          # 무해 마커/차분값
+    rationale: str = ""
+
+
 class BusinessIpClassification(BaseModel):
     """`app/risk/classify.py::classify_business_ip`의 응답 스키마."""
 

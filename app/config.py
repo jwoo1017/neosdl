@@ -82,6 +82,30 @@ class Settings(BaseSettings):
 
     neosdl_workdir: str = "/var/tmp/neosdl"
     worker_name: str = "worker-1"
+    # 이 워커 프로세스가 집을 job kind(쉼표 구분). 비면 전체. engagement 전용 풀을 분리해
+    # (worker_kinds="engagement.run,task.run,subtask.run,dynamic.verify,sandbox.boot") 긴 검증
+    # 작업이 빠른 스캔 파이프라인을 굶기지 않게 한다(job_dequeue 의 kind 필터 재사용).
+    worker_kinds: str = ""
+
+    # --- 샌드박스 자율 보안 검증(화이트박스 DAST) — worker/sandbox/*, app/dynamic/* ---
+    # 기본 off: 켜기 전까지 기존 배포 동작은 완전히 동일하다.
+    sandbox_enabled: bool = False
+    sandbox_docker_host: str = "tcp://127.0.0.1:2376"   # 서버 dind(루프백, TLS). 개발 PC는 로컬 Docker.
+    sandbox_docker_tls_cert_path: str | None = None     # ca/cert/key 디렉터리(없으면 TLS 없이 — 로컬 전용)
+    sandbox_allowed_images: str = (
+        "node:20-bookworm-slim,python:3.12-slim,eclipse-temurin:21-jdk,"
+        "postgres:16-alpine,mysql:8,redis:7")
+    sandbox_image_selection_mode: Literal["fixed", "automatic"] = "fixed"
+    sandbox_ports_base: int = 28000
+    sandbox_ports_end: int = 29999
+    sandbox_mem_limit: str = "2g"
+    sandbox_cpus: float = 2.0
+    sandbox_pids_limit: int = 512
+    sandbox_build_timeout_s: int = 600
+    sandbox_boot_timeout_s: int = 180
+    sandbox_session_ttl_s: int = 1800
+    sandbox_egress_mode: Literal["none", "build_only", "proxy"] = "build_only"
+    sandbox_artifact_root: str = "./sandbox"            # upload_root 패턴. 서버: /data/neosdl/sandbox
 
     # --- LLM 실행 추적(Langfuse, 자체호스팅, 개발 전용) ---
     # 둘 다 비어 있으면 app/observability.py 전체가 no-op(fail-open) — 앱 동작 무영향.
@@ -101,6 +125,16 @@ class Settings(BaseSettings):
     @property
     def graph_backend(self) -> Literal["neo4j", "postgres_cte"]:
         return "neo4j" if self.neo4j_uri else "postgres_cte"
+
+    @property
+    def worker_kind_list(self) -> list[str] | None:
+        """이 워커가 집을 kind 목록(None = 전체). worker/main.py 가 job_dequeue 에 넘긴다."""
+        kinds = [k.strip() for k in self.worker_kinds.split(",") if k.strip()]
+        return kinds or None
+
+    @property
+    def sandbox_allowed_image_list(self) -> list[str]:
+        return [i.strip() for i in self.sandbox_allowed_images.split(",") if i.strip()]
 
 
 @lru_cache

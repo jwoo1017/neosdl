@@ -39,6 +39,22 @@ def dequeue(cur: Cursor, worker: str, kinds: list[str] | None = None) -> dict | 
     return cur.fetchone()
 
 
+def heartbeat(cur: Cursor, job_id: int, worker: str) -> bool:
+    """실행 중인 잡의 리스를 갱신한다(locked_at=now). 긴 작업 전용.
+
+    `job_reap`(sql/001)은 locked_at 이 10분 넘은 'running' 잡을 죽은 워커 것으로 보고
+    회수한다. 앱 기동·동적 검증 같은 engagement 작업은 그 리스를 넘기므로, 스텝·폴링
+    사이에 이걸 불러 리스를 살려 둔다. 다른 워커가 이미 가로챘으면(내 locked_by 가 아니면)
+    False — 호출부는 협조적으로 작업을 양보한다(이중 실행 방지).
+    """
+    cur.execute(
+        "UPDATE job SET locked_at = now(), updated_at = now() "
+        "WHERE id = %s AND locked_by = %s AND status = 'running'",
+        (job_id, worker),
+    )
+    return cur.rowcount > 0
+
+
 def finish(cur: Cursor, job_id: int) -> None:
     cur.execute(
         "UPDATE job SET status='done', updated_at=now() WHERE id=%s", (job_id,)

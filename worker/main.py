@@ -14,7 +14,8 @@ from app import analysis, queue
 from app.config import settings
 from app.db import tx
 from worker.handlers import (
-    annotate, clone, embed, fix_generate, git_history, parse, pdg_build, project, risk_build, scan_fetch,
+    annotate, clone, embed, engagement, fix_generate, git_history, parse, pdg_build, project,
+    risk_build, scan_fetch,
 )
 
 logging.basicConfig(
@@ -34,6 +35,7 @@ HANDLERS = {
     "pdg.build": pdg_build.handle,
     "risk.build": risk_build.handle,
     "fix.generate": fix_generate.handle,
+    "engagement.run": engagement.handle,
 }
 
 _stop = False
@@ -50,12 +52,17 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _on_signal)
 
     worker = settings().worker_name
-    log.info("worker %s 시작 · graph_backend=%s", worker, settings().graph_backend)
+    # worker_kinds 로 이 프로세스가 집을 kind 를 좁힌다(없으면 전체) — 긴 engagement 작업 전용
+    # 풀을 분리해 빠른 스캔 파이프라인이 굶지 않게 한다. 설정값 중 실제 핸들러가 있는 것만 남긴다.
+    configured = settings().worker_kind_list
+    kinds = [k for k in configured if k in HANDLERS] if configured else list(HANDLERS)
+    log.info("worker %s 시작 · graph_backend=%s · kinds=%s", worker, settings().graph_backend,
+             "all" if configured is None else ",".join(kinds))
     idle = 0
 
     while not _stop:
         with tx() as cur:
-            job = queue.dequeue(cur, worker, list(HANDLERS))
+            job = queue.dequeue(cur, worker, kinds)
 
         if job is None:
             idle += 1
