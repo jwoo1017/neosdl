@@ -85,6 +85,36 @@ def static_analyst(cur, engagement: dict) -> dict:
     return summary
 
 
+def verifier(cur, engagement: dict, *, app_client, log_source=None, allow_instrumentation=False,
+             limit: int = 50) -> dict:
+    """열린 보안 finding 을 동적으로 검증(confirmed/false_positive/…)하고 판정을 반영한다.
+
+    app_client/log_source 는 샌드박스(booted app)가 제공하거나 테스트가 주입. 각 finding 은
+    runner.verify_finding → feedback.write_verdict. 결과 카운트 요약 반환.
+    """
+    from app.dynamic import feedback, runner
+
+    scan_id = engagement["scan_id"]
+    eid = str(engagement["id"])
+    task_id = _add_task(cur, eid, 50, "verifier", "동적 검증(무해 프로브)")
+    cur.execute(
+        "SELECT id, category, severity, sink_symbol_key, sink_line, source_symbol_key, source_var "
+        "FROM security_finding WHERE scan_id=%s AND kind='security' AND status='open' ORDER BY id LIMIT %s",
+        (scan_id, limit),
+    )
+    findings = cur.fetchall()
+    counts: dict[str, int] = {}
+    for f in findings:
+        outcome = runner.verify_finding(cur, scan_id, dict(f), app_client=app_client,
+                                        log_source=log_source, allow_instrumentation=allow_instrumentation)
+        feedback.write_verdict(cur, engagement=engagement, finding=dict(f), verdict=outcome.verdict,
+                               entry_route=outcome.entry_route, oracle=outcome.oracle_kind,
+                               artifacts=outcome.artifacts)
+        counts[outcome.verdict.verdict] = counts.get(outcome.verdict.verdict, 0) + 1
+    _finish_task(cur, task_id, "succeeded", counts)
+    return counts
+
+
 def reporter(cur, engagement: dict, static_summary: dict) -> str:
     """StaticAnalyst 결과를 사람이 읽을 리포트 아티팩트로 집계한다. artifact_id 반환."""
     eid = str(engagement["id"])

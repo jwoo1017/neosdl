@@ -1,44 +1,54 @@
 # NeoSDL 샌드박스 스택 — finble-server(finble-dev-01) 운영
 #
-# 검증 대상(고객) 앱을 격리 컨테이너에서 "실제로 기동"하기 위한 docker-in-docker(dind).
-# 이 파일은 LLM 스택(compose.llm.yml)·infra(neosdl-postgres)와 **완전히 분리**된다:
-#   - project 이름 neosdl-sbx (서로 orphan 으로 안 지움)
-#   - 호스트 /var/run/docker.sock 을 절대 바인드하지 않는다(탈옥 시 host-root 방지).
-#     대신 중첩 데몬(dind)을 두고 TLS 로만 접근 — 앱이 자기 컨테이너를 깨도 dind 컨테이너
-#     안에 머물러 host·운영 서비스(neosdl-postgres/vllm)와 한 경계 더 떨어진다.
-#   - 호스트에 여는 포트는 127.0.0.1:2376(TLS) 하나뿐. 외부/다른 호스트에서 접근 불가.
-#   - GPU 를 절대 넘기지 않는다(LLM 전용). 검증 대상 앱 네트워크는 internal(무egress)로
-#     worker/sandbox 코드가 engagement 별로 생성한다.
+# 검증 대상 앱을 격리 컨테이너에서 "실제로 기동"하기 위한 docker-in-docker(dind).
+# LLM 스택(compose.llm.yml)·infra(neosdl-postgres)와 완전히 분리된다(project neosdl-sbx).
 #
-#   sudo docker compose -f deploy/compose.sbx.yml --env-file deploy/.env.sbx up -d
+# ⚠️ 보안 경고 (2026-10-22 점검, neosdl-sandbox-dind-remediation.md):
+#   privileged: true 는 "호스트 root 와 동등"하다. docker.sock 을 바인드하지 않아도 privileged
+#   컨테이너는 호스트 장치·모든 capability 로 호스트를 장악할 수 있다 — 중첩 데몬 경계는
+#   '한 겹 더'일 뿐 호스트 커널을 공유하므로 진짜 경계가 아니다.
+#   따라서 이 dind 는 **자사·검증된 저장소(allowlist)만** 돌린다(app/sandbox.py). 외부/고객
+#   코드 실행은 Phase 2.5 격리 경계(전용 KVM VM 등) 완료 전까지 금지한다.
 #
-# worker(systemd neosdl-worker, User=neosdl)는 아래 certs 볼륨의 클라이언트 cert 를 읽어
-# tcp://127.0.0.1:2376 에 붙는다(app/config.py sandbox_docker_*). 비밀값은 deploy/.env.sbx(600).
+# 격리/규칙(Finble 셋업 가이드):
+#   - 호스트에 여는 포트는 127.0.0.1:2376(TLS) 하나뿐(§10). 호스트 /var/run/docker.sock 미바인드.
+#   - neosdl-net(운영 Postgres/vLLM) 에 붙지 않는다(§11). GPU 미전달(§13).
+#   - 데이터(이미지/빌드)는 NeoSDL NVMe 영역 /fast/neosdl/cache/sbx/docker 에 둔다(§4).
+#     * 관리자 선행: sudo mkdir -p /fast/neosdl/cache/sbx/docker && sudo chmod 700 그 경로 (root 소유)
+#     * Cache/Temp 50GB 를 넘지 않도록 정리 정책(worker prune) + finble-healthcheck NVMe 75% 경보(§15).
+#   - 이미지는 digest 로 고정한다(아래 <digest> 를 관리자가 채운다):
+#       sudo docker inspect --format '{{index .RepoDigests 0}}' docker:27-dind
+#
+#   sudo docker compose -f deploy/compose.sbx.yml up -d
+#
+# worker(systemd neosdl-worker, User=neosdl)는 sbx-certs 볼륨의 client cert 서브셋만 복사해
+# tcp://127.0.0.1:2376 에 TLS 로 붙는다(app/config.py sandbox_docker_*). server 키는 복사하지 않는다.
 
 name: neosdl-sbx
 
 services:
-  # dind 데몬. privileged 는 dind 에 필수지만, 그 권한은 이 중첩 데몬 컨테이너 안에 갇힌다
-  # (호스트 docker.sock 을 안 쓰므로). TLS 를 켜면 첫 기동 때 certs 볼륨에 ca/server/client
-  # 인증서를 생성한다 — worker 는 client-cert 서브셋만 읽는다.
   dind:
+    # ⚠️ 관리자 권장: digest 로 고정한다(태그만 쓰면 재기동 때 이미지가 바뀔 수 있음).
+    #   sudo docker inspect --format '{{index .RepoDigests 0}}' docker:27-dind
+    #   → image: docker:27-dind@sha256:<그 값> 으로 교체
     image: docker:27-dind
-    privileged: true
+    privileged: true          # = 호스트 root. Phase 2.5 에서 VM 안으로 이동 대상. 외부 코드 금지.
     restart: unless-stopped
     environment:
       DOCKER_TLS_CERTDIR: /certs
     ports:
-      # 호스트 루프백에만 노출. 외부·다른 호스트·다른 컨테이너에서 접근 불가.
       - "127.0.0.1:2376:2376"
+    # 자원 상한 (서버 72 thread / 256GB 기준 초안 — 운영하며 조정). 무제한 금지.
+    cpus: 16
+    mem_limit: 32g
+    pids_limit: 4096
     volumes:
       - sbx-certs:/certs
-      - sbx-data:/var/lib/docker          # 빌드/이미지 저장(격리 볼륨, 쿼터는 호스트에서)
-    # 샌드박스 전용 — infra neosdl-net 에 붙지 않는다(운영 서비스와 분리).
+      - /fast/neosdl/cache/sbx/docker:/var/lib/docker   # NeoSDL NVMe 영역(관리자 생성 root:700)
     networks: [sbx-control]
 
 volumes:
   sbx-certs:
-  sbx-data:
 
 networks:
   sbx-control:

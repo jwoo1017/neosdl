@@ -1,0 +1,27 @@
+# 동적 검증 골든셋 — scripts/eval_dynamic.py 가 읽는다.
+# 대상: acts-gallery 스캔(095bb9c1…). 이 레포의 SQLi finding 은 전부 파라미터 바인딩이라
+# 실제 취약점이 아니다(사람 확인) → truth=false_positive. 동적 검증이 이를 제거하는지 측정.
+#
+# 필드: finding_ref(category + sink 함수명으로 매칭), truth(confirmed|false_positive), note
+scan_id: 095bb9c1-2880-48af-8cb5-ab50c80bf4ce
+cases:
+  - id: fp-sqli-reject
+    finding_ref: {category: sql_injection, sink: reject}
+    truth: false_positive
+    note: admin.repository reject — ? 바인딩. PATCH /history/:id/status (manager 인증 필요)
+  - id: fp-sqli-hold
+    finding_ref: {category: sql_injection, sink: hold}
+    truth: false_positive
+    note: admin.repository hold — ? 바인딩. 인증 필요
+  - id: fp-sqli-updatevisibility
+    finding_ref: {category: sql_injection, sink: updateVisibility}
+    truth: false_positive
+    note: admin.repository updateVisibility — ? 바인딩. 인증 필요
+  - id: fp-sqli-findbycredentials
+    finding_ref: {category: sql_injection, sink: findByCredentials}
+    truth: false_positive
+    note: user.repository findByCredentials — ? 바인딩. POST /login (비인증) → 동적 도달 가능
+  - id: fp-sqli-findbyid
+    finding_ref: {category: sql_injection, sink: findById}
+    truth: false_positive
+    note: user.repository findById(refreshToken) — ? 바인딩. 라우트 미해석 가능

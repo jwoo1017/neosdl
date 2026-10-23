@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     sandbox_session_ttl_s: int = 1800
     sandbox_egress_mode: Literal["none", "build_only", "proxy"] = "build_only"
     sandbox_artifact_root: str = "./sandbox"            # upload_root 패턴. 서버: /data/neosdl/sandbox
+    # 샌드박스에서 "코드를 실행해도 되는" 저장소 allowlist(쉼표 구분 "namespace/name").
+    # privileged dind = 호스트 root 이므로 fail-closed: 비어 있으면 아무 레포도 실행 못 한다.
+    # 외부/고객 레포는 Phase 2.5 격리 경계(KVM VM) 전까지 여기 넣지 않는다 — 자사·검증 레포만.
+    sandbox_repo_allowlist: str = ""
 
     # --- LLM 실행 추적(Langfuse, 자체호스팅, 개발 전용) ---
     # 둘 다 비어 있으면 app/observability.py 전체가 no-op(fail-open) — 앱 동작 무영향.
@@ -135,6 +139,11 @@ class Settings(BaseSettings):
     @property
     def sandbox_allowed_image_list(self) -> list[str]:
         return [i.strip() for i in self.sandbox_allowed_images.split(",") if i.strip()]
+
+    @property
+    def sandbox_repo_allowlist_set(self) -> set[str]:
+        """샌드박스 실행 허용 저장소("namespace/name") 집합. 비면 아무것도 허용 안 함(fail-closed)."""
+        return {r.strip() for r in self.sandbox_repo_allowlist.split(",") if r.strip()}
 
 
 @lru_cache

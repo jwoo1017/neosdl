@@ -51,13 +51,22 @@ class EntryPoint:
 
 
 def _param_from_source_var(source_var: str | None) -> str | None:
-    """테인트 source_var(`req.query.id` 등)에서 요청 필드명을 결정적으로 뽑는다."""
+    """테인트 source_var 에서 요청 필드명을 뽑는다.
+
+    (a) `req.query.id`/`request.args.get('q')` 등 명시 패턴이면 그 필드명.
+    (b) 없으면, source_var 가 단순 식별자(`uid`)면 같은 이름의 요청 필드로 추정한다 —
+        값이 같은 이름으로 흘러가는 흔한 경우(controller 가 `const {uid}=req.body` 후 전달). 추정이라
+        resolve 에서 신뢰도를 낮춘다.
+    """
     if not source_var:
         return None
     m = _PARAM_SOURCE_RE.search(source_var)
-    if not m:
-        return None
-    return next((g for g in m.groups() if g), None)
+    if m:
+        return next((g for g in m.groups() if g), None)
+    sv = source_var.strip()
+    if re.fullmatch(r"[A-Za-z_]\w{1,40}", sv) and sv not in ("req", "request", "self", "this"):
+        return sv
+    return None
 
 
 def _find_controller(cur, scan_id: str, sink_symbol_key: str, depth: int = 6) -> dict | None:
@@ -117,16 +126,23 @@ def _find_route_for_method(cur, scan_id: str, method_name: str) -> tuple[str, st
     if reader is None:
         return None
     rx = re.compile(
-        r"""\.(?P<m>get|post|put|patch|delete)\(\s*['"](?P<path>[^'"]+)['"][^)]*\b"""
+        r"""\.(?P<m>get|post|put|patch|delete)\(\s*['"](?P<path>[^'"]+)['"](?P<mw>[^)]*)\b"""
         + re.escape(method_name) + r"\b", re.I)
     for path in _route_files(cur, scan_id):
         src = reader(path)
         if not src or method_name not in src:
             continue
         m = rx.search(src)
-        if m:
-            auth = bool(_AUTH_RE.search(src))
-            return m.group("m").upper(), m.group("path"), auth
+        if not m:
+            continue
+        # auth 판정은 '이 라우트에 실제로 적용되는가'로 — 파일 아무데나 authenticate 가
+        # 있다고 전부 auth 로 보지 않는다(login 처럼 공개 라우트 오탐 방지).
+        #  (a) 이 라우트 선언 줄의 미들웨어 인자에 auth 가 있거나,
+        #  (b) 이 라우트 앞에 router.use(...authenticate...) 전역 가드가 있으면 auth.
+        on_line = bool(_AUTH_RE.search(m.group("mw") or ""))
+        before = src[:m.start()]
+        global_guard = bool(re.search(r"\.use\([^)]*(?:authenticate|requireRole|requireAuth|ensureAuth)", before, re.I))
+        return m.group("m").upper(), m.group("path"), (on_line or global_guard)
     return None
 
 

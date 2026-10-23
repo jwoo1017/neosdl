@@ -12,13 +12,44 @@ from __future__ import annotations
 
 import logging
 
-from app import agents, audit
+from app import agents, audit, sandbox
+from app.config import settings
 from app.db import tx
 from app.engagements import set_status
 
 log = logging.getLogger("worker.engagement")
 
 _TERMINAL = ("succeeded", "failed", "cancelled")
+
+
+def _maybe_dynamic(cur, engagement: dict) -> dict | None:
+    """sandbox_enabled 이고 repo 가 allowlist 에 있으면 앱을 기동해 동적 검증까지 한다.
+
+    기본 off(sandbox_enabled=False) — 이 경우 None 을 반환해 정적 결과만 쓴다(동작 불변).
+    repo 가 allowlist 밖이면 assert_repo_allowed 가 거부(외부 코드 실행 금지). 부팅 실패/미기동은
+    graceful: 검증 카운트 없이 None 반환하고 정적 판정을 유지한다.
+    """
+    if not settings().sandbox_enabled or not engagement.get("repository_id"):
+        return None
+    actor = "system:worker"
+    sandbox.assert_repo_allowed(cur, str(engagement["repository_id"]), actor=actor)  # 거부 시 예외
+    try:
+        from worker.sandbox import boot
+    except Exception:
+        log.warning("샌드박스 모듈 로드 실패 — 정적 판정 유지", exc_info=True)
+        return None
+    booted = boot.boot_engagement(engagement)   # (app_client, log_source, teardown) | None
+    if booted is None:
+        return None
+    app_client, log_source, teardown = booted
+    try:
+        return agents.verifier(cur, engagement, app_client=app_client, log_source=log_source,
+                               allow_instrumentation=engagement.get("allow_instrumentation", False))
+    finally:
+        try:
+            teardown()
+        except Exception:
+            log.warning("샌드박스 정리 실패", exc_info=True)
 
 
 def handle(payload: dict) -> None:
@@ -46,16 +77,21 @@ def handle(payload: dict) -> None:
             if cur.fetchone()["status"] == "cancelled":   # 협조적 취소 지점
                 return
             static_summary = agents.static_analyst(cur, engagement)
+            verify_counts = _maybe_dynamic(cur, engagement)   # None 이면 정적만(동작 불변)
+            if verify_counts is not None:
+                static_summary["dynamic"] = verify_counts
             agents.reporter(cur, engagement, static_summary)
             set_status(cur, engagement_id, "succeeded",
-                       result={"phase": 1, "findings": static_summary["findings_total"],
-                               "entrypoint_resolved": static_summary["entrypoint_resolved"]})
+                       result={"phase": 2 if verify_counts is not None else 1,
+                               "findings": static_summary["findings_total"],
+                               "entrypoint_resolved": static_summary["entrypoint_resolved"],
+                               "dynamic": verify_counts})
             audit.record(cur, actor="system:worker", action="engagement.finished",
                          subject={"engagement_id": engagement_id},
-                         payload={"status": "succeeded", "phase": 1,
-                                  "findings": static_summary["findings_total"]})
-        log.info("engagement %s 완료(phase-1): finding %s건", engagement_id,
-                 static_summary["findings_total"])
+                         payload={"status": "succeeded", "findings": static_summary["findings_total"],
+                                  "dynamic": verify_counts})
+        log.info("engagement %s 완료: finding %s건 dynamic=%s", engagement_id,
+                 static_summary["findings_total"], verify_counts)
     except Exception as exc:
         log.exception("engagement %s 실패", engagement_id)
         with tx() as cur:

@@ -87,4 +87,7 @@ def test_param_from_source_var():
     assert _param_from_source_var("req.query.id") == "id"
     assert _param_from_source_var("req.body.email") == "email"
     assert _param_from_source_var("request.args.get('q')") == "q"
-    assert _param_from_source_var("uid") is None
+    # bare 식별자는 같은 이름의 요청 필드로 추정(흔한 경우) — resolve 에서 신뢰도 낮춤
+    assert _param_from_source_var("uid") == "uid"
+    assert _param_from_source_var("req") is None
+    assert _param_from_source_var("") is None
