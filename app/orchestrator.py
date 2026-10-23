@@ -250,11 +250,17 @@ _SYNTHESIZE_SYSTEM = """너는 사내 코드베이스를 정적 분석한 결과
   - 관련 분석 도구를 실행했으나 근거가 비어 있으면: "분석했으나 해당 위험/항목이 발견되지 않았습니다".
   - 근거에 codebase_structure(도메인 개요) 결과만 있으면, 구체적인 파일 경로나 함수 이름을 절대
     지어내지 마라 — 관련 도메인 이름까지만 언급하고 정확한 위치는 확인하지 못했다고 명시하라.
-- 한국어로 답하라. 근거 JSON을 그대로 옮겨 적지 마라."""
+- 보안 취약점은 dataflow_security 결과(source→sink 경로)나 read_code 코드에 직접 보이는 것만 말하라.
+  '도구별 결과'에서 dataflow_security가 0건이면 "정적 분석에서 위험한 데이터 흐름이 탐지되지 않았다"고
+  먼저 밝히고, 코드 조각만 보고 취약점을 추측해 단정하지 마라. 파라미터 바인딩(%s, ?, $1, :name에 값을
+  따로 넘김)과 비밀번호 해시 검증 함수(verify_password, bcrypt 등) 호출은 안전한 패턴이다.
+- 지금 질문에만 답하라. 이전 질문은 지시어("그 함수", "거기")를 해석하는 데만 쓰고, 이전 답변을 되풀이하지 마라.
+- 한국어로 답하라(한자·중국어 금지 — 줄 번호는 "12-20행"처럼 쓴다). 근거 JSON을 그대로 옮겨 적지 마라."""
 
 _SYNTHESIZE_PROMPT = """{conversation_block}질문: {question}
 
 실행한 도구: {executed_tools}
+도구별 결과(관련성 선별 후): {tool_outcomes}
 코드 분석 도구 사용 가능 여부(이 프로젝트에 완료된 스캔이 있는가): {analysis_available}
 {truncation_note}
 근거(JSON):
@@ -588,7 +594,8 @@ def _conversation_block(conversation: str | None) -> str:
     """직전 대화(후속 질문의 "그 함수", "거기" 같은 지시어 해석용)를 프롬프트 머리에 붙인다."""
     if not conversation:
         return ""
-    return f"이전 대화(참고용 — 지금 질문의 지시어를 해석할 때만 쓴다):\n{conversation}\n\n"
+    return ("이전 대화(참고용 — 지금 질문에 \"그 함수\", \"거기\", \"그 서비스\" 같은 지시어가 있을 때만 "
+            f"해석에 쓰고, 지시어가 없으면 무시하고 지금 질문만 본다):\n{conversation}\n\n")
 
 
 def _should_force_semantic_followup(used: list[dict], ctx: dict, tool_results: dict | None = None) -> bool:
@@ -1019,8 +1026,13 @@ def attach_code(cur, scan_id: str | None, evidence: dict, *, limit: int = _AUTO_
 
 def _synthesize_prompt(question: str, tool_results: dict, executed_tools, analysis_available: bool,
                        *, model: str = "", conversation: str | None = None) -> str:
-    """근거를 모델 컨텍스트 예산 안으로 담아 답변 프롬프트를 만든다(app/context_budget.py)."""
-    conv = _conversation_block(conversation)
+    """근거를 모델 컨텍스트 예산 안으로 담아 답변 프롬프트를 만든다(app/context_budget.py).
+
+    대화 기억은 이전 *질문*만 싣는다 — 이전 답변까지 넣으면 7B가 그 답을 이어 써서
+    SQL 질문에 "로그인 처리는 …"으로 답한 사례가 있었다(운영 2026-10-22). 이전 답변은
+    계획/스텝 단계에서 지시어를 해석하는 데만 쓴다.
+    """
+    conv = _conversation_block(_questions_only(conversation))
     budget = (context_window(model) - _OUTPUT_RESERVE - _PROMPT_OVERHEAD
               - context_budget.estimate_tokens(question + conv))
     packed, truncated = context_budget.pack_evidence(tool_results, max(budget, 800))
@@ -1028,11 +1040,39 @@ def _synthesize_prompt(question: str, tool_results: dict, executed_tools, analys
     return _SYNTHESIZE_PROMPT.format(
         conversation_block=conv,
         question=question,
-        executed_tools=", ".join(executed_tools) if executed_tools else "(없음)",
+        executed_tools=", ".join(dict.fromkeys(executed_tools)) if executed_tools else "(없음)",
+        tool_outcomes=_tool_outcomes(tool_results, executed_tools),
         analysis_available="True" if analysis_available else "False",
         truncation_note=f"{note}\n" if note else "",
         evidence_json=json.dumps(packed, ensure_ascii=False, default=str),
     )
+
+
+def _tool_outcomes(tool_results: dict, executed_tools) -> str:
+    """실행한 도구마다 남은 근거 건수 — 0건인 도구도 명시한다.
+
+    빈 결과는 근거 JSON에서 빠지므로, 이 줄이 없으면 모델은 "보안 분석을 돌렸는데 아무것도
+    안 나왔다"는 사실을 모른 채 코드 조각만 보고 취약점을 추측했다(운영에서 파라미터 바인딩된
+    쿼리를 SQL 인젝션이라고 단정한 사례).
+    """
+    names = list(dict.fromkeys([*(executed_tools or ()),
+                                *(k for k in tool_results if k not in _META_KEYS and k not in (executed_tools or ()))]))
+    if not names:
+        return "(없음)"
+    parts = []
+    for name in names:
+        value = tool_results.get(name)
+        n = len(value) if isinstance(value, list) else (1 if value else 0)
+        parts.append(f"{name} {n}건" + (" (결과 없음)" if n == 0 else ""))
+    return ", ".join(parts)
+
+
+def _questions_only(conversation: str | None) -> str | None:
+    """대화 기억에서 사용자 질문 줄만 남긴다(답변 합성용)."""
+    if not conversation:
+        return None
+    lines = [ln for ln in conversation.splitlines() if ln.startswith("사용자:")]
+    return "\n".join(lines) or None
 
 
 _META_KEYS = {"project_info", "mentioned_projects"}
@@ -1053,6 +1093,11 @@ def _evidence_missing(tool_results: dict, executed_tools) -> bool:
 def _no_evidence_answer(executed_tools, analysis_available: bool) -> str:
     if executed_tools and not analysis_available:
         return "이 프로젝트에는 완료된 코드 스캔이 없어 요청하신 분석을 수행할 수 없습니다."
+    if "dataflow_security" in (executed_tools or ()):
+        # 보안 질문에 "근거를 못 찾았다"만 답하면 무엇을 검사했는지 알 수 없다 — 검사 범위와 한계를 밝힌다.
+        return ("정적 분석(외부 입력 → SQL 실행·명령 실행·innerHTML 같은 위험 호출까지의 데이터 흐름 추적)에서 "
+                "위험한 흐름이 탐지되지 않았습니다. 파라미터 바인딩된 쿼리는 안전한 것으로 봅니다. "
+                "다만 규칙 기반 탐지라 인증·권한 로직의 결함이나 설정 문제까지 보증하지는 않습니다.")
     if executed_tools:
         return "요청하신 분석을 수행했으나 관련 근거를 찾지 못했습니다."
     return "이 질문에는 코드 조회가 필요 없어 보이거나, 답할 근거를 찾지 못했습니다."

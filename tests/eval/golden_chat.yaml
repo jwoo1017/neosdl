@@ -11,6 +11,7 @@
 #   expect_tools    이 중 하나라도 실행되면 도구 선택 성공(any-of). 비우면 "도구 불필요".
 #   expect_paths    근거/답변에 나와야 할 파일 경로(recall 계산)
 #   expect_terms    답변에 나와야 할 핵심어(함수명 등, any-of 아님 — 각각 채점)
+#   must_not_contain (선택) 답변에 나오면 오답인 문구 — 거짓 양성(없는 취약점 단정) 검출용
 scan_id: 095bb9c1-2880-48af-8cb5-ab50c80bf4ce
 cases:
   # ── structure ──────────────────────────────────────────────
@@ -142,18 +143,22 @@ cases:
     expect_terms: [consume, processUploadedImage]
 
   # ── security ───────────────────────────────────────────────
+  # se-1/se-2: 이 저장소의 쿼리는 전부 `?` 바인딩이라 SQL 인젝션이 없다(사람이 확인).
+  # 예전 taint 규칙은 바인딩 배열에 들어간 입력까지 오탐해 5건을 냈다 — "있다"고 단정하면 오답.
   - id: se-1
     type: security
     question: SQL 인젝션 위험 있는 코드 있어?
     expect_tools: [dataflow_security]
-    expect_paths: [back/src/repositories/admin.repository.js, back/src/repositories/user.repository.js]
-    expect_terms: [findByCredentials]
+    expect_paths: []
+    expect_terms: []
+    must_not_contain: [취약점이 발견되었, 취약점이 발견됐, 인젝션 취약점이 있, 인젝션 위험이 있습니다, 인젝션 공격에 노출]
   - id: se-2
     type: security
     question: 관리자 API에서 요청 본문이 그대로 쿼리에 들어가는 곳 있어?
     expect_tools: [dataflow_security]
-    expect_paths: [back/src/repositories/admin.repository.js]
-    expect_terms: [reject, hold]
+    expect_paths: []
+    expect_terms: []
+    must_not_contain: [취약점이 발견되었, 취약점이 발견됐, 인젝션 취약점이 있, 인젝션 위험이 있습니다, 인젝션 공격에 노출]
   - id: se-3
     type: security
     question: 로그인 아이디가 DB 쿼리까지 어떻게 흘러가?

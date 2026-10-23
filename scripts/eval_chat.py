@@ -5,6 +5,7 @@
 
 지표(케이스별 → 유형별/전체 집계)
 - turn_error        파이프라인 예외 또는 답변 단계의 오류 문구(사용자가 "오류"를 본 턴)
+- false_claim       must_not_contain 문구가 답변에 나온 턴 수(없는 취약점 단정 등)
 - tool_hit          expect_tools 중 하나라도 실행(비어 있으면 "도구를 안 썼는가")
 - evidence_recall   expect_paths 중 최종 근거(relevance 통과)에 들어간 비율
 - answer_recall     expect_paths(basename 허용) + expect_terms 중 답변에 등장한 비율
@@ -129,10 +130,12 @@ def _score(case: dict, used: list[dict], evidence: dict, answer: str, file_lines
         if f is None or line > file_lines.get(f, 0) or not any(a <= line <= b for a, b in ranges.get(f, [])):
             unsupported += 1
 
+    forbidden = [p for p in case.get("must_not_contain") or [] if p in answer]
     return {
         "tools": ran, "tool_hit": tool_hit,
         "evidence_recall": evidence_recall, "answer_recall": answer_recall,
         "halluc_paths": halluc, "cited_lines": cited_lines, "unsupported_lines": unsupported,
+        "forbidden_hits": forbidden,
     }
 
 
@@ -200,6 +203,7 @@ def summarize(results: list[dict]) -> dict:
             "answer_recall": _mean([r["answer_recall"] for r in rs]),
             "halluc_paths_per_turn": _mean([len(r["halluc_paths"]) for r in rs]),
             "turns_with_halluc_path": _mean([float(bool(r["halluc_paths"])) for r in rs]),
+            "false_claim_turns": sum(bool(r.get("forbidden_hits")) for r in rs),
             "cited_lines": sum(r["cited_lines"] for r in rs),
             "unsupported_lines": sum(r["unsupported_lines"] for r in rs),
             "latency_s_mean": _mean([r["latency_s"] for r in rs]),
@@ -219,7 +223,7 @@ def summarize(results: list[dict]) -> dict:
 
 def _print_table(summary: dict) -> None:
     cols = ["n", "turn_error_rate", "tool_hit_rate", "evidence_recall", "answer_recall",
-            "turns_with_halluc_path", "unsupported_lines", "latency_s_mean"]
+            "turns_with_halluc_path", "false_claim_turns", "unsupported_lines", "latency_s_mean"]
     for model, s in summary.items():
         print(f"\n== {model} ==")
         print("type".ljust(10) + "".join(c[:14].rjust(15) for c in cols))

@@ -35,6 +35,18 @@ SINK_PATTERNS = [(cat, re.compile(p)) for cat, p in (
     ("xss", r"dangerouslySetInnerHTML"),
 )]
 
+# 카테고리별로 "이 인자 위치부터는 위험하지 않다" — SQL 실행 함수(`pool.execute(sql, [a, b])`,
+# `cur.execute(sql, (a,))`)의 두 번째 인자부터는 DB 드라이버가 값으로 바인딩하는 파라미터라
+# 사용자 입력이 들어가도 인젝션이 아니다. 위험한 건 첫 인자(쿼리 문자열)에 섞일 때뿐이다.
+# 이 구분이 없어서 `?` 바인딩된 쿼리 5건을 SQL 인젝션으로 오탐했다(acts-gallery admin/user.repository).
+_SAFE_FROM_ARG_INDEX = {"sql_injection": 1}
+
+
+def _is_dangerous_position(category: str, index: int) -> bool:
+    safe_from = _SAFE_FROM_ARG_INDEX.get(category)
+    return safe_from is None or index < safe_from
+
+
 # worker/handlers/cfg_extract.py 의 PARAMETER 와 같은 문자열이어야 한다 —
 # 이 모듈은 DB(텍스트 컬럼)로만 cfg_extract 와 연결돼 있어 import로 공유하지
 # 않는다(app -> worker 의존을 만들지 않기 위해).
@@ -117,7 +129,7 @@ def find_security_paths_interprocedural(
                 continue
             arg_line = arg_lines[i] if i < len(arg_lines) else c["line"]
             origin_key: Key = (c["symbol_key"], text, arg_line)
-            if is_sink_call:
+            if is_sink_call and _is_dangerous_position(sink_category, i):
                 findings.append({
                     "category": sink_category,
                     "sink_symbol_key": c["symbol_key"],
@@ -185,6 +197,8 @@ def find_security_paths_interprocedural(
         symbol_key = c["symbol_key"]
         arg_lines = c.get("arg_lines") or []
         for idx, av in enumerate(c["arg_vars"]):
+            if not _is_dangerous_position(sink_category, idx):
+                continue  # 바인딩 파라미터 자리 — 값으로 전달되므로 인젝션 아님
             av_line = arg_lines[idx] if idx < len(arg_lines) else c["line"]
             for e in edges_by_symbol.get(symbol_key, []):
                 key = (symbol_key, av, e["def_line"])

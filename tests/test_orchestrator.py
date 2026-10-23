@@ -370,7 +370,11 @@ def test_empty_evidence_after_tools_gets_fixed_answer_not_llm(monkeypatch):
                         lambda *a, **k: pytest.fail("근거가 비면 LLM을 부르지 않는다"))
     out = orchestrator.synthesize_answer("개인정보 어디서 탐지해?", {"project_info": [{"name": "p"}]},
                                          model="m", executed_tools=["dataflow_security"], analysis_available=True)
-    assert "찾지 못" in out and "스캔이 없어" not in out
+    assert "탐지되지 않았습니다" in out and "스캔이 없어" not in out
+    # 보안 도구가 아니면 일반 문구
+    out = orchestrator.synthesize_answer("로그인 어디서 해?", {"project_info": [{"name": "p"}]},
+                                         model="m", executed_tools=["semantic_search"], analysis_available=True)
+    assert "찾지 못" in out
 
 
 def test_run_agentic_forces_semantic_search_after_codebase_structure_only(monkeypatch):
@@ -728,6 +732,21 @@ def test_attach_code_noop_without_scan():
     assert orchestrator.attach_code(None, None, ev) is ev
 
 
+def test_synthesize_prompt_states_empty_tools_and_drops_previous_answers():
+    """운영 회귀: dataflow 0건이 근거에서 사라져 모델이 취약점을 지어냈고, 이전 답변을 이어 썼다."""
+    prompt = orchestrator._synthesize_prompt(
+        "SQL 인젝션 위험 있어?",
+        {"project_info": [{"name": "p"}], "read_code": [{"path": "a.py", "code": "1| x"}]},
+        ["read_code", "dataflow_security", "dataflow_security"], True, model="local-qwen-coder",
+        conversation="사용자: 로그인 처리는 어디서 해?\n어시스턴트: 로그인 처리는 app/github_oauth.py의 login",
+    )
+    assert "dataflow_security 0건 (결과 없음)" in prompt
+    assert "read_code 1건" in prompt
+    assert "사용자: 로그인 처리는 어디서 해?" in prompt
+    assert "어시스턴트:" not in prompt
+    assert "실행한 도구: read_code, dataflow_security\n" in prompt  # 중복 제거
+
+
 def test_synthesize_prompt_respects_local_context_budget():
     """도구 결과가 아무리 커도 로컬 모델(8192) 프롬프트는 예산 안에 든다 — 베이스라인에서
     Ollama가 앞부분(지시문)을 잘라 '코드 조회가 필요 없어 보입니다'로 답한 원인."""
@@ -784,10 +803,15 @@ def test_run_agentic_tool_event_target_has_no_raw_json(monkeypatch):
 
 def test_synthesize_answer_distinguishes_missing_evidence():
     """근거가 비었을 때 '도구 미실행'과 '질문 무관'과 '스캔 없음'을 구분한다."""
-    # 분석 도구를 실행했으나 근거가 빔 → "수행했으나 못 찾음"
-    assert "찾지 못" in orchestrator.synthesize_answer(
+    # 보안 분석 도구를 실행했으나 근거가 빔 → "탐지되지 않음" + 검사 범위·한계
+    assert "탐지되지 않았습니다" in orchestrator.synthesize_answer(
         "보안검사", {}, model="m",
         executed_tools=["dataflow_security"], analysis_available=True,
+    )
+    # 그 외 분석 도구 → "수행했으나 못 찾음"
+    assert "찾지 못" in orchestrator.synthesize_answer(
+        "로그인 어디야", {}, model="m",
+        executed_tools=["semantic_search"], analysis_available=True,
     )
     # 분석 도구를 실행했는데 스캔이 없음
     assert "스캔이 없어" in orchestrator.synthesize_answer(
