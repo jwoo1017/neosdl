@@ -2,13 +2,14 @@ import AgentActivityTimeline from "../AgentActivityTimeline";
 import Avatar from "../components/Avatar";
 import AiAvatarIcon from "../icons/AiAvatarIcon";
 import { TOOL_LABELS } from "../toolLabels";
+import { useLanguage } from "../i18n/LanguageContext";
 import EvidencePanel from "./EvidencePanel";
 import MarkdownAnswer from "./MarkdownAnswer";
 
-function formatTime(iso) {
+function formatTime(iso, lang) {
   if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString(lang === "en" ? "en-US" : "ko-KR", { hour: "2-digit", minute: "2-digit" });
 }
 
 // 채팅 메시지 한 줄 — 팀 채팅방 형식:
@@ -22,6 +23,7 @@ export default function ChatMessage({
   author, mine, createdAt,
 }) {
   const hasEvents = events && events.length > 0;
+  const { lang } = useLanguage();
 
   if (role === "user") {
     if (mine || !author) {
@@ -30,7 +32,7 @@ export default function ChatMessage({
         <div className="chat-message chat-message-user">
           <div className="chat-message-content">
             <div className="chat-message-bubble">{content}</div>
-            {createdAt && <span className="chat-message-time chat-message-time-right">{formatTime(createdAt)}</span>}
+            {createdAt && <span className="chat-message-time chat-message-time-right">{formatTime(createdAt, lang)}</span>}
           </div>
         </div>
       );
@@ -44,7 +46,7 @@ export default function ChatMessage({
             {author.name && author.name !== author.nickname && (
               <span className="chat-message-realname">{author.name}</span>
             )}
-            {createdAt && <span className="chat-message-time">{formatTime(createdAt)}</span>}
+            {createdAt && <span className="chat-message-time">{formatTime(createdAt, lang)}</span>}
           </div>
           <div className="chat-message-bubble chat-message-bubble-other">{content}</div>
         </div>

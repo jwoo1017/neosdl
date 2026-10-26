@@ -3809,6 +3809,78 @@ tr.risk-row:hover { background: var(--surface-2); }
   align-items: center;
   gap: 0.75rem;
 }
+
+/* 상단바 맨 오른쪽 KR/EN 스위치 (components/LangToggle.jsx) — SVG로 직접 그린 알약형 토글 */
+.lang-toggle {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 14px;
+  cursor: pointer;
+  line-height: 0;
+}
+.lang-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.lang-toggle-track {
+  fill: var(--bg-raised);
+  stroke: var(--border);
+  transition: stroke 0.15s ease;
+}
+.lang-toggle:hover .lang-toggle-track {
+  stroke: var(--text-faint);
+}
+.lang-toggle-knob {
+  fill: var(--accent);
+  transition: transform 0.22s cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+.lang-toggle.is-en .lang-toggle-knob {
+  transform: translateX(28px);
+}
+.lang-toggle-label {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  fill: var(--text-dim);
+  pointer-events: none;
+  user-select: none;
+  transition: fill 0.2s ease;
+}
+.lang-toggle-label.is-on {
+  fill: var(--bg-raised);
+}
+.lang-toggle.is-translating .lang-toggle-knob {
+  animation: lang-toggle-pulse 1.1s ease-in-out infinite;
+}
+@keyframes lang-toggle-pulse {
+  50% { opacity: 0.55; }
+}
+.lang-toggle-progress circle {
+  fill: none;
+  stroke-width: 2;
+}
+.lang-toggle-progress-bg {
+  stroke: var(--border);
+}
+.lang-toggle-progress-bar {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.2s linear;
+}
+.lang-toggle.is-downloading {
+  cursor: progress;
+}
+.lang-toggle.is-unsupported,
+.lang-toggle.is-error {
+  opacity: 0.45;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lang-toggle-knob { transition: none; }
+  .lang-toggle.is-translating .lang-toggle-knob { animation: none; }
+}
 .presence-stack {
   display: flex;
   align-items: center;

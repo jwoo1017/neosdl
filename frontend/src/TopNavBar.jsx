@@ -3,6 +3,7 @@ import { useTeamspace } from "./TeamspaceContext";
 import { useProject } from "./ProjectContext";
 import { useSidebar } from "./SidebarContext";
 import InviteInbox from "./InviteInbox";
+import LangToggle from "./components/LangToggle";
 import PresenceStack from "./components/PresenceStack";
 import HamburgerIcon from "./icons/HamburgerIcon";
 
@@ -49,6 +50,7 @@ export default function TopNavBar() {
         {/* 개인 페이지는 나 혼자라 표시하지 않는다 */}
         <PresenceStack teamspaceId={activeTeamspace && !activeTeamspace.personal ? activeTeamspace.id : null} />
         <InviteInbox />
+        <LangToggle />
       </div>
     </header>
   );
