@@ -36,8 +36,14 @@ def _not_attempted(reason: str, entry_route: dict | None = None) -> VerifyOutcom
 
 
 def verify_finding(cur, scan_id: str, finding: dict, *, app_client: Callable,
-                   log_source: Callable | None = None, allow_instrumentation: bool = False) -> VerifyOutcome:
-    """finding 하나를 동적 검증한다. app_client 가 None 결과를 주면(앱 미기동) not_attempted."""
+                   log_source: Callable | None = None, allow_instrumentation: bool = False,
+                   iast_nonce: str | None = None) -> VerifyOutcome:
+    """finding 하나를 동적 검증한다. app_client 가 None 결과를 주면(앱 미기동) not_attempted.
+
+    IAST 모드(iast_nonce + allow_instrumentation): 엔게이지먼트 nonce를 입력값으로 한 번 보내고,
+    log_source(nonce)의 iast_reached(쿼리문자열 도달=조립 vs 바인딩)로 판정 — SQLi를 비파괴로 확정.
+    그 외: control/probe 블랙박스 차분.
+    """
     category = finding["category"]
     if category not in probes.CATEGORIES:
         return _not_attempted("unsupported_category")
@@ -54,6 +60,28 @@ def verify_finding(cur, scan_id: str, finding: dict, *, app_client: Callable,
     if not ep.param_name:
         return _not_attempted("param_unresolved", route)
 
+    iast_mode = bool(iast_nonce and allow_instrumentation and log_source is not None)
+
+    if iast_mode:
+        # IAST: nonce를 입력으로 보내고 sink 도달 여부로 판정(가장 강한 SQLi 오라클).
+        resp = app_client(ep.method, ep.path_template, ep.param_name, ep.param_in, iast_nonce)
+        if resp is None:
+            return _not_attempted("app_not_running", route)
+        collected = log_source(iast_nonce) or {}
+        reached = collected.get("iast_reached")
+        if reached is None:
+            # 앱은 돌았지만 IAST 신호가 없다(해당 sink에 안 닿음/계측 실패) → 블랙박스로 폴백.
+            iast_mode = False
+        else:
+            verdict = oracle.decide(category, probe_body=getattr(resp, "text", ""), nonce=iast_nonce,
+                                    iast_reached=reached, entry_confidence=ep.confidence)
+            arts = [{"kind": "request", "content": f"{ep.method} {ep.path_template} {ep.param_name}={iast_nonce}"},
+                    {"kind": "iast_event", "content": f"reached={reached}"}]
+            log = collected.get("app_log")
+            if log:
+                arts.append({"kind": "app_log", "content": log[:8000]})
+            return VerifyOutcome(verdict=verdict, entry_route=route, oracle_kind="iast", artifacts=arts)
+
     probe = probes.synthesize(category, finding["id"])
     if probe is None:
         return _not_attempted("probe_unavailable", route)
@@ -64,25 +92,22 @@ def verify_finding(cur, scan_id: str, finding: dict, *, app_client: Callable,
     if control is None or probe_resp is None:
         return _not_attempted("app_not_running", route)
 
-    logs, iast_reached = "", None
+    logs = ""
     if log_source is not None:
-        collected = log_source(probe.nonce) or {}
-        logs = collected.get("app_log", "") or ""
-        iast_reached = collected.get("iast_reached") if allow_instrumentation else None
+        logs = (log_source(probe.probe_value) or {}).get("app_log", "") or ""
 
     verdict = oracle.decide(
         category, control_body=getattr(control, "text", ""), probe_body=getattr(probe_resp, "text", ""),
         control_status=getattr(control, "status_code", 200), probe_status=getattr(probe_resp, "status_code", 200),
-        nonce=probe.probe_value, app_logs=logs, iast_reached=iast_reached, entry_confidence=ep.confidence)
+        nonce=probe.probe_value, app_logs=logs, iast_reached=None, entry_confidence=ep.confidence)
 
-    oracle_kind = "iast" if iast_reached is not None else "blackbox"
     artifacts = [
         {"kind": "request", "content": f"{ep.method} {ep.path_template} {ep.param_name}={probe.probe_value}"},
         {"kind": "response", "content": getattr(probe_resp, "text", "")[:8000]},
     ]
     if logs:
         artifacts.append({"kind": "app_log", "content": logs[:8000]})
-    return VerifyOutcome(verdict=verdict, entry_route=route, oracle_kind=oracle_kind, artifacts=artifacts)
+    return VerifyOutcome(verdict=verdict, entry_route=route, oracle_kind="blackbox", artifacts=artifacts)
 
 
 def rate_limited_client(base_url: str, rps: int = 2):

@@ -38,16 +38,16 @@ def _maybe_dynamic(cur, engagement: dict) -> dict | None:
     except Exception:
         log.warning("샌드박스 모듈 로드 실패 — 정적 판정 유지", exc_info=True)
         return None
-    booted = boot.boot_engagement(engagement)   # (app_client, log_source, teardown) | None
+    booted = boot.boot_engagement(engagement)   # SandboxBoot | None
     if booted is None:
         return None
-    app_client, log_source, teardown = booted
     try:
-        return agents.verifier(cur, engagement, app_client=app_client, log_source=log_source,
-                               allow_instrumentation=engagement.get("allow_instrumentation", False))
+        return agents.verifier(cur, engagement, app_client=booted.app_client, log_source=booted.log_source,
+                               allow_instrumentation=engagement.get("allow_instrumentation", False),
+                               iast_nonce=booted.iast_nonce)
     finally:
         try:
-            teardown()
+            booted.teardown()
         except Exception:
             log.warning("샌드박스 정리 실패", exc_info=True)
 
@@ -56,7 +56,8 @@ def handle(payload: dict) -> None:
     engagement_id = payload["engagement_id"]
     with tx() as cur:
         cur.execute(
-            "SELECT id, status, project_id, scan_id, goal FROM engagement WHERE id=%s FOR UPDATE",
+            "SELECT id, status, project_id, repository_id, scan_id, goal, allow_instrumentation "
+            "FROM engagement WHERE id=%s FOR UPDATE",
             (engagement_id,))
         row = cur.fetchone()
         if row is None:

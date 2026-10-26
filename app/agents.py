@@ -86,10 +86,10 @@ def static_analyst(cur, engagement: dict) -> dict:
 
 
 def verifier(cur, engagement: dict, *, app_client, log_source=None, allow_instrumentation=False,
-             limit: int = 50) -> dict:
+             iast_nonce=None, limit: int = 50) -> dict:
     """열린 보안 finding 을 동적으로 검증(confirmed/false_positive/…)하고 판정을 반영한다.
 
-    app_client/log_source 는 샌드박스(booted app)가 제공하거나 테스트가 주입. 각 finding 은
+    app_client/log_source/iast_nonce 는 샌드박스(booted app)가 제공하거나 테스트가 주입. 각 finding 은
     runner.verify_finding → feedback.write_verdict. 결과 카운트 요약 반환.
     """
     from app.dynamic import feedback, runner
@@ -106,7 +106,8 @@ def verifier(cur, engagement: dict, *, app_client, log_source=None, allow_instru
     counts: dict[str, int] = {}
     for f in findings:
         outcome = runner.verify_finding(cur, scan_id, dict(f), app_client=app_client,
-                                        log_source=log_source, allow_instrumentation=allow_instrumentation)
+                                        log_source=log_source, allow_instrumentation=allow_instrumentation,
+                                        iast_nonce=iast_nonce)
         feedback.write_verdict(cur, engagement=engagement, finding=dict(f), verdict=outcome.verdict,
                                entry_route=outcome.entry_route, oracle=outcome.oracle_kind,
                                artifacts=outcome.artifacts)

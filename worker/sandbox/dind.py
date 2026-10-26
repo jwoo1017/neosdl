@@ -61,6 +61,10 @@ class DindRunner:
             self._client = docker.DockerClient(base_url=cfg.sandbox_docker_host, tls=tls, timeout=30)
         return self._client
 
+    def client(self):
+        """내부 docker 클라이언트(boot.py 오케스트레이션이 직접 쓴다)."""
+        return self._docker()
+
     def health(self) -> bool:
         try:
             return bool(self._docker().ping())

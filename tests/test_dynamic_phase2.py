@@ -35,7 +35,7 @@ def test_runner_iast_not_reached_is_false_positive(monkeypatch):
         None, "scan", f,
         app_client=lambda *a: _Resp(200, "same rows"),
         log_source=lambda nonce: {"app_log": "", "iast_reached": False},
-        allow_instrumentation=True)
+        allow_instrumentation=True, iast_nonce="neosdl-xx")
     assert out.verdict.verdict == "false_positive"
     assert out.oracle_kind == "iast"
 
@@ -45,8 +45,19 @@ def test_runner_iast_reached_is_confirmed(monkeypatch):
     f = {"id": 2, "category": "sql_injection", "source_var": "req.query.id", "sink_symbol_key": "k"}
     out = runner.verify_finding(
         None, "scan", f, app_client=lambda *a: _Resp(500, "boom"),
-        log_source=lambda nonce: {"iast_reached": True}, allow_instrumentation=True)
+        log_source=lambda nonce: {"iast_reached": True}, allow_instrumentation=True, iast_nonce="neosdl-xx")
     assert out.verdict.verdict == "confirmed"
+
+
+def test_runner_iast_falls_back_to_blackbox_when_no_signal(monkeypatch):
+    """IAST 켜졌지만 해당 sink 에 신호 없음(reached=None) → 블랙박스 경로로 폴백."""
+    monkeypatch.setattr(entrypoint, "resolve", lambda cur, s, f: _ep())
+    f = {"id": 9, "category": "xss", "source_var": "req.query.q", "sink_symbol_key": "k"}
+    out = runner.verify_finding(
+        None, "scan", f,
+        app_client=lambda m, p, name, pin, val: _Resp(200, f"<div>{val}</div>"),
+        log_source=lambda nonce: {"iast_reached": None}, allow_instrumentation=True, iast_nonce="neosdl-xx")
+    assert out.oracle_kind == "blackbox" and out.verdict.verdict == "confirmed"
 
 
 def test_runner_not_attempted_paths(monkeypatch):
