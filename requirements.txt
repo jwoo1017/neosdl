@@ -27,3 +27,6 @@ tree-sitter-typescript==0.23.2
 Pillow==11.3.0
 # FastAPI multipart(UploadFile) 파서
 python-multipart==0.0.20
+# sandbox dynamic verification (white-box DAST) - dind/Docker daemon control (worker/sandbox, app/dynamic).
+# sandbox_enabled=False by default; import is lazy. Linux server needs only this package.
+docker==7.1.0

@@ -25,34 +25,48 @@ def nonce_reached_sink(nonce: str, operation: str, parameters) -> bool:
 
 
 # --- 파이썬 대상 앱에 넣는 sitecustomize 훅(문자열) ---
-# DBAPI 커서의 execute 를 감싸 nonce 가 operation 에 들어갔는지 한 줄 로그로 남긴다.
-# 샌드박스가 이 파일을 앱 작업디렉터리에 두고 PYTHONPATH 앞에 붙여 로드시킨다.
+# nonce 가 쿼리 문자열(operation)에 들어갔는지(=조립, 위험) parameters(=바인딩, 안전)에만
+# 있는지 stderr 한 줄로 남긴다. 샌드박스가 이 파일을 베이크하고 PYTHONPATH 앞에 둬 로드시킨다.
+#
+# sqlite3 은 C 확장 타입이라 Cursor.execute 를 monkeypatch 할 수 없다 → connect 를 감싸
+# 래핑한 Cursor 서브클래스를 주입한다. psycopg2/pymysql/MySQLdb 는 파이썬 클래스라 직접 패치.
 PYTHON_SITECUSTOMIZE = r'''
 import os, sys
 _NONCE = os.environ.get("NEOSDL_IAST_NONCE", "")
 def _emit(reached, where):
     sys.stderr.write("NEOSDL_IAST reached=%s where=%s\n" % (int(bool(reached)), where)); sys.stderr.flush()
-def _wrap_execute(orig):
+def _check(operation, parameters):
+    try:
+        if _NONCE and _NONCE in (operation or ""): _emit(True, "sql_operation")
+        elif _NONCE and _NONCE in repr(parameters): _emit(False, "sql_parameter")
+    except Exception: pass
+# sqlite3 — connect 래핑(서브클래스 커서 주입)
+try:
+    import sqlite3
+    class _Cur(sqlite3.Cursor):
+        def execute(self, sql, parameters=()):
+            _check(sql, parameters); return super().execute(sql, parameters)
+    class _Conn(sqlite3.Connection):
+        def cursor(self, factory=_Cur): return super().cursor(factory)
+    _oc = sqlite3.connect
+    def _connect(*a, **k):
+        k.setdefault("factory", _Conn); return _oc(*a, **k)
+    sqlite3.connect = _connect
+except Exception: pass
+# psycopg2 / pymysql / MySQLdb — 파이썬 클래스라 execute 직접 래핑
+def _wrap(orig):
     def execute(self, operation, parameters=None, *a, **k):
-        try:
-            if _NONCE and _NONCE in (operation or ""):
-                _emit(True, "sql_operation")
-            elif _NONCE and _NONCE in repr(parameters):
-                _emit(False, "sql_parameter")
-        except Exception:
-            pass
+        _check(operation, parameters)
         return orig(self, operation, parameters, *a, **k) if parameters is not None else orig(self, operation, *a, **k)
     return execute
-try:
-    import sqlite3; sqlite3.Cursor.execute = _wrap_execute(sqlite3.Cursor.execute)
-except Exception: pass
-for mod in ("psycopg2.extensions", "pymysql.cursors", "MySQLdb.cursors"):
+for mod, classes in (("psycopg2.extensions", ("cursor",)), ("pymysql.cursors", ("Cursor", "DictCursor")),
+                     ("MySQLdb.cursors", ("Cursor", "DictCursor"))):
     try:
         import importlib; m = importlib.import_module(mod)
-        for cls in ("cursor", "Cursor", "DictCursor"):
+        for cls in classes:
             c = getattr(m, cls, None)
-            if c and hasattr(c, "execute"):
-                c.execute = _wrap_execute(c.execute)
+            if c and "execute" in c.__dict__:
+                c.execute = _wrap(c.execute)
     except Exception: pass
 '''
 
