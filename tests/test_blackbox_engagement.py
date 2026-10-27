@@ -44,8 +44,9 @@ def test_run_blackbox_wires_and_persists(monkeypatch):
 
     captured = {}
 
-    def fake_run(cur, *, target, llm_generate, toolbox_exec, permission_mode, effective_role, actor):
-        captured.update(target=target, permission_mode=permission_mode)
+    def fake_run(cur, *, target, llm_generate, toolbox_exec, permission_mode, effective_role, actor,
+                 approved_commands=None):
+        captured.update(target=target, permission_mode=permission_mode, approved=approved_commands)
         return pentester.PentestOutcome(
             "succeeded", findings=[{"title": "open ssh", "severity": "low"}],
             history=[{"command": "nmap -sV test.internal", "result": {"ok": True, "exit_code": 0}}], steps=2)

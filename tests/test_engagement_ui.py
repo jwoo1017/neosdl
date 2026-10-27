@@ -60,6 +60,35 @@ def test_get_engagement_has_report_and_verifications_keys(api_users, db):
 
 
 @pytest.mark.integration
+def test_approve_resumes_awaiting_engagement(api_users, db):
+    import json
+
+    alice = api_users.new("alice")
+    project_id = _project(alice)
+    pending = 'sqlmap -u "http://10.0.0.5:3000/" --batch'
+    with db() as cur:
+        cur.execute(
+            "INSERT INTO engagement (project_id, goal, status, result, params, created_by) "
+            "VALUES (%s,%s,'awaiting_approval',%s::jsonb,%s::jsonb,%s) RETURNING id",
+            (project_id, "bb", json.dumps({"pending_command": pending}),
+             json.dumps({"target": "10.0.0.5", "engagement_kind": "blackbox"}), alice.id))
+        eid = str(cur.fetchone()["id"])
+
+    res = alice.client.post(f"/api/engagements/{eid}/approve")
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "queued"
+    with db() as cur:
+        cur.execute("SELECT status, params FROM engagement WHERE id=%s", (eid,))
+        row = cur.fetchone()
+        assert row["status"] == "queued"
+        assert pending in (row["params"].get("approved_commands") or [])
+
+    # 승인 대기 상태가 아니면(이미 queued) 다시 승인 못 함
+    res2 = alice.client.post(f"/api/engagements/{eid}/approve")
+    assert res2.status_code == 409
+
+
+@pytest.mark.integration
 def test_engagement_ws_rejects_cross_site_and_accepts_same_origin(live_client, db):
     alice, c = live_client
     project_id = _project(alice)

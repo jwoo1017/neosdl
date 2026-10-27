@@ -50,10 +50,14 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
     def toolbox_exec(argv):
         return runner.exec_toolbox(container, argv, timeout_s=settings().sandbox_boot_timeout_s)
 
+    # 승인(HITL) 후 재개: approve 엔드포인트가 params.approved_commands 에 승인된 명령을 쌓는다.
+    # 그 명령들은 auto/ask 와 무관하게 실행된다(재정찰은 다시 돌지만 멱등). 비면 최초 실행.
+    approved = (engagement.get("params") or {}).get("approved_commands") or []
     try:
         outcome = pentester.run_pentester(
             cur, target=target, llm_generate=llm_generate, toolbox_exec=toolbox_exec,
-            permission_mode=permission_mode, effective_role="manager", actor=actor)
+            permission_mode=permission_mode, effective_role="manager", actor=actor,
+            approved_commands=approved)
     finally:
         try:
             runner.destroy(eid)   # 툴박스 컨테이너·네트워크 정리(실패해도 best-effort)

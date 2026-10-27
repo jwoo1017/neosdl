@@ -111,6 +111,43 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
     return {"id": engagement_id, "status": "queued"}
 
 
+@router.post("/engagements/{engagement_id}/approve")
+def approve_engagement(engagement_id: UUID, member: dict = Depends(get_current_member)):
+    """awaiting_approval 로 멈춘 engagement 의 pending 명령을 승인하고 재개한다(HITL).
+
+    승인된 명령을 params.approved_commands 에 쌓고 engagement.run 을 재enqueue → 그 명령은
+    permission 게이트를 통과한다. 재실행 시 비파괴 정찰(nmap/nikto)은 다시 돌지만 멱등하다.
+    """
+    import json
+
+    with tx() as cur:
+        cur.execute("SELECT project_id, status, result, params FROM engagement WHERE id=%s FOR UPDATE",
+                    (str(engagement_id),))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "engagement not found")
+        assert_project_role(cur, row["project_id"], member["id"], "manager")
+        if row["status"] != "awaiting_approval":
+            raise HTTPException(409, "engagement is not awaiting approval")
+        pending = (row["result"] or {}).get("pending_command")
+        if not pending:
+            raise HTTPException(409, "no pending command to approve")
+        params = dict(row["params"] or {})
+        approved = list(params.get("approved_commands") or [])
+        if pending not in approved:
+            approved.append(pending)
+        params["approved_commands"] = approved
+        cur.execute("UPDATE engagement SET params=%s::jsonb, status='queued', error=NULL, updated_at=now() "
+                    "WHERE id=%s", (json.dumps(params), str(engagement_id)))
+        # 원래 dedupe_key(engagement:{id}) 와 겹치지 않게 재개마다 다른 키.
+        queue.enqueue(cur, "engagement.run", {"engagement_id": str(engagement_id)},
+                      dedupe_key=f"engagement:{engagement_id}:resume:{len(approved)}")
+        engagement_bus.notify_engagement_event(cur, str(engagement_id), {"kind": "status", "ref_id": "queued"})
+        audit.record(cur, actor=f"user:{member['id']}", action="engagement.approve",
+                     subject={"engagement_id": str(engagement_id)}, payload={"command": pending[:500]})
+    return {"status": "queued", "approved": pending}
+
+
 @router.get("/projects/{project_id}/engagements")
 def list_engagements(project_id: UUID, member: dict = Depends(get_current_member)):
     with tx() as cur:

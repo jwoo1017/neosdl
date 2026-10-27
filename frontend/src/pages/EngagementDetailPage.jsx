@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { engagementSocketUrl, fetchEngagement } from "../api";
+import { approveEngagement, engagementSocketUrl, fetchEngagement } from "../api";
 import { useProject } from "../ProjectContext";
 import { createBackoff, isTerminalClose } from "../wsReconnect";
 import MarkdownAnswer from "../chat/MarkdownAnswer";
@@ -27,7 +27,7 @@ const VERDICT_LABEL = {
 
 export default function EngagementDetailPage() {
   const { engagementId } = useParams();
-  const { activeProject } = useProject();
+  const { activeProject, hasProjectRole } = useProject();
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [connected, setConnected] = useState(false);
@@ -82,7 +82,10 @@ export default function EngagementDetailPage() {
 
   const eng = data.engagement;
   const blackbox = !!(eng.params?.target);
-  if (blackbox) return <BlackboxDetail eng={eng} report={data.report} connected={connected} />;
+  if (blackbox) return (
+    <BlackboxDetail eng={eng} report={data.report} connected={connected}
+                    canApprove={hasProjectRole("manager")} onChange={load} />
+  );
 
   const summary = data.report?.static_summary || {};
   const candidates = summary.candidates || [];
@@ -205,9 +208,23 @@ const SEV_BADGE = { critical: "badge-risk-critical", high: "badge-risk-high",
   medium: "badge-risk-medium", low: "badge-risk-low" };
 
 // 블랙박스(외부 표적) 점검 결과 — Pentester가 터미널 도구로 점검한 리포트/발견/승인 대기.
-function BlackboxDetail({ eng, report, connected }) {
+function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
   const r = report || {};
   const awaiting = eng.status === "awaiting_approval";
+  const [approving, setApproving] = useState(false);
+  const [approveErr, setApproveErr] = useState(null);
+  const pending = eng.result?.pending_command;
+
+  const approve = async () => {
+    setApproving(true); setApproveErr(null);
+    try {
+      await approveEngagement(eng.id);
+      onChange?.();          // 상태 refetch — queued 로 바뀌고 WS 로 진행 수신
+    } catch (e) {
+      setApproveErr(e.message);
+      setApproving(false);
+    }
+  };
   return (
     <div className="dashboard">
       <h1>
@@ -224,8 +241,20 @@ function BlackboxDetail({ eng, report, connected }) {
       </div>
 
       {awaiting && (
-        <div className="alert-error" style={{ marginBottom: "0.8rem" }}>
-          승인 대기 중: 다음 명령 실행에 사람 승인이 필요합니다 — <code>{r.pending_command}</code>
+        <div className="dashboard-section" style={{ marginBottom: "0.8rem", padding: "0.7rem 0.9rem" }}>
+          <div>⏸ 승인 대기 — 다음 명령은 침투성이라 사람 승인이 필요합니다:</div>
+          <div style={{ margin: "0.4rem 0" }}><code>{pending || r.pending_command}</code></div>
+          {approveErr && <div className="alert-error" style={{ marginBottom: "0.5rem" }}>{approveErr}</div>}
+          {canApprove ? (
+            <button className="btn-primary" onClick={approve} disabled={approving}>
+              {approving ? "재개 중..." : "승인하고 실행"}
+            </button>
+          ) : (
+            <span className="muted">승인하려면 manager 권한이 필요합니다.</span>
+          )}
+          <span className="muted" style={{ fontSize: "0.72rem", marginLeft: "0.6rem" }}>
+            승인 시 정찰(nmap/nikto)은 다시 돌고 이어서 이 명령이 실행됩니다.
+          </span>
         </div>
       )}
 

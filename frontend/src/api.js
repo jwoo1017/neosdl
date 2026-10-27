@@ -674,6 +674,13 @@ export async function fetchEngagement(engagementId) {
   return res.json();
 }
 
+// 승인 대기(HITL) 중인 engagement 의 pending 명령을 승인하고 재개한다.
+export async function approveEngagement(engagementId) {
+  const res = await apiFetch(`/engagements/${engagementId}/approve`, { method: "POST" });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `approve failed: ${res.status}`);
+  return res.json();
+}
+
 // engagement 진행 상태를 실시간으로 받는 읽기 전용 소켓 — app/engagements.py.
 export function engagementSocketUrl(engagementId) {
   return `${API_BASE.replace(/^http/, "ws")}/api/ws/engagements/${engagementId}`;
