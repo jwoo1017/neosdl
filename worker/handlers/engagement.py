@@ -23,6 +23,51 @@ log = logging.getLogger("worker.engagement")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 
 
+def _add_subtask(cur, task_id: str, engagement_id: str, role: str) -> str:
+    cur.execute("INSERT INTO subtask (task_id, engagement_id, seq, assigned_role, status) "
+                "VALUES (%s,%s,%s,%s::agent_role,'running') RETURNING id",
+                (task_id, engagement_id, 1, role))
+    return str(cur.fetchone()["id"])
+
+
+def _add_agent_action(cur, subtask_id: str, engagement_id: str, seq: int, rec: dict) -> None:
+    """pentester 1스텝을 agent_action 에 영속(상태 저장 — 재개 시 이걸로 복원)."""
+    cmd = rec.get("command")
+    if "rejected" in rec:
+        output, status = {"rejected": rec["rejected"]}, "error"
+    else:
+        r = rec.get("result") or {}
+        output = {"ok": r.get("ok"), "exit_code": r.get("exit_code"),
+                  "timed_out": r.get("timed_out"), "output": (r.get("output") or r.get("error") or "")[:8000]}
+        status = "done" if r.get("ok") else "error"
+    cur.execute(
+        "INSERT INTO agent_action (subtask_id, engagement_id, seq, agent_role, tool, input, output, "
+        "status, finished_at) VALUES (%s,%s,%s,'pentester','terminal',%s::jsonb,%s::jsonb,%s::action_status, now())",
+        (subtask_id, engagement_id, seq, json.dumps({"command": cmd}), json.dumps(output), status))
+
+
+def _load_prior_state(cur, engagement_id: str):
+    """이전 실행의 terminal agent_action 을 불러와 (history, open_ports, 실행된 명령 set) 복원."""
+    cur.execute("SELECT input, output FROM agent_action WHERE engagement_id=%s AND tool='terminal' "
+                "ORDER BY started_at, seq", (engagement_id,))
+    history, open_ports, executed = [], [], set()
+    for row in cur.fetchall():
+        inp, outp = (row["input"] or {}), (row["output"] or {})
+        cmd = inp.get("command")
+        if not cmd:
+            continue
+        if outp.get("rejected"):
+            history.append({"command": cmd, "rejected": outp["rejected"]})
+            continue
+        result = {"ok": outp.get("ok"), "exit_code": outp.get("exit_code"),
+                  "timed_out": outp.get("timed_out"), "output": outp.get("output", "")}
+        history.append({"command": cmd, "result": result})
+        executed.add(cmd)
+        if outp.get("ok"):
+            pentester._merge_ports(open_ports, outp.get("output", ""))
+    return history, open_ports, executed
+
+
 def _run_blackbox(cur, engagement: dict, target: str) -> dict:
     """블랙박스 외부표적 engagement — 샌드박스 툴박스에서 LLM Pentester 로 인가 표적을 점검.
 
@@ -50,14 +95,24 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
     def toolbox_exec(argv):
         return runner.exec_toolbox(container, argv, timeout_s=settings().sandbox_boot_timeout_s)
 
-    # 승인(HITL) 후 재개: approve 엔드포인트가 params.approved_commands 에 승인된 명령을 쌓는다.
-    # 그 명령들은 auto/ask 와 무관하게 실행된다(재정찰은 다시 돌지만 멱등). 비면 최초 실행.
+    # 상태 영속/재개(PentAGI식): 이전 실행의 agent_action 을 불러와 이미 실행한 명령은 다시 안 돈다.
+    # 승인된 명령(params.approved_commands)만 재개로 바로 실행하고, 매 스텝을 agent_action 에 저장한다.
     approved = (engagement.get("params") or {}).get("approved_commands") or []
+    prior_history, prior_open_ports, prior_executed = _load_prior_state(cur, eid)
+    resume_commands = [c for c in approved if c not in prior_executed]
+    subtask_id = _add_subtask(cur, task_id, eid, "pentester")
+    _seq = [len(prior_history)]
+
+    def persist(rec):
+        _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
+        _seq[0] += 1
+
     try:
         outcome = pentester.run_pentester(
             cur, target=target, llm_generate=llm_generate, toolbox_exec=toolbox_exec,
             permission_mode=permission_mode, effective_role="manager", actor=actor,
-            approved_commands=approved)
+            approved_commands=approved, resume_commands=resume_commands,
+            prior_history=prior_history, prior_open_ports=prior_open_ports, on_step=persist)
     finally:
         try:
             runner.destroy(eid)   # 툴박스 컨테이너·네트워크 정리(실패해도 best-effort)
