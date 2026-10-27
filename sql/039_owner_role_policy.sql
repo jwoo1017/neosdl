@@ -6,38 +6,16 @@
 --   member — 이용만.
 -- "최소 1명 유지" 보호 대상을 admin 에서 owner 로 옮긴다(유일 owner 는 위임하거나 공간을 삭제해야
 -- 나갈 수 있다). 초대로는 owner 를 줄 수 없다 — 초대 role 은 앱에서 admin|member 로 막는다.
+--
+-- ★ 순서 주의: 보호 트리거 함수를 **백필보다 먼저** 교체한다. 옛 함수("마지막 admin 보호")가
+--   살아 있는 채로 백필(admin→owner 승격)을 돌리면, 유일한 admin 을 owner 로 올릴 때 옛 트리거가
+--   "마지막 admin 이탈"로 보고 막아버린다. 새 함수는 owner 만 보호하므로 admin/member→owner 는 통과.
 -- =====================================================================
 
 BEGIN;
 
 -- ---------------------------------------------------------------------
--- 1. 백필 — 공간마다 owner 1명. 생성자가 아직 멤버면 생성자, 아니면 가장 오래된 admin,
---    admin 도 없으면 가장 오래된 멤버. (admin/member → owner 승격이라 기존 트리거에 안 걸린다.)
--- ---------------------------------------------------------------------
-UPDATE workspace_member wm SET role = 'owner'
-  FROM (
-      SELECT DISTINCT ON (x.workspace_id) x.workspace_id, x.member_id
-        FROM workspace_member x JOIN workspace w ON w.id = x.workspace_id
-       ORDER BY x.workspace_id,
-                (x.member_id = w.created_by) DESC,
-                (x.role = 'admin') DESC,
-                x.joined_at
-  ) pick
- WHERE wm.workspace_id = pick.workspace_id AND wm.member_id = pick.member_id;
-
-UPDATE teamspace_member tm SET role = 'owner'
-  FROM (
-      SELECT DISTINCT ON (x.teamspace_id) x.teamspace_id, x.member_id
-        FROM teamspace_member x JOIN teamspace t ON t.id = x.teamspace_id
-       ORDER BY x.teamspace_id,
-                (x.member_id = COALESCE(t.personal_owner_id, t.created_by)) DESC,
-                (x.role = 'admin') DESC,
-                x.joined_at
-  ) pick
- WHERE tm.teamspace_id = pick.teamspace_id AND tm.member_id = pick.member_id;
-
--- ---------------------------------------------------------------------
--- 2. 마지막 owner 보호 트리거로 교체(함수 이름은 그대로 — 트리거 재생성 불필요)
+-- 1. 마지막 owner 보호 트리거로 교체 (함수 이름은 그대로 — 트리거 재생성 불필요). 백필보다 먼저!
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION workspace_member_protect_last_admin() RETURNS trigger AS $$
 DECLARE
@@ -76,5 +54,31 @@ BEGIN
     RETURN COALESCE(NEW, OLD);
 END;
 $$ LANGUAGE plpgsql;
+
+-- ---------------------------------------------------------------------
+-- 2. 백필 — 공간마다 owner 1명. 생성자가 아직 멤버면 생성자, 아니면 가장 오래된 admin,
+--    admin 도 없으면 가장 오래된 멤버. (이제 새 트리거가 owner 만 보호하므로 승격이 막히지 않는다.)
+-- ---------------------------------------------------------------------
+UPDATE workspace_member wm SET role = 'owner'
+  FROM (
+      SELECT DISTINCT ON (x.workspace_id) x.workspace_id, x.member_id
+        FROM workspace_member x JOIN workspace w ON w.id = x.workspace_id
+       ORDER BY x.workspace_id,
+                (x.member_id = w.created_by) DESC,
+                (x.role = 'admin') DESC,
+                x.joined_at
+  ) pick
+ WHERE wm.workspace_id = pick.workspace_id AND wm.member_id = pick.member_id;
+
+UPDATE teamspace_member tm SET role = 'owner'
+  FROM (
+      SELECT DISTINCT ON (x.teamspace_id) x.teamspace_id, x.member_id
+        FROM teamspace_member x JOIN teamspace t ON t.id = x.teamspace_id
+       ORDER BY x.teamspace_id,
+                (x.member_id = COALESCE(t.personal_owner_id, t.created_by)) DESC,
+                (x.role = 'admin') DESC,
+                x.joined_at
+  ) pick
+ WHERE tm.teamspace_id = pick.teamspace_id AND tm.member_id = pick.member_id;
 
 COMMIT;
