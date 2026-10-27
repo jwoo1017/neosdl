@@ -15,6 +15,7 @@ const SECURITY_TABS = [
   { to: "risks", label: "Risks" },
   { to: "risk-history", label: "Risk History" },
   { to: "whitelist", label: "Whitelist" },
+  { to: "engagements", label: "Engagements" },
   { to: "ai", label: "AI" },
 ];
 

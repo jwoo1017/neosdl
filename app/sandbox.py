@@ -12,7 +12,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from psycopg import Cursor
 
-from app import audit
+from app import audit, toolbox
 from app.config import settings
 
 
@@ -48,3 +48,22 @@ def assert_repo_allowed(cur: Cursor, repository_id: str, *, actor: str) -> str:
                      payload={"reason": "external_repo_not_allowed"})
         raise HTTPException(403, "external_repo_not_allowed")
     return full_name
+
+
+def assert_target_allowed(cur: Cursor, target: str, *, actor: str) -> str:
+    """공격 도구(terminal)를 쏠 표적(URL/host)이 인가되지 않았으면 403/409 + audit.
+
+    블랙박스 외부표적 engagement·채팅 terminal 툴을 실행하기 직전에 호출한다. assert_repo_allowed
+    와 동형: fail-closed(allowlist 비면 전부 거부), 조용히 실패 금지. 통과하면 표적 host 반환.
+    """
+    if not settings().sandbox_enabled:
+        audit.record(cur, actor=actor, action="sandbox.target_rejected",
+                     subject={"target": target}, payload={"reason": "sandbox_disabled"})
+        raise HTTPException(409, "sandbox_disabled")
+    if not toolbox.target_allowed(target):
+        # 미인가 표적(법적 권한 없음) — 공격 도구 실행 금지.
+        audit.record(cur, actor=actor, action="sandbox.target_rejected",
+                     subject={"target": target}, payload={"reason": "target_not_authorized"})
+        raise HTTPException(403, "target_not_authorized")
+    host, _ = toolbox.parse_target(target)
+    return host

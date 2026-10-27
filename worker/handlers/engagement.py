@@ -10,9 +10,10 @@ scan_id 가 없으면 검증할 정적 스냅샷이 없으므로 failed 로 끝�
 
 from __future__ import annotations
 
+import json
 import logging
 
-from app import agents, audit, sandbox
+from app import agents, ai_providers, audit, pentester, sandbox
 from app.config import settings
 from app.db import tx
 from app.engagements import set_status
@@ -20,6 +21,65 @@ from app.engagements import set_status
 log = logging.getLogger("worker.engagement")
 
 _TERMINAL = ("succeeded", "failed", "cancelled")
+
+
+def _run_blackbox(cur, engagement: dict, target: str) -> dict:
+    """블랙박스 외부표적 engagement — 샌드박스 툴박스에서 LLM Pentester 로 인가 표적을 점검.
+
+    assert_target_allowed(인가·fail-closed) → 툴박스 기동 → run_pentester → 리포트 아티팩트.
+    permission_mode=ask(기본)면 첫 명령에서 awaiting_approval 로 멈춘다(HITL). Docker/LLM 이 있어야
+    실제로 돌고, 없거나 실패하면 예외가 상위 except 로 올라가 failed 로 끝난다(조용히 실패 안 함).
+    """
+    actor = "system:worker"
+    sandbox.assert_target_allowed(cur, target, actor=actor)   # 미인가 표적이면 예외(+audit)
+
+    eid = str(engagement["id"])
+    permission_mode = engagement.get("permission_mode", "ask")
+    task_id = agents._add_task(cur, eid, 10, "pentester", f"블랙박스 점검: {target}")
+
+    from worker.sandbox.dind import DindRunner
+    runner = DindRunner()
+    network = None  # 기본 bridge(표적 egress 허용). 스코프 egress 프록시는 후속(plans).
+    container = runner.start_toolbox(eid, network=network)
+    model = ai_providers.resolve_requested_model(None)
+
+    def llm_generate(prompt: str) -> str:
+        return ai_providers.generate(model, prompt, json_mode=True, system=pentester.SYSTEM,
+                                     project_id=str(engagement["project_id"]), purpose="pentest_step")
+
+    def toolbox_exec(argv):
+        return runner.exec_toolbox(container, argv, timeout_s=settings().sandbox_boot_timeout_s)
+
+    try:
+        outcome = pentester.run_pentester(
+            cur, target=target, llm_generate=llm_generate, toolbox_exec=toolbox_exec,
+            permission_mode=permission_mode, effective_role="manager", actor=actor)
+    finally:
+        try:
+            runner.destroy(eid)   # 툴박스 컨테이너·네트워크 정리(실패해도 best-effort)
+        except Exception:
+            log.warning("툴박스 정리 실패", exc_info=True)
+
+    lines = [f"# 블랙박스 점검 리포트", f"- 표적: {target}", f"- 스텝: {outcome.steps}",
+             f"- 상태: {outcome.status}", ""]
+    for i, h in enumerate(outcome.history):
+        if "rejected" in h:
+            lines.append(f"- [{i}] 거부({h['rejected']}): `{h['command']}`")
+        else:
+            r = h.get("result") or {}
+            lines.append(f"- [{i}] `{h['command']}` → ok={r.get('ok')} exit={r.get('exit_code')}")
+    if outcome.findings:
+        lines.append("\n## 발견")
+        for f in outcome.findings:
+            lines.append(f"- [{f.get('severity','?')}] {f.get('title','')}: {f.get('evidence','')}")
+    body = {"markdown": "\n".join(lines), "target": target, "status": outcome.status,
+            "findings": outcome.findings, "steps": outcome.steps,
+            "pending_command": outcome.pending_command}
+    agents._add_artifact(cur, eid, task_id, "report", "블랙박스 점검 리포트", body)
+    agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",
+                        {"status": outcome.status, "findings": len(outcome.findings)})
+    return {"kind": "blackbox", "status": outcome.status, "findings": len(outcome.findings),
+            "steps": outcome.steps, "pending_command": outcome.pending_command}
 
 
 def _maybe_dynamic(cur, engagement: dict) -> dict | None:
@@ -56,7 +116,8 @@ def handle(payload: dict) -> None:
     engagement_id = payload["engagement_id"]
     with tx() as cur:
         cur.execute(
-            "SELECT id, status, project_id, repository_id, scan_id, goal, allow_instrumentation "
+            "SELECT id, status, project_id, repository_id, scan_id, goal, permission_mode, "
+            "allow_instrumentation, params "
             "FROM engagement WHERE id=%s FOR UPDATE",
             (engagement_id,))
         row = cur.fetchone()
@@ -66,13 +127,31 @@ def handle(payload: dict) -> None:
         if row["status"] in _TERMINAL:
             log.info("engagement %s 이미 %s — 건너뜀", engagement_id, row["status"])
             return
-        if not row["scan_id"]:
+        engagement = dict(row)
+        params = engagement.get("params") or {}
+        target = params.get("target")
+        if not target and not row["scan_id"]:
+            # 화이트박스인데 스캔이 없다 — 검증할 정적 스냅샷이 없으므로 실패.
             set_status(cur, engagement_id, "failed", error="검증 대상 스캔이 없습니다")
             return
-        engagement = dict(row)
         set_status(cur, engagement_id, "running")
 
     try:
+        if target:
+            # --- 블랙박스 외부표적: 스캔 없이 샌드박스 도구로 인가 표적 점검 ---
+            with tx() as cur:
+                cur.execute("SELECT status FROM engagement WHERE id=%s", (engagement_id,))
+                if cur.fetchone()["status"] == "cancelled":
+                    return
+                result = _run_blackbox(cur, engagement, target)
+                final = "awaiting_approval" if result["status"] == "awaiting_approval" else "succeeded"
+                set_status(cur, engagement_id, final, result=result)
+                audit.record(cur, actor="system:worker", action="engagement.finished",
+                             subject={"engagement_id": engagement_id}, payload=result)
+            log.info("engagement %s(blackbox) %s: findings=%s steps=%s", engagement_id,
+                     result["status"], result["findings"], result["steps"])
+            return
+
         with tx() as cur:
             cur.execute("SELECT status FROM engagement WHERE id=%s", (engagement_id,))
             if cur.fetchone()["status"] == "cancelled":   # 협조적 취소 지점

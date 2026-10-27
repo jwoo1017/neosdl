@@ -9,15 +9,22 @@ phase-0 범위: 생성/조회 REST + 생명주기 전이 헬퍼. 역할 체인(P
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app import audit, engagement_bus, queue
-from app.auth import assert_project_role, get_current_member
+from app.auth import (
+    assert_project_role, get_current_member, get_current_member_ws, watch_ws_session, ws_origin_allowed,
+)
 from app.chat import _resolve_chat_ctx  # scan_id/repository_id 해석 재사용(단일 소스)
 from app.db import tx
+
+log = logging.getLogger("app.engagements")
 
 router = APIRouter(tags=["engagement"])
 
@@ -30,6 +37,9 @@ class CreateEngagementIn(BaseModel):
     mode: str = "automation"
     permission_mode: str = "ask"
     scan_id: str | None = None
+    # 블랙박스 외부표적 모드: target(인가된 host/URL)을 주면 스캔 없이 샌드박스 도구로 점검한다.
+    # 없으면 기존 화이트박스(스캔 기반 정적→동적 검증) 경로.
+    target: str | None = None
 
 
 def set_status(cur, engagement_id: str, status: str, *, error: str | None = None,
@@ -60,27 +70,44 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
         raise HTTPException(422, "invalid mode")
     if body.permission_mode not in _VALID_PERMISSION:
         raise HTTPException(422, "invalid permission_mode")
+    import json
+
+    from app import toolbox
+
+    blackbox = bool(body.target)
+    if blackbox:
+        # 표적 형식만 여기서 검증(인가 allowlist 는 실행 직전 worker 에서 assert_target_allowed).
+        try:
+            toolbox.parse_target(body.target)
+        except toolbox.CommandRejected:
+            raise HTTPException(422, "invalid target")
+
     with tx() as cur:
-        # 검증은 코드를 실제로 때리는 행위라 manager 이상만 시작할 수 있다.
+        # 검증은 코드/표적을 실제로 때리는 행위라 manager 이상만 시작할 수 있다.
         assert_project_role(cur, project_id, member["id"], "manager")
         ctx = _resolve_chat_ctx(cur, project_id)
         scan_id = body.scan_id or ctx.get("scan_id")
-        if not scan_id:
+        if not scan_id and not blackbox:
+            # 화이트박스는 검증 대상 정적 스냅샷(스캔)이 반드시 필요. 블랙박스는 표적만 있으면 됨.
             raise HTTPException(409, "no completed scan for this project yet")
+        params = {"target": body.target, "engagement_kind": "blackbox"} if blackbox else {}
         cur.execute(
             """
-            INSERT INTO engagement (project_id, repository_id, scan_id, mode, permission_mode, goal, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+            INSERT INTO engagement (project_id, repository_id, scan_id, mode, permission_mode, goal,
+                                    params, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING id
             """,
-            (str(project_id), ctx.get("repository_id"), scan_id, body.mode, body.permission_mode,
-             body.goal, member["id"]),
+            (str(project_id), ctx.get("repository_id"), scan_id if not blackbox else None,
+             body.mode, body.permission_mode, body.goal, json.dumps(params), member["id"]),
         )
         engagement_id = str(cur.fetchone()["id"])
         queue.enqueue(cur, "engagement.run", {"engagement_id": engagement_id},
                       dedupe_key=f"engagement:{engagement_id}")
         audit.record(cur, actor=f"user:{member['id']}", action="engagement.create",
                      subject={"engagement_id": engagement_id, "project_id": str(project_id)},
-                     payload={"mode": body.mode, "permission_mode": body.permission_mode, "scan_id": scan_id})
+                     payload={"mode": body.mode, "permission_mode": body.permission_mode,
+                              "scan_id": scan_id if not blackbox else None,
+                              "kind": "blackbox" if blackbox else "whitebox"})
     return {"id": engagement_id, "status": "queued"}
 
 
@@ -112,4 +139,89 @@ def get_engagement(engagement_id: UUID, member: dict = Depends(get_current_membe
             "SELECT kind, title, created_at FROM artifact WHERE engagement_id=%s ORDER BY created_at",
             (str(engagement_id),))
         artifacts = cur.fetchall()
-    return {"engagement": eng, "tasks": tasks, "artifacts": artifacts}
+        # 리포트 아티팩트 본문 — StaticAnalyst 가 모은 finding+엔트리포인트 후보(candidates)와 markdown.
+        cur.execute(
+            "SELECT body FROM artifact WHERE engagement_id=%s AND kind='report' ORDER BY created_at DESC LIMIT 1",
+            (str(engagement_id),))
+        rrow = cur.fetchone()
+        report = rrow["body"] if rrow else None
+        # finding 별 동적 판정 + 그 finding 의 정적 메타 + 최신 수정 PR(있으면). 상세 페이지가 한 번에 그린다.
+        cur.execute(
+            """
+            SELECT v.finding_id, v.verdict, v.confidence, v.oracle, v.entry_route, v.reason,
+                   f.category, f.severity, f.sink_symbol_key, f.sink_line, f.source_var,
+                   ff.pr_url, ff.pr_number, ff.status AS fix_status
+            FROM finding_verification v
+            JOIN security_finding f ON f.id = v.finding_id
+            LEFT JOIN LATERAL (
+                SELECT pr_url, pr_number, status FROM finding_fix
+                WHERE finding_id = v.finding_id ORDER BY created_at DESC LIMIT 1
+            ) ff ON true
+            WHERE v.engagement_id = %s
+            ORDER BY v.finding_id
+            """,
+            (str(engagement_id),))
+        verifications = cur.fetchall()
+    return {"engagement": eng, "tasks": tasks, "artifacts": artifacts,
+            "report": report, "verifications": verifications}
+
+
+def _assert_engagement_access(engagement_id: UUID, member_id: str) -> str | None:
+    """engagement 가 있고 멤버가 그 프로젝트 viewer 이상이면 project_id 반환, 아니면 예외."""
+    with tx() as cur:
+        cur.execute("SELECT project_id FROM engagement WHERE id=%s", (str(engagement_id),))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "engagement not found")
+        assert_project_role(cur, row["project_id"], member_id, "viewer")
+        return str(row["project_id"])
+
+
+@router.websocket("/ws/engagements/{engagement_id}")
+async def engagement_socket(websocket: WebSocket, engagement_id: UUID):
+    """engagement 진행(status 전이 등)을 실시간 수신 — 읽기 전용(클라이언트→서버 메시지 없음).
+
+    chat_socket 을 미러하되 수신 명령이 없어 forward 루프만 둔다. 상태 이벤트를 받으면
+    프런트가 상세를 refetch 한다(engagement_bus 모듈 docstring 참고 — 워커가 쏜 NOTIFY 를 웹이 fan-out).
+    """
+    if not ws_origin_allowed(websocket):   # CSWSH 차단
+        await websocket.close(code=4403)
+        return
+    member = get_current_member_ws(websocket)
+    if member is None:
+        await websocket.accept()
+        await websocket.close(code=4401)
+        return
+    try:
+        await run_in_threadpool(_assert_engagement_access, engagement_id, member["id"])
+    except Exception:
+        await websocket.accept()
+        await websocket.close(code=4403)
+        return
+
+    await websocket.accept()
+    eid = str(engagement_id)
+    sub = engagement_bus.bus.subscribe(eid)
+
+    async def forward() -> None:
+        while True:
+            event = await sub.get()
+            try:
+                await websocket.send_json(event)
+            except Exception:
+                pass
+
+    forwarder = asyncio.create_task(forward())
+    watcher = asyncio.create_task(watch_ws_session(websocket, member))
+    try:
+        while True:
+            try:
+                await websocket.receive_json()   # 수신은 무시(keepalive/ping 용) — 끊기면 종료
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                continue
+    finally:
+        forwarder.cancel()
+        watcher.cancel()
+        engagement_bus.bus.unsubscribe(eid, sub)

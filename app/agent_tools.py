@@ -37,11 +37,49 @@ class ToolSpec:
     handler: Callable
     min_role: str = "viewer"   # exec 도구가 요구하는 최소 project_role
     destructive: bool = False  # True 면 permission_mode=auto 라도 항상 사람 승인(하드 가드)
+    destructive_fn: Callable | None = None  # params 로 destructive 를 동적 판정(예: terminal 은 명령별로 다름)
 
     def role_allows(self, effective_role: str | None) -> bool:
         if self.kind == "read":
             return True
         return _ROLE_RANK.get(effective_role or "", -1) >= _ROLE_RANK.get(self.min_role, 99)
+
+    def is_destructive(self, params: dict | None) -> bool:
+        """이 호출이 파괴/침투성인가 — 고정 플래그 또는 params 기반 동적 판정."""
+        if self.destructive_fn is not None:
+            return bool(self.destructive_fn(params or {}))
+        return self.destructive
+
+
+@dataclass(frozen=True)
+class AuthzDecision:
+    """exec 도구 호출 1건의 집행 결정(순수). allowed=False 면 needs_approval 로 승인대기/거부 구분."""
+
+    allowed: bool
+    needs_approval: bool
+    reason: str | None = None
+
+
+def authorize(spec: "ToolSpec", *, permission_mode: str, effective_role: str | None,
+              params: dict | None = None, approved: bool = False) -> AuthzDecision:
+    """도구 호출을 permission_mode·역할·destructive 로 게이트(순수 함수 — Docker/DB 무의존).
+
+    - read 도구: 항상 허용(채팅과 동일, 이미 엔드포인트에서 인가됨).
+    - plan: exec 자체를 금지(설계·정적만).
+    - ask: 모든 exec 가 승인 필요.
+    - auto: 자동 진행하되 destructive 는 항상 승인 필요(하드 가드).
+    역할 미달은 승인으로도 못 넘는 거부(needs_approval=False).
+    """
+    if spec.kind == "read":
+        return AuthzDecision(True, False)
+    if not spec.role_allows(effective_role):
+        return AuthzDecision(False, False, "insufficient_role")
+    if permission_mode == "plan":
+        return AuthzDecision(False, False, "plan_mode_no_exec")
+    needs_approval = (permission_mode == "ask") or spec.is_destructive(params)
+    if needs_approval and not approved:
+        return AuthzDecision(False, True, "approval_required")
+    return AuthzDecision(True, needs_approval)
 
 
 class ToolRegistry:
@@ -50,6 +88,14 @@ class ToolRegistry:
 
     def register(self, spec: ToolSpec) -> None:
         self._tools[spec.name] = spec
+
+    def register_exec(self, name: str, description: str, params: dict, handler: Callable, *,
+                      min_role: str = "manager", destructive: bool = False,
+                      destructive_fn: Callable | None = None) -> None:
+        """실행 도구(샌드박스 쉘 등)를 레지스트리에 등록. 기본 min_role=manager(코드/표적을 실제로 때림)."""
+        self.register(ToolSpec(name=name, description=description, params=params, kind="exec",
+                               handler=handler, min_role=min_role, destructive=destructive,
+                               destructive_fn=destructive_fn))
 
     def get(self, name: str) -> ToolSpec | None:
         return self._tools.get(name)

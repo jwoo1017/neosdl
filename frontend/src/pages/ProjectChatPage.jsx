@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
-  chatSocketUrl, createChatSession, deleteChatSession, fetchChatMessages, fetchChatSessions,
-  fetchModels, fetchTeamspaceProjects, renameChatSession, requestScan,
+  chatSocketUrl, createChatSession, createEngagement, deleteChatSession, fetchChatMessages,
+  fetchChatSessions, fetchModels, fetchTeamspaceProjects, renameChatSession, requestScan,
 } from "../api";
 import { useProjectAnalysis } from "../analysis/useProjectAnalysis";
 import AnalysisLockPanel from "../analysis/AnalysisLockPanel";
@@ -573,6 +573,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     }
   });
   const [liveChatTitle, setLiveChatTitle] = useState(null); // 첫 질문 후 서버가 지어준 제목(새로고침 전 즉시 반영용)
+  const [pentestSuggestion, setPentestSuggestion] = useState(null); // {target, goal} — 보안 점검 의도 감지 시 블랙박스 실행 제안
   const bottomRef = useRef(null);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -733,6 +734,9 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
           }));
         } else if (data.type === "risk") {
           setRiskByCid((prev) => ({ ...prev, [data.client_msg_id]: data.risk }));
+        } else if (data.type === "pentest_suggestion") {
+          // 보안 점검 의도 + 인가 표적 감지 — 블랙박스 engagement 실행 제안(사용자 승인 후 실행).
+          setPentestSuggestion({ target: data.target, goal: data.goal });
         } else if (data.type === "error") {
           if (data.error === "analysis_not_ready") {
             // 화면은 열려 있었는데 서버 기준으론 아직 — 상태를 다시 맞춘다.
@@ -968,6 +972,14 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
 
       {error && <div className="alert-error">{error}</div>}
 
+      {pentestSuggestion && (
+        <PentestSuggestionBanner
+          projectId={projectId}
+          suggestion={pentestSuggestion}
+          onDismiss={() => setPentestSuggestion(null)}
+        />
+      )}
+
       {chatLocked && (
         <AnalysisLockPanel
           analysis={analysis}
@@ -999,6 +1011,49 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
         onSelectModel={selectModel}
         modelGroups={modelGroups}
       />
+    </div>
+  );
+}
+
+// 보안 점검 의도가 감지되면 뜨는 배너 — 승인(버튼 클릭) 시에만 블랙박스 engagement 를 띄운다.
+// 채팅에서 공격 도구를 인라인 실행하지 않는다(실행은 샌드박스·permission·HITL·감사가 붙은 engagement).
+function PentestSuggestionBanner({ projectId, suggestion, onDismiss }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const start = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await createEngagement(projectId, {
+        goal: suggestion.goal, mode: "automation", permission_mode: "ask", target: suggestion.target,
+      });
+      setDone(true);
+    } catch (e) {
+      setErr(e.message);
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.6rem 0.8rem" }}>
+        블랙박스 검증을 시작했습니다. <strong>Security Analysis → Engagements</strong> 에서 진행·결과를 확인하세요.
+        <button onClick={onDismiss} style={{ marginLeft: "0.6rem" }}>닫기</button>
+      </div>
+    );
+  }
+  return (
+    <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.6rem 0.8rem",
+                                               display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
+      <span>🛡 인가된 표적 <code>{suggestion.target}</code> 에 보안 도구 점검을 실행할까요? (승인 필요 모드로 시작)</span>
+      {err && <span className="alert-error" style={{ padding: "0.2rem 0.4rem" }}>{err}</span>}
+      <span style={{ marginLeft: "auto", display: "flex", gap: "0.4rem" }}>
+        <button className="btn-primary" onClick={start} disabled={busy}>
+          {busy ? "시작 중..." : "블랙박스 검증 실행"}
+        </button>
+        <button onClick={onDismiss} disabled={busy}>무시</button>
+      </span>
     </div>
   );
 }

@@ -42,6 +42,36 @@ def _container_kwargs(spec: ContainerSpec, network: str | None) -> dict:
     }
 
 
+def _toolbox_kwargs(image: str, network: str | None, engagement_id: str) -> dict:
+    """툴박스(보안 도구) 컨테이너 create kwargs — idle 로 띄워 두고 명령마다 exec_run 한다.
+
+    보안 도구가 돌지만 같은 중첩 컨테이너 강제 가드(privileged=False, cap_drop ALL, 비root,
+    no-new-privileges, 리소스 상한)를 그대로 적용한다. HOME/workdir 는 tmpfs 라 쓰기 가능.
+    순수 함수(테스트 대상).
+    """
+    return {
+        "image": image,
+        "command": ["sleep", "infinity"],          # idle — 명령은 exec_run 으로 주입
+        "environment": {"HOME": "/tmp"},
+        "network": network,
+        "privileged": False,
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "user": "1000:1000",
+        "read_only": True,
+        "tmpfs": {"/tmp": "size=512m"},
+        "working_dir": "/tmp",
+        "mem_limit": "2g",
+        "memswap_limit": "2g",
+        "nano_cpus": 2_000_000_000,
+        "pids_limit": 512,
+        "network_disabled": False,
+        "detach": True,
+        "labels": {"neosdl.sandbox": "1", "neosdl.engagement": engagement_id,
+                   "neosdl.role": "toolbox"},
+    }
+
+
 class DindRunner:
     """SandboxRunner 구현. 설정의 dind host/cert 로 접속."""
 
@@ -134,6 +164,34 @@ class DindRunner:
             except OSError:
                 _t.sleep(1)
         raise TimeoutError("app not ready")
+
+    def start_toolbox(self, engagement_id: str, *, network: str | None = None, image: str | None = None):
+        """보안 도구 툴박스 컨테이너를 idle 로 기동하고 container 반환(명령은 exec_toolbox 로).
+
+        image 기본은 설정 sandbox_toolbox_image. network 는 표적에 닿는 네트워크(로컬 검증은 표적
+        컨테이너와 같은 internal 네트워크를 넘겨 egress 없이 contained 표적만 때린다).
+        """
+        d = self._docker()
+        img = image or settings().sandbox_toolbox_image
+        c = d.containers.create(**_toolbox_kwargs(img, network, engagement_id))
+        c.start()
+        return c
+
+    def exec_toolbox(self, container, argv: list[str], *, timeout_s: int = 120) -> RunResult:
+        """idle 툴박스 안에서 argv 를 실행하고 출력 캡처. 컨테이너 내 `timeout` 으로 하드 타임아웃.
+
+        argv 는 이미 검증된 명령(app.toolbox.validate_command 통과분)이어야 한다 — 여기서는 셸을
+        거치지 않고 exec_run 으로 바로 실행한다(셸 주입 표면 없음).
+        """
+        wrapped = ["timeout", "--signal=KILL", str(timeout_s), *argv]
+        try:
+            res = container.exec_run(wrapped, demux=False, workdir="/tmp", environment={"HOME": "/tmp"})
+        except Exception as exc:
+            return RunResult(exit_code=-1, logs=f"exec 실패: {exc}")
+        out = res.output.decode("utf-8", "replace") if isinstance(res.output, (bytes, bytearray)) else str(res.output)
+        # timeout 바이너리는 타임아웃 시 124(또는 137=KILL) 로 끝낸다.
+        return RunResult(exit_code=int(res.exit_code or 0), logs=out,
+                         timed_out=res.exit_code in (124, 137))
 
     def container_logs(self, container) -> str:
         try:

@@ -644,6 +644,34 @@ export async function createFixPr(findingId) {
   return res.json();
 }
 
+// ---------------------------------------------------------------- engagements (자율 보안 검증 run)
+export async function fetchEngagements(projectId) {
+  const res = await apiFetch(`/projects/${projectId}/engagements`);
+  if (!res.ok) throw new Error(`GET engagements failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createEngagement(projectId, body) {
+  const res = await apiFetch(`/projects/${projectId}/engagements`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `create engagement failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchEngagement(engagementId) {
+  const res = await apiFetch(`/engagements/${engagementId}`);
+  if (!res.ok) throw new Error(`GET engagement failed: ${res.status}`);
+  return res.json();
+}
+
+// engagement 진행 상태를 실시간으로 받는 읽기 전용 소켓 — app/engagements.py.
+export function engagementSocketUrl(engagementId) {
+  return `${API_BASE.replace(/^http/, "ws")}/api/ws/engagements/${engagementId}`;
+}
+
 // ---------------------------------------------------------------- workspaces
 export async function fetchWorkspaces() {
   const res = await apiFetch("/workspaces");

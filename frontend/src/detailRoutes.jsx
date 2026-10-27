@@ -17,6 +17,8 @@ import RiskListPage from "./pages/RiskListPage";
 import RiskLifecyclePage from "./pages/RiskLifecyclePage";
 import SecurityWhitelistPage from "./pages/SecurityWhitelistPage";
 import SecurityAiSettingsPage from "./pages/SecurityAiSettingsPage";
+import EngagementListPage from "./pages/EngagementListPage";
+import EngagementDetailPage from "./pages/EngagementDetailPage";
 
 // 상세보기(Overview/Repository/Releases/Security)의 하위 라우트 목록.
 // 각 상세보기 패널은 이 목록을 자기만의 MemoryRouter 안에서 렌더한다 —
@@ -46,6 +48,8 @@ export function detailChildRoutes() {
       <Route path="security/risks/:fingerprint" element={<RiskLifecyclePage />} />
       <Route path="security/risk-history" element={<SecurityRiskHistoryPage />} />
       <Route path="security/whitelist" element={<SecurityWhitelistPage />} />
+      <Route path="security/engagements" element={<EngagementListPage />} />
+      <Route path="security/engagements/:engagementId" element={<EngagementDetailPage />} />
       <Route path="security/ai" element={<SecurityAiSettingsPage />} />
     </>
   );

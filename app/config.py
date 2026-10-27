@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     # privileged dind = 호스트 root 이므로 fail-closed: 비어 있으면 아무 레포도 실행 못 한다.
     # 외부/고객 레포는 Phase 2.5 격리 경계(KVM VM) 전까지 여기 넣지 않는다 — 자사·검증 레포만.
     sandbox_repo_allowlist: str = ""
+    # --- PentAGI 흡수: 보안 도구 실행(terminal) ---
+    # 보안 도구(nmap/sqlmap/...) 20+ 가 내장된 툴박스 이미지. 자체 curated slim 으로 교체 가능.
+    sandbox_toolbox_image: str = "vxcontrol/kali-linux"
+    # 공격 도구를 쏴도 되는 "인가된 표적"(host 또는 host:port) allowlist. fail-closed: 비면 아무 표적도 불가.
+    # 법적 권한이 있는 사내 표적만. 외부/고객 표적은 Phase 2.5 격리 경계 전까지 넣지 않는다.
+    sandbox_target_allowlist: str = ""
 
     # --- LLM 실행 추적(Langfuse, 자체호스팅, 개발 전용) ---
     # 둘 다 비어 있으면 app/observability.py 전체가 no-op(fail-open) — 앱 동작 무영향.
@@ -144,6 +150,11 @@ class Settings(BaseSettings):
     def sandbox_repo_allowlist_set(self) -> set[str]:
         """샌드박스 실행 허용 저장소("namespace/name") 집합. 비면 아무것도 허용 안 함(fail-closed)."""
         return {r.strip() for r in self.sandbox_repo_allowlist.split(",") if r.strip()}
+
+    @property
+    def sandbox_target_allowlist_set(self) -> set[str]:
+        """공격 도구 실행이 인가된 표적(host 또는 host:port) 집합. 비면 아무 표적도 불가(fail-closed)."""
+        return {t.strip().lower() for t in self.sandbox_target_allowlist.split(",") if t.strip()}
 
 
 @lru_cache
