@@ -181,10 +181,12 @@ def test_toolbox_container_enforces_security_defaults():
     from worker.sandbox.dind import _toolbox_kwargs
 
     kw = _toolbox_kwargs("vxcontrol/kali-linux", "neosdl-sbx-net-x", "eng1")
-    assert kw["privileged"] is False
+    assert kw["privileged"] is False                   # privileged 는 절대 아님
     assert kw["cap_drop"] == ["ALL"]
-    assert kw["security_opt"] == ["no-new-privileges:true"]
-    assert kw["user"] == "1000:1000"
+    # 네트워크 도구용 cap 만 추가(fscap 바이너리 실행). no-new-privileges 는 툴박스에서 해제.
+    assert "NET_RAW" in kw["cap_add"] and "NET_ADMIN" in kw["cap_add"]
+    assert "security_opt" not in kw
+    assert kw["user"] == "1000:1000"                   # 기본 비root
     assert kw["read_only"] is True and kw["pids_limit"] == 512
     assert kw["command"] == ["sleep", "infinity"]      # idle — 명령은 exec_run
     assert kw["labels"]["neosdl.role"] == "toolbox"

@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     # 공격 도구를 쏴도 되는 "인가된 표적"(host 또는 host:port) allowlist. fail-closed: 비면 아무 표적도 불가.
     # 법적 권한이 있는 사내 표적만. 외부/고객 표적은 Phase 2.5 격리 경계 전까지 넣지 않는다.
     sandbox_target_allowlist: str = ""
+    # 툴박스 컨테이너에 부여할 capability — 보안 도구(nmap 등)는 raw 소켓 등 네트워크 권한이 필요하다.
+    # cap_drop=ALL 위에 이것만 cap_add 한다. no-new-privileges 는 툴박스에서만 해제(fscap 바이너리 실행용).
+    # 대상 앱 컨테이너(화이트박스 boot)는 이 완화와 무관하게 완전 하드닝 유지.
+    sandbox_toolbox_caps: str = "NET_RAW,NET_ADMIN,NET_BIND_SERVICE"
+    sandbox_toolbox_user: str = "1000:1000"   # 비root. 이미지가 root 를 요구하면 빈 문자열로(이미지 기본).
 
     # --- LLM 실행 추적(Langfuse, 자체호스팅, 개발 전용) ---
     # 둘 다 비어 있으면 app/observability.py 전체가 no-op(fail-open) — 앱 동작 무영향.
@@ -155,6 +160,11 @@ class Settings(BaseSettings):
     def sandbox_target_allowlist_set(self) -> set[str]:
         """공격 도구 실행이 인가된 표적(host 또는 host:port) 집합. 비면 아무 표적도 불가(fail-closed)."""
         return {t.strip().lower() for t in self.sandbox_target_allowlist.split(",") if t.strip()}
+
+    @property
+    def sandbox_toolbox_cap_list(self) -> list[str]:
+        """툴박스에 cap_add 할 capability 목록(쉼표 구분)."""
+        return [c.strip().upper() for c in self.sandbox_toolbox_caps.split(",") if c.strip()]
 
 
 @lru_cache

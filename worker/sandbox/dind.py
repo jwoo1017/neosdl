@@ -45,19 +45,23 @@ def _container_kwargs(spec: ContainerSpec, network: str | None) -> dict:
 def _toolbox_kwargs(image: str, network: str | None, engagement_id: str) -> dict:
     """툴박스(보안 도구) 컨테이너 create kwargs — idle 로 띄워 두고 명령마다 exec_run 한다.
 
-    보안 도구가 돌지만 같은 중첩 컨테이너 강제 가드(privileged=False, cap_drop ALL, 비root,
-    no-new-privileges, 리소스 상한)를 그대로 적용한다. HOME/workdir 는 tmpfs 라 쓰기 가능.
+    보안 도구(nmap 등)는 raw 소켓 등 네트워크 권한이 필요하고, Kali 류 이미지는 바이너리에
+    file capability 가 박혀 있어 no-new-privileges 하에선 execve 가 EPERM 으로 막힌다. 그래서
+    툴박스에서만: cap_drop=ALL 위에 설정된 net cap 만 cap_add 하고 no-new-privileges 는 해제한다.
+    나머지 가드(privileged=False, 비root 기본, 바인드마운트 없음, read_only+tmpfs, 리소스 상한,
+    네트워크 스코프)는 유지. **대상 앱 컨테이너(_container_kwargs)는 이 완화와 무관하게 완전 하드닝.**
     순수 함수(테스트 대상).
     """
-    return {
+    cfg = settings()
+    kw = {
         "image": image,
         "command": ["sleep", "infinity"],          # idle — 명령은 exec_run 으로 주입
         "environment": {"HOME": "/tmp"},
         "network": network,
-        "privileged": False,
+        "privileged": False,                        # 절대 True 안 됨(완화해도 privileged 는 아님)
         "cap_drop": ["ALL"],
-        "security_opt": ["no-new-privileges:true"],
-        "user": "1000:1000",
+        "cap_add": cfg.sandbox_toolbox_cap_list,    # 네트워크 도구에 필요한 cap 만(NET_RAW/NET_ADMIN/…)
+        # no-new-privileges 는 툴박스에서 설정하지 않는다(fscap 바이너리 실행 허용).
         "read_only": True,
         "tmpfs": {"/tmp": "size=512m"},
         "working_dir": "/tmp",
@@ -70,6 +74,9 @@ def _toolbox_kwargs(image: str, network: str | None, engagement_id: str) -> dict
         "labels": {"neosdl.sandbox": "1", "neosdl.engagement": engagement_id,
                    "neosdl.role": "toolbox"},
     }
+    if cfg.sandbox_toolbox_user:                    # 비면 이미지 기본 사용자(root) — Kali 가 root 요구 시
+        kw["user"] = cfg.sandbox_toolbox_user
+    return kw
 
 
 class DindRunner:

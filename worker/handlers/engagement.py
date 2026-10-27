@@ -65,9 +65,13 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
     for i, h in enumerate(outcome.history):
         if "rejected" in h:
             lines.append(f"- [{i}] 거부({h['rejected']}): `{h['command']}`")
-        else:
-            r = h.get("result") or {}
-            lines.append(f"- [{i}] `{h['command']}` → ok={r.get('ok')} exit={r.get('exit_code')}")
+            continue
+        r = h.get("result") or {}
+        timed = " (타임아웃)" if r.get("timed_out") else ""
+        lines.append(f"- [{i}] `{h['command']}` → ok={r.get('ok')} exit={r.get('exit_code')}{timed}")
+        out = (r.get("output") or r.get("error") or "").strip()
+        if out:   # 명령 출력(마스킹됨) 또는 거부 사유 — 화면에서 원인이 바로 보이게 코드블록으로
+            lines += ["", "```", out[:4000], "```", ""]
     if outcome.findings:
         lines.append("\n## 발견")
         for f in outcome.findings:
