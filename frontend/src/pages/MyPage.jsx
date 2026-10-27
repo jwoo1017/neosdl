@@ -523,7 +523,7 @@ function DangerTab() {
       <div className="mp-danger-row">
         <div>
           <strong>내 계정 삭제</strong>
-          <p>혼자 관리자인 워크스페이스·팀스페이스·프로젝트가 있으면 먼저 권한을 넘겨야 합니다.</p>
+          <p>혼자 소유자인 워크스페이스·팀스페이스·프로젝트가 있으면 먼저 권한을 넘겨야 합니다.</p>
         </div>
         <button type="button" className="mp-btn mp-btn-danger" onClick={() => setOpen(true)}>계정 삭제</button>
       </div>

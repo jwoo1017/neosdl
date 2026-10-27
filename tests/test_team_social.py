@@ -51,7 +51,7 @@ def test_chat_messages_carry_author_profile_and_teamspace_role(db, api_users):
     msgs = bob.client.get(f"/api/projects/{project_id}/chat/sessions/{session['id']}/messages").json()
     by_text = {m["content"]: m for m in msgs}
     assert by_text["앨리스 질문"]["author"]["nickname"] == "alice"
-    assert by_text["앨리스 질문"]["author"]["role"] == "admin"      # 팀스페이스를 만든 사람
+    assert by_text["앨리스 질문"]["author"]["role"] == "owner"      # 팀스페이스를 만든 사람
     assert by_text["밥 질문"]["author"]["role"] == "member"
     assert by_text["밥 질문"]["author"]["name"] == "bob 실명"
     assert "avatar_url" in by_text["밥 질문"]["author"]
@@ -78,7 +78,7 @@ def test_presence_heartbeat_visibility_and_expiry(db, api_users):
 
     seen = bob.client.get(f"/api/teamspaces/{ts_id}/presence").json()
     assert [m["nickname"] for m in seen] == ["alice", "bob"]          # active 먼저
-    assert seen[0]["state"] == "active" and seen[0]["role"] == "admin"
+    assert seen[0]["state"] == "active" and seen[0]["role"] == "owner"
     assert seen[1]["state"] == "idle" and seen[1]["role"] == "member"
 
     # 비멤버는 조회도, 그 팀스페이스로 하트비트도 못 한다.

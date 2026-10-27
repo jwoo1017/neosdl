@@ -251,8 +251,8 @@ def test_withdraw_blocks_sole_admin_then_anonymizes(env, db):
     r = env.client.request("DELETE", "/api/me", json=body)
     assert r.status_code == 409 and r.json()["detail"]["items"][0]["kind"] == "workspace"
 
-    with db() as cur:   # 다른 멤버를 admin 으로 올리면 탈퇴 가능
-        cur.execute("UPDATE workspace_member SET role='admin' WHERE workspace_id=%s AND member_id=%s",
+    with db() as cur:   # 다른 멤버를 owner 로 올리면 탈퇴 가능
+        cur.execute("UPDATE workspace_member SET role='owner' WHERE workspace_id=%s AND member_id=%s",
                     (ws_id, other_id))
     assert env.client.request("DELETE", "/api/me", json={**body, "confirm": "틀림"}).status_code == 400
     assert env.client.request("DELETE", "/api/me", json=body).status_code == 204

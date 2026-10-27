@@ -7,10 +7,10 @@
   closed  — workspace 멤버 누구나 열람 가능하지만 가입은 초대로만("참가 제한")
   private — teamspace_member가 아니면 존재 자체가 안 보임
 
-teamspace_member 역할은 workspace처럼 admin/member 2단계 고정이다 —
+teamspace_member 역할은 workspace처럼 owner/admin/member 3단계 고정이다(sql/039) —
 project 단위 세부 권한은 지금처럼 project_member가 계속 담당하고,
-teamspace admin/member는 "teamspace 자체(이름·설명·공개범위·멤버)를
-관리할 수 있는지"만 가른다. 실제 project 접근 판정은
+teamspace 역할은 "teamspace 자체(이름·설명·공개범위·멤버)를
+관리할 수 있는지"만 가른다(삭제·admin 관리는 owner, 나머지 관리는 admin 이상). 실제 project 접근 판정은
 app.auth._effective_project_role이 담당한다.
 """
 
@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from app import audit, profiles
 from app.signup_policy import OptionalEmail
 from app.auth import (
+    assert_can_manage_member,
     assert_not_self_invite,
     assert_teamspace_role,
     assert_workspace_role,
@@ -36,11 +37,13 @@ from app.auth import (
 from app.config import settings
 from app.db import tx
 from app.mailer import invite_email_html, send_mail
+from app.workspaces import KEEP_HIGHER_ROLE_SQL, ROLE_ORDER_SQL
 
 router = APIRouter(tags=["teamspaces"])
 
 _VISIBILITY_PATTERN = "^(open|closed|private)$"
-_ROLE_PATTERN = "^(admin|member)$"
+_ROLE_PATTERN = "^(admin|member)$"              # 초대로 줄 수 있는 역할
+_ASSIGNABLE_ROLE_PATTERN = "^(owner|admin|member)$"   # 역할 변경(owner 지정은 owner만)
 
 
 class TeamspaceIn(BaseModel):
@@ -50,7 +53,7 @@ class TeamspaceIn(BaseModel):
 
 
 class TeamspaceMemberRoleIn(BaseModel):
-    role: str = Field(pattern=_ROLE_PATTERN)
+    role: str = Field(pattern=_ASSIGNABLE_ROLE_PATTERN)
 
 
 _DISCIPLINE_PATTERN = "^(pm|frontend|backend)$"
@@ -83,13 +86,13 @@ def create_teamspace(workspace_id: UUID, body: TeamspaceIn, member: dict = Depen
         )
         teamspace = cur.fetchone()
         cur.execute(
-            "INSERT INTO teamspace_member (teamspace_id, member_id, role) VALUES (%s, %s, 'admin')",
+            "INSERT INTO teamspace_member (teamspace_id, member_id, role) VALUES (%s, %s, 'owner')",
             (teamspace["id"], member["id"]),
         )
         audit.record(cur, actor=actor, action="teamspace.create",
                      subject={"workspace_id": str(workspace_id), "teamspace_id": str(teamspace["id"])},
                      payload={"name": body.name, "visibility": body.visibility})
-    return {**teamspace, "role": "admin"}
+    return {**teamspace, "role": "owner"}
 
 
 def _assert_not_personal(cur, teamspace_id) -> None:
@@ -125,11 +128,11 @@ def get_personal_space(workspace_id: UUID, member: dict = Depends(get_current_me
         )
         created = cur.fetchone()
         if created is not None:
-            cur.execute("INSERT INTO teamspace_member (teamspace_id, member_id, role) VALUES (%s, %s, 'admin')",
+            cur.execute("INSERT INTO teamspace_member (teamspace_id, member_id, role) VALUES (%s, %s, 'owner')",
                         (str(created["id"]), member["id"]))
         cur.execute(
             """
-            SELECT ts.id, ts.name, ts.description, ts.visibility, ts.created_at, 'admin' AS my_role,
+            SELECT ts.id, ts.name, ts.description, ts.visibility, ts.created_at, 'owner' AS my_role,
                    true AS personal,
                    (SELECT count(*) FROM project p WHERE p.teamspace_id = ts.id AND p.deleted_at IS NULL)
                      AS project_count
@@ -199,7 +202,7 @@ def get_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_member)
               FROM teamspace_member tm
               JOIN member m ON m.id = tm.member_id
              WHERE tm.teamspace_id = %s
-             ORDER BY tm.role DESC, m.nickname
+             ORDER BY """ + ROLE_ORDER_SQL.format(col="tm.role") + """, m.nickname
             """,
             (str(teamspace_id),),
         )
@@ -236,7 +239,7 @@ def delete_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_memb
     actor = f"user:{member['nickname']}"
     with tx() as cur:
         _assert_not_personal(cur, teamspace_id)
-        assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
+        assert_teamspace_role(cur, teamspace_id, member["id"], "owner")
         cur.execute(
             "UPDATE teamspace SET deleted_at=now(), updated_at=now() WHERE id=%s AND deleted_at IS NULL",
             (str(teamspace_id),),
@@ -248,15 +251,15 @@ def delete_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_memb
         audit.record(cur, actor=actor, action="teamspace.delete", subject={"teamspace_id": str(teamspace_id)})
 
 
-def _guard_last_teamspace_admin(cur, teamspace_id: UUID, target_member_id, current_role: str) -> None:
-    if current_role != "admin":
+def _guard_last_teamspace_owner(cur, teamspace_id: UUID, target_member_id, current_role: str) -> None:
+    if current_role != "owner":
         return
     cur.execute(
-        "SELECT count(*) AS n FROM teamspace_member WHERE teamspace_id=%s AND role='admin' AND member_id<>%s",
+        "SELECT count(*) AS n FROM teamspace_member WHERE teamspace_id=%s AND role='owner' AND member_id<>%s",
         (str(teamspace_id), str(target_member_id)),
     )
     if cur.fetchone()["n"] == 0:
-        raise HTTPException(409, "teamspace must keep at least one admin — promote someone else first")
+        raise HTTPException(409, "last_owner")
 
 
 @router.patch("/teamspaces/{teamspace_id}/members/{target_member_id}")
@@ -265,7 +268,7 @@ def update_teamspace_member_role(teamspace_id: UUID, target_member_id: UUID, bod
     actor = f"user:{member['nickname']}"
     with tx() as cur:
         _assert_not_personal(cur, teamspace_id)
-        assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
+        actor_role = assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             "SELECT role FROM teamspace_member WHERE teamspace_id=%s AND member_id=%s",
             (str(teamspace_id), str(target_member_id)),
@@ -274,7 +277,8 @@ def update_teamspace_member_role(teamspace_id: UUID, target_member_id: UUID, bod
         if current is None:
             raise HTTPException(404, "teamspace member not found")
         if current["role"] != body.role:
-            _guard_last_teamspace_admin(cur, teamspace_id, target_member_id, current["role"])
+            assert_can_manage_member(actor_role, current["role"], body.role)
+            _guard_last_teamspace_owner(cur, teamspace_id, target_member_id, current["role"])
         cur.execute(
             "UPDATE teamspace_member SET role=%s WHERE teamspace_id=%s AND member_id=%s",
             (body.role, str(teamspace_id), str(target_member_id)),
@@ -312,9 +316,11 @@ def update_teamspace_member_discipline(teamspace_id: UUID, target_member_id: UUI
 @router.delete("/teamspaces/{teamspace_id}/members/{target_member_id}", status_code=204)
 def remove_teamspace_member(teamspace_id: UUID, target_member_id: UUID, member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
+    if str(target_member_id) == str(member["id"]):
+        raise HTTPException(400, "use_leave_endpoint")   # 본인은 '나가기'(POST /leave)로
     with tx() as cur:
         _assert_not_personal(cur, teamspace_id)
-        assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
+        actor_role = assert_teamspace_role(cur, teamspace_id, member["id"], "admin")
         cur.execute(
             "SELECT role FROM teamspace_member WHERE teamspace_id=%s AND member_id=%s",
             (str(teamspace_id), str(target_member_id)),
@@ -322,7 +328,8 @@ def remove_teamspace_member(teamspace_id: UUID, target_member_id: UUID, member: 
         current = cur.fetchone()
         if current is None:
             raise HTTPException(404, "teamspace member not found")
-        _guard_last_teamspace_admin(cur, teamspace_id, target_member_id, current["role"])
+        assert_can_manage_member(actor_role, current["role"])
+        _guard_last_teamspace_owner(cur, teamspace_id, target_member_id, current["role"])
         cur.execute("DELETE FROM teamspace_member WHERE teamspace_id=%s AND member_id=%s",
                      (str(teamspace_id), str(target_member_id)))
         audit.record(cur, actor=actor, action="teamspace.member_remove",
@@ -341,7 +348,7 @@ def leave_teamspace(teamspace_id: UUID, member: dict = Depends(get_current_membe
         current = cur.fetchone()
         if current is None:
             raise HTTPException(404, "not a member of this teamspace")
-        _guard_last_teamspace_admin(cur, teamspace_id, member["id"], current["role"])
+        _guard_last_teamspace_owner(cur, teamspace_id, member["id"], current["role"])
         cur.execute("DELETE FROM teamspace_member WHERE teamspace_id=%s AND member_id=%s",
                      (str(teamspace_id), member["id"]))
         audit.record(cur, actor=actor, action="teamspace.member_leave", subject={"teamspace_id": str(teamspace_id)})
@@ -573,7 +580,8 @@ def apply_teamspace_invite_accept(cur, invite: dict, member: dict) -> dict:
         """
         INSERT INTO teamspace_member (teamspace_id, member_id, role, invited_by, discipline)
         VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (teamspace_id, member_id) DO UPDATE SET role = EXCLUDED.role, discipline = EXCLUDED.discipline
+        ON CONFLICT (teamspace_id, member_id) DO UPDATE SET role = """ + KEEP_HIGHER_ROLE_SQL.format(
+            tbl="teamspace_member") + """, discipline = EXCLUDED.discipline
         """,
         (str(invite["teamspace_id"]), member["id"], invite["role"], invite["created_by"], invite["discipline"]),
     )

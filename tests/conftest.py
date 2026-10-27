@@ -187,7 +187,7 @@ def api_users(db, monkeypatch):
 
 
 def disable_last_admin_triggers(cur) -> None:
-    """테스트 정리용 — 마지막 admin/owner 보호 트리거만 이 트랜잭션 동안 끈다(로컬 슈퍼유저).
+    """테스트 정리용 — 마지막 owner 보호 트리거만 이 트랜잭션 동안 끈다(로컬 슈퍼유저).
 
     session_replication_role=replica 는 FK CASCADE(이것도 트리거)까지 꺼서 고아 행이 남으므로 쓰지 않는다.
     ALTER TABLE 은 트랜잭션 안이라 커밋/롤백과 함께 원상복구된다.

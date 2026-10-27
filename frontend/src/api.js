@@ -25,6 +25,13 @@ async function apiFetch(path, options = {}) {
   return res;
 }
 
+// 실패 응답의 detail(에러 코드)을 Error 에 실어 던진다 — 화면이 spaceRoles.describeSpaceError 로 문구를 고른다.
+async function throwWithDetail(res, fallback) {
+  const raw = (await res.json().catch(() => ({}))).detail;
+  const detail = typeof raw === "string" ? raw : null;
+  throw Object.assign(new Error(detail || `${fallback} failed: ${res.status}`), { status: res.status, detail });
+}
+
 export async function fetchConfig() {
   const res = await fetch(`${API_BASE}/config`);
   if (!res.ok) throw new Error(`GET /config failed: ${res.status}`);
@@ -707,7 +714,7 @@ export async function updateWorkspace(workspaceId, name) {
 
 export async function deleteWorkspace(workspaceId) {
   const res = await apiFetch(`/workspaces/${workspaceId}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`DELETE /workspaces/${workspaceId} failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `DELETE /workspaces/${workspaceId}`);
 }
 
 export async function updateWorkspaceMemberRole(workspaceId, memberId, role) {
@@ -716,18 +723,18 @@ export async function updateWorkspaceMemberRole(workspaceId, memberId, role) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ role }),
   });
-  if (!res.ok) throw new Error(`PATCH /workspaces/${workspaceId}/members/${memberId} failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `PATCH /workspaces/${workspaceId}/members/${memberId}`);
   return res.json();
 }
 
 export async function removeWorkspaceMember(workspaceId, memberId) {
   const res = await apiFetch(`/workspaces/${workspaceId}/members/${memberId}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`DELETE /workspaces/${workspaceId}/members/${memberId} failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `DELETE /workspaces/${workspaceId}/members/${memberId}`);
 }
 
 export async function leaveWorkspace(workspaceId) {
   const res = await apiFetch(`/workspaces/${workspaceId}/leave`, { method: "POST" });
-  if (!res.ok) throw new Error(`POST /workspaces/${workspaceId}/leave failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `POST /workspaces/${workspaceId}/leave`);
 }
 
 export async function createWorkspaceInvite(workspaceId, role, targetEmail) {
@@ -813,7 +820,7 @@ export async function updateTeamspace(teamspaceId, name, { description, visibili
 
 export async function deleteTeamspace(teamspaceId) {
   const res = await apiFetch(`/teamspaces/${teamspaceId}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`DELETE /teamspaces/${teamspaceId} failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `DELETE /teamspaces/${teamspaceId}`);
 }
 
 export async function joinTeamspace(teamspaceId) {
@@ -828,7 +835,7 @@ export async function updateTeamspaceMemberRole(teamspaceId, memberId, role) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ role }),
   });
-  if (!res.ok) throw new Error(`PATCH /teamspaces/${teamspaceId}/members/${memberId} failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `PATCH /teamspaces/${teamspaceId}/members/${memberId}`);
   return res.json();
 }
 
@@ -846,12 +853,12 @@ export async function updateTeamspaceMemberDiscipline(teamspaceId, memberId, dis
 
 export async function removeTeamspaceMember(teamspaceId, memberId) {
   const res = await apiFetch(`/teamspaces/${teamspaceId}/members/${memberId}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`DELETE /teamspaces/${teamspaceId}/members/${memberId} failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `DELETE /teamspaces/${teamspaceId}/members/${memberId}`);
 }
 
 export async function leaveTeamspace(teamspaceId) {
   const res = await apiFetch(`/teamspaces/${teamspaceId}/leave`, { method: "POST" });
-  if (!res.ok) throw new Error(`POST /teamspaces/${teamspaceId}/leave failed: ${res.status}`);
+  if (!res.ok) await throwWithDetail(res, `POST /teamspaces/${teamspaceId}/leave`);
 }
 
 export async function createTeamspaceInvite(teamspaceId, role, targetEmail, discipline) {

@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { fetchWorkspaces } from "./api";
+import { isSpaceAdmin, SPACE_ROLE_RANK as WORKSPACE_ROLE_RANK } from "./spaceRoles";
 
 const WorkspaceContext = createContext(null);
 
 const ACTIVE_WORKSPACE_KEY = "neosdl_active_workspace_id";
-const WORKSPACE_ROLE_RANK = { member: 0, admin: 1 };
 
 export function WorkspaceProvider({ children }) {
   const [workspaces, setWorkspaces] = useState(null); // null = 로딩 중, [] = 워크스페이스 없음
@@ -49,7 +49,8 @@ export function WorkspaceProvider({ children }) {
       activeWorkspaceId,
       setActiveWorkspaceId,
       reload,
-      isWorkspaceAdmin: activeWorkspace?.role === "admin",
+      isWorkspaceAdmin: isSpaceAdmin(activeWorkspace?.role),
+      isWorkspaceOwner: activeWorkspace?.role === "owner",
       hasWorkspaceRole,
     }),
     [workspaces, activeWorkspace, activeWorkspaceId, reload, hasWorkspaceRole]

@@ -1,8 +1,8 @@
 """Workspace API — member(서비스 계정)의 최상위 소속 단위.
 
 Workspace는 팀 모델과 달리 가입 시 자동 생성되지 않는다 — 로그인한 회원이
-직접 만든다. 역할은 admin/member 2단계 고정이라 커스텀 역할 편집 API는
-없다.
+직접 만든다. 역할은 owner/admin/member 3단계 고정이라 커스텀 역할 편집 API는
+없다(정책은 sql/039, 권한 판정은 app.auth.assert_can_manage_member).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from app import audit, profiles
 from app import signup_policy
 from app.signup_policy import OptionalEmail
 from app.auth import (
+    assert_can_manage_member,
     assert_not_self_invite,
     assert_workspace_role,
     get_current_member,
@@ -45,7 +46,7 @@ class WorkspaceInviteIn(BaseModel):
 
 
 class WorkspaceMemberRoleIn(BaseModel):
-    role: str = Field(pattern="^(admin|member)$")
+    role: str = Field(pattern="^(owner|admin|member)$")   # owner 지정은 owner만(초대로는 줄 수 없다)
 
 
 @router.post("/workspaces", status_code=201)
@@ -62,12 +63,12 @@ def create_workspace(body: WorkspaceIn, member: dict = Depends(get_current_membe
         )
         workspace = cur.fetchone()
         cur.execute(
-            "INSERT INTO workspace_member (workspace_id, member_id, role) VALUES (%s, %s, 'admin')",
+            "INSERT INTO workspace_member (workspace_id, member_id, role) VALUES (%s, %s, 'owner')",
             (workspace["id"], member["id"]),
         )
         audit.record(cur, actor=actor, action="workspace.create",
                      subject={"workspace_id": str(workspace["id"])}, payload={"name": body.name})
-    return {**workspace, "role": "admin"}
+    return {**workspace, "role": "owner"}
 
 
 @router.get("/workspaces")
@@ -98,7 +99,7 @@ def get_workspace(workspace_id: UUID, member: dict = Depends(get_current_member)
               FROM workspace_member wm
               JOIN member m ON m.id = wm.member_id
              WHERE wm.workspace_id = %s
-             ORDER BY wm.role DESC, m.nickname
+             ORDER BY """ + ROLE_ORDER_SQL.format(col="wm.role") + """, m.nickname
             """,
             (str(workspace_id),),
         )
@@ -136,7 +137,7 @@ def delete_workspace(workspace_id: UUID, member: dict = Depends(get_current_memb
     """
     actor = f"user:{member['nickname']}"
     with tx() as cur:
-        assert_workspace_role(cur, workspace_id, member["id"], "admin")
+        assert_workspace_role(cur, workspace_id, member["id"], "owner")
         cur.execute(
             "UPDATE workspace SET deleted_at=now(), updated_at=now() WHERE id=%s AND deleted_at IS NULL",
             (str(workspace_id),),
@@ -152,15 +153,21 @@ def delete_workspace(workspace_id: UUID, member: dict = Depends(get_current_memb
         audit.record(cur, actor=actor, action="workspace.delete", subject={"workspace_id": str(workspace_id)})
 
 
-def _guard_last_admin(cur, workspace_id: UUID, target_member_id, current_role: str) -> None:
-    if current_role != "admin":
+# 목록 정렬: owner → admin → member (enum 선언 순서가 admin, member, owner 라 role DESC 로는 안 된다).
+ROLE_ORDER_SQL = "CASE {col} WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END"
+
+
+def _guard_last_owner(cur, workspace_id: UUID, target_member_id, current_role: str) -> None:
+    """owner 가 빠지거나 강등되면 남는 owner 가 있어야 한다(sql/039 트리거와 같은 규칙 — 여기서
+    먼저 막아 500 대신 409 로 돌려준다)."""
+    if current_role != "owner":
         return
     cur.execute(
-        "SELECT count(*) AS n FROM workspace_member WHERE workspace_id=%s AND role='admin' AND member_id<>%s",
+        "SELECT count(*) AS n FROM workspace_member WHERE workspace_id=%s AND role='owner' AND member_id<>%s",
         (str(workspace_id), str(target_member_id)),
     )
     if cur.fetchone()["n"] == 0:
-        raise HTTPException(409, "workspace must keep at least one admin — promote someone else first")
+        raise HTTPException(409, "last_owner")
 
 
 @router.patch("/workspaces/{workspace_id}/members/{target_member_id}")
@@ -168,7 +175,7 @@ def update_workspace_member_role(workspace_id: UUID, target_member_id: UUID, bod
                                   member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
     with tx() as cur:
-        assert_workspace_role(cur, workspace_id, member["id"], "admin")
+        actor_role = assert_workspace_role(cur, workspace_id, member["id"], "admin")
         cur.execute(
             "SELECT role FROM workspace_member WHERE workspace_id=%s AND member_id=%s",
             (str(workspace_id), str(target_member_id)),
@@ -177,7 +184,8 @@ def update_workspace_member_role(workspace_id: UUID, target_member_id: UUID, bod
         if current is None:
             raise HTTPException(404, "workspace member not found")
         if current["role"] != body.role:
-            _guard_last_admin(cur, workspace_id, target_member_id, current["role"])
+            assert_can_manage_member(actor_role, current["role"], body.role)
+            _guard_last_owner(cur, workspace_id, target_member_id, current["role"])
         cur.execute(
             "UPDATE workspace_member SET role=%s WHERE workspace_id=%s AND member_id=%s",
             (body.role, str(workspace_id), str(target_member_id)),
@@ -191,8 +199,10 @@ def update_workspace_member_role(workspace_id: UUID, target_member_id: UUID, bod
 @router.delete("/workspaces/{workspace_id}/members/{target_member_id}", status_code=204)
 def remove_workspace_member(workspace_id: UUID, target_member_id: UUID, member: dict = Depends(get_current_member)):
     actor = f"user:{member['nickname']}"
+    if str(target_member_id) == str(member["id"]):
+        raise HTTPException(400, "use_leave_endpoint")   # 본인은 '나가기'(POST /leave)로
     with tx() as cur:
-        assert_workspace_role(cur, workspace_id, member["id"], "admin")
+        actor_role = assert_workspace_role(cur, workspace_id, member["id"], "admin")
         cur.execute(
             "SELECT role FROM workspace_member WHERE workspace_id=%s AND member_id=%s",
             (str(workspace_id), str(target_member_id)),
@@ -200,7 +210,8 @@ def remove_workspace_member(workspace_id: UUID, target_member_id: UUID, member: 
         current = cur.fetchone()
         if current is None:
             raise HTTPException(404, "workspace member not found")
-        _guard_last_admin(cur, workspace_id, target_member_id, current["role"])
+        assert_can_manage_member(actor_role, current["role"])
+        _guard_last_owner(cur, workspace_id, target_member_id, current["role"])
         cur.execute("DELETE FROM workspace_member WHERE workspace_id=%s AND member_id=%s",
                      (str(workspace_id), str(target_member_id)))
         audit.record(cur, actor=actor, action="workspace.member_remove",
@@ -218,7 +229,7 @@ def leave_workspace(workspace_id: UUID, member: dict = Depends(get_current_membe
         current = cur.fetchone()
         if current is None:
             raise HTTPException(404, "not a member of this workspace")
-        _guard_last_admin(cur, workspace_id, member["id"], current["role"])
+        _guard_last_owner(cur, workspace_id, member["id"], current["role"])
         cur.execute("DELETE FROM workspace_member WHERE workspace_id=%s AND member_id=%s",
                      (str(workspace_id), member["id"]))
         audit.record(cur, actor=actor, action="workspace.member_leave", subject={"workspace_id": str(workspace_id)})
@@ -408,6 +419,11 @@ def preview_workspace_invite(token: str, member: dict | None = Depends(get_curre
             "target_email": invite["target_email"], "viewer_status": viewer_status}
 
 
+# 이미 소속된 사람이 초대를 수락해도 역할을 낮추지 않는다(owner 가 member 초대를 수락해 강등되는 일 방지).
+KEEP_HIGHER_ROLE_SQL = ("CASE WHEN " + ROLE_ORDER_SQL.format(col="{tbl}.role") + " <= "
+                        + ROLE_ORDER_SQL.format(col="EXCLUDED.role") + " THEN {tbl}.role ELSE EXCLUDED.role END")
+
+
 def apply_workspace_invite_accept(cur, invite: dict, member: dict) -> dict:
     """수락 로직 본체 — 토큰 경로(accept_workspace_invite)와 수신함 경로
 
@@ -420,7 +436,8 @@ def apply_workspace_invite_accept(cur, invite: dict, member: dict) -> dict:
         """
         INSERT INTO workspace_member (workspace_id, member_id, role, invited_by)
         VALUES (%s, %s, %s, %s)
-        ON CONFLICT (workspace_id, member_id) DO UPDATE SET role = EXCLUDED.role
+        ON CONFLICT (workspace_id, member_id) DO UPDATE SET role = """ + KEEP_HIGHER_ROLE_SQL.format(
+            tbl="workspace_member") + """
         """,
         (str(invite["workspace_id"]), member["id"], invite["role"], invite["created_by"]),
     )

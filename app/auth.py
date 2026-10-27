@@ -32,8 +32,9 @@ from app.db import tx
 SESSION_COOKIE = "neosdl_session"
 SESSION_TTL_SECONDS = 7 * 24 * 3600
 
-_WORKSPACE_ROLE_RANK = {"member": 0, "admin": 1}
-_TEAMSPACE_ROLE_RANK = {"member": 0, "admin": 1}
+# workspace/teamspace 공통 3단계(sql/039). owner 는 admin 이 요구되는 곳을 모두 통과한다.
+_WORKSPACE_ROLE_RANK = {"member": 0, "admin": 1, "owner": 2}
+_TEAMSPACE_ROLE_RANK = _WORKSPACE_ROLE_RANK
 _PROJECT_ROLE_RANK = {"viewer": 0, "developer": 1, "manager": 2, "owner": 3}
 
 
@@ -200,6 +201,18 @@ def assert_workspace_role(cur, workspace_id, member_id: str, min_role: str | Non
     if min_role and _WORKSPACE_ROLE_RANK[row["role"]] < _WORKSPACE_ROLE_RANK[min_role]:
         raise HTTPException(403, "insufficient workspace role")
     return row["role"]
+
+
+def assert_can_manage_member(actor_role: str, target_role: str, new_role: str | None = None) -> None:
+    """workspace/teamspace 멤버의 역할 변경·제거 권한(Notion·Slack 관례).
+
+    owner 는 누구든 관리한다. admin 은 member 만 다룰 수 있고 member→admin 승격까지만 —
+    admin/owner 를 강등·제거하거나 owner 를 지정하는 건 owner 몫이다.
+    """
+    if actor_role == "owner":
+        return
+    if actor_role != "admin" or target_role != "member" or new_role == "owner":
+        raise HTTPException(403, "owner_required")
 
 
 def assert_teamspace_role(cur, teamspace_id, member_id: str, min_role: str | None = None) -> str:

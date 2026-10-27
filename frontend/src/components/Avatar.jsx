@@ -5,7 +5,7 @@ import { ROLE_LABEL, STATUS_META } from "./avatarMeta";
 // 공용 프로필 아바타(SVG). 사진이 있으면 원형으로 자르고, 없거나 못 불러오면
 // 이름 첫 글자 + 사람마다 고정된 색(아이디 해시)으로 그린다.
 //  - status: "active" | "idle" | "offline" — 오른쪽 아래 상태 점
-//  - role:   "admin" | "member"             — 머리 위 역할 모자(RoleHatIcon)
+//  - role:   "owner" | "admin" | "member"   — 머리 위 역할 모자(RoleHatIcon)
 // profile 은 백엔드 app/profiles.py 의 공개 프로필 모양: {id, nickname, name, avatar_url}.
 
 const PALETTE = ["#2f9c8f", "#2563eb", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2", "#9333ea"];

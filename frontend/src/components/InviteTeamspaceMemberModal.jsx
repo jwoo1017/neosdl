@@ -42,8 +42,8 @@ export default function InviteTeamspaceMemberModal({ teamspaceId, onInvited, onC
             required
           />
           <select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="member">member</option>
-            <option value="admin">admin</option>
+            <option value="member">멤버</option>
+            <option value="admin">관리자</option>
           </select>
           {error && <div className="alert-error">{error}</div>}
           <button className="btn-primary auth-submit" type="submit" disabled={submitting}>

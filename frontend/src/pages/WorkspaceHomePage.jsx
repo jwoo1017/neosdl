@@ -6,6 +6,7 @@ import { useProject } from "../ProjectContext";
 import { useTabs } from "../TabsContext";
 import { pushRecentProject, removeRecentProject, removeRecentProjectsByWorkspace } from "../recentProjects";
 import { PROJECT_DRAG_MIME } from "../dragTypes";
+import { isSpaceAdmin, SPACE_ROLE_LABEL } from "../spaceRoles";
 import TrashIcon from "../icons/TrashIcon";
 import TagIcon from "../icons/TagIcon";
 import PersonIcon from "../icons/PersonIcon";
@@ -244,7 +245,7 @@ export default function WorkspaceHomePage() {
         <section className="dashboard-section">
           <div className="dashboard-section-header">
             <h2>멤버</h2>
-            {activeWorkspace?.role === "admin" && (
+            {isSpaceAdmin(activeWorkspace?.role) && (
               <button className="btn-primary" onClick={() => setShowInviteMember(true)}>
                 + 멤버 추가
               </button>
@@ -265,7 +266,7 @@ export default function WorkspaceHomePage() {
                   {members.map((m) => (
                     <tr key={m.member_id}>
                       <td>{m.nickname} {m.is_guest && <span className="guest-badge" title="회사 도메인 밖 계정 — 초대받은 공간만 이용">게스트</span>}</td>
-                      <td>{m.role}</td>
+                      <td>{SPACE_ROLE_LABEL[m.role] || m.role}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -273,7 +274,7 @@ export default function WorkspaceHomePage() {
             </div>
           )}
 
-          {activeWorkspace?.role === "admin" && (
+          {isSpaceAdmin(activeWorkspace?.role) && (
             <WorkspaceInviteList workspaceId={activeWorkspaceId} version={inviteListVersion} filter="pending" />
           )}
         </section>
@@ -288,8 +289,8 @@ export default function WorkspaceHomePage() {
               <button className="workspace-list-name" onClick={() => setActiveWorkspaceId(w.id)}>
                 {w.name}
               </button>
-              <span className="badge">{w.role}</span>
-              {w.role === "admin" && (
+              <span className="badge">{SPACE_ROLE_LABEL[w.role] || w.role}</span>
+              {w.role === "owner" && (
                 confirmDeleteWorkspace === w.id ? (
                   <button className="icon-btn icon-btn-danger" onClick={() => doDeleteWorkspace(w.id)} title="정말 삭제">
                     <TrashIcon />

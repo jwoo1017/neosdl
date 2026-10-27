@@ -1,9 +1,18 @@
+import { SPACE_ROLE_LABEL } from "../spaceRoles";
+
 // 팀스페이스 역할 배지 — 아바타 위에 모자처럼 얹는다(components/Avatar.jsx 의 role prop).
-//  admin  : 금색 왕관
+//  owner  : 금색 왕관
+//  admin  : 은색 왕관
 //  member : 청록 캡 모자
 // 색은 라이트/다크 테마 모두에서 아바타 위에 잘 보이도록 테두리(stroke)를 둔다.
+const CROWN = {
+  owner: { body: "#f5b70a", band: "#e09b00", line: "#8a5a00", side: "#ffe27a", gem: "#ff6b6b" },
+  admin: { body: "#c9d1d9", band: "#a8b3bd", line: "#56616b", side: "#eef2f5", gem: "#5b8def" },
+};
+
 export default function RoleHatIcon({ role, size = 16, className }) {
-  const label = role === "admin" ? "관리자" : "멤버";
+  const label = SPACE_ROLE_LABEL[role] || SPACE_ROLE_LABEL.member;
+  const crown = CROWN[role];
   return (
     <svg
       className={className}
@@ -14,20 +23,20 @@ export default function RoleHatIcon({ role, size = 16, className }) {
       aria-label={label}
     >
       <title>{label}</title>
-      {role === "admin" ? (
+      {crown ? (
         <g strokeLinejoin="round">
           {/* 왕관 몸통: 바닥 띠 + 세 개의 뾰족한 봉우리 */}
           <path
             d="M3 13 L2 4.5 L7.5 8.5 L12 2 L16.5 8.5 L22 4.5 L21 13 Z"
-            fill="#f5b70a"
-            stroke="#8a5a00"
+            fill={crown.body}
+            stroke={crown.line}
             strokeWidth="1.2"
           />
-          <rect x="3" y="12" width="18" height="3" rx="1" fill="#e09b00" stroke="#8a5a00" strokeWidth="1.2" />
+          <rect x="3" y="12" width="18" height="3" rx="1" fill={crown.band} stroke={crown.line} strokeWidth="1.2" />
           {/* 봉우리 끝 보석 */}
-          <circle cx="2" cy="4.5" r="1.4" fill="#ffe27a" stroke="#8a5a00" strokeWidth="0.8" />
-          <circle cx="12" cy="2" r="1.6" fill="#ff6b6b" stroke="#8a5a00" strokeWidth="0.8" />
-          <circle cx="22" cy="4.5" r="1.4" fill="#ffe27a" stroke="#8a5a00" strokeWidth="0.8" />
+          <circle cx="2" cy="4.5" r="1.4" fill={crown.side} stroke={crown.line} strokeWidth="0.8" />
+          <circle cx="12" cy="2" r="1.6" fill={crown.gem} stroke={crown.line} strokeWidth="0.8" />
+          <circle cx="22" cy="4.5" r="1.4" fill={crown.side} stroke={crown.line} strokeWidth="0.8" />
         </g>
       ) : (
         <g strokeLinejoin="round">

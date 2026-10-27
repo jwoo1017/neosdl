@@ -3,12 +3,15 @@ import {
   createTeamspaceInvite,
   deleteTeamspace,
   fetchTeamspace,
+  leaveTeamspace,
   removeTeamspaceMember,
   updateTeamspace,
   updateTeamspaceMemberDiscipline,
   updateTeamspaceMemberRole,
 } from "../api";
+import { useMe } from "../MeContext";
 import { useTeamspace } from "../TeamspaceContext";
+import { assignableRoles, canManageMember, describeSpaceError, isSpaceAdmin, SPACE_ROLE_LABEL } from "../spaceRoles";
 import { removeRecentProjectsByTeamspace } from "../recentProjects";
 import Avatar from "./Avatar";
 import Modal from "./Modal";
@@ -19,6 +22,7 @@ const DISCIPLINE_LABEL = { pm: "PM", frontend: "프론트엔드", backend: "백�
 
 export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
   const { reload: reloadTeamspaces } = useTeamspace();
+  const { me } = useMe();
 
   const [teamspace, setTeamspace] = useState(null);
   const [error, setError] = useState(null);
@@ -40,12 +44,14 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
         setDescriptionDraft(t.description || "");
         setVisibilityDraft(t.visibility);
       })
-      .catch((err) => setError(err.message));
+      .catch((err) => setError(describeSpaceError(err)));
   };
 
   useEffect(load, [teamspaceId]);
 
-  const isAdmin = teamspace?.my_role === "admin";
+  const myRole = teamspace?.my_role;
+  const isAdmin = isSpaceAdmin(myRole);
+  const isOwner = myRole === "owner";
 
   const saveInfo = async (e) => {
     e.preventDefault();
@@ -80,10 +86,11 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
 
   const changeMemberRole = async (memberId, role) => {
     try {
+      setError(null);
       await updateTeamspaceMemberRole(teamspaceId, memberId, role);
       load();
     } catch (err) {
-      setError(err.message);
+      setError(describeSpaceError(err));
     }
   };
 
@@ -96,12 +103,25 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
     }
   };
 
-  const doRemoveMember = async (memberId) => {
+  const doRemoveMember = async (m) => {
+    if (!window.confirm(`${m.nickname}님을 팀스페이스에서 제거할까요?`)) return;
     try {
-      await removeTeamspaceMember(teamspaceId, memberId);
+      setError(null);
+      await removeTeamspaceMember(teamspaceId, m.member_id);
       load();
     } catch (err) {
-      setError(err.message);
+      setError(describeSpaceError(err));
+    }
+  };
+
+  const doLeave = async () => {
+    if (!window.confirm(`'${teamspace.name}' 팀스페이스에서 나갈까요?`)) return;
+    try {
+      await leaveTeamspace(teamspaceId);
+      await reloadTeamspaces();
+      onClose();
+    } catch (err) {
+      setError(describeSpaceError(err));
     }
   };
 
@@ -112,7 +132,7 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
       await reloadTeamspaces();
       onClose();
     } catch (err) {
-      setError(err.message);
+      setError(describeSpaceError(err));
     }
   };
 
@@ -123,6 +143,8 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
       </Modal>
     );
   }
+
+  const isLastOwner = isOwner && teamspace.members.filter((m) => m.role === "owner").length <= 1;
 
   return (
     <Modal title={`팀스페이스 관리 · ${teamspace.name}`} onClose={onClose} wide>
@@ -170,26 +192,30 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
               </tr>
             </thead>
             <tbody>
-              {teamspace.members.map((m) => (
+              {teamspace.members.map((m) => {
+                const isMe = m.member_id === me?.id;
+                const manageable = !isMe && canManageMember(myRole, m.role);
+                return (
                 <tr key={m.member_id}>
                   <td>
                     <span className="member-cell">
                       <Avatar profile={{ id: m.member_id, nickname: m.nickname, name: m.name, avatar_url: m.avatar_url }}
                               size={26} role={m.role} />
                       <span className="member-cell-names">
-                        <span>{m.nickname} {m.is_guest && <span className="guest-badge" title="회사 도메인 밖 계정 — 초대받은 공간만 이용">게스트</span>}</span>
+                        <span>{m.nickname} {isMe && <span className="muted">(나)</span>} {m.is_guest && <span className="guest-badge" title="회사 도메인 밖 계정 — 초대받은 공간만 이용">게스트</span>}</span>
                         {m.name && m.name !== m.nickname && <span className="muted">{m.name}</span>}
                       </span>
                     </span>
                   </td>
                   <td>
-                    {isAdmin ? (
+                    {manageable ? (
                       <select value={m.role} onChange={(e) => changeMemberRole(m.member_id, e.target.value)}>
-                        <option value="admin">admin</option>
-                        <option value="member">member</option>
+                        {assignableRoles(myRole).map((r) => (
+                          <option key={r} value={r}>{SPACE_ROLE_LABEL[r]}</option>
+                        ))}
                       </select>
                     ) : (
-                      m.role
+                      SPACE_ROLE_LABEL[m.role] || m.role
                     )}
                   </td>
                   <td>
@@ -207,9 +233,22 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
                       m.discipline ? DISCIPLINE_LABEL[m.discipline] : "미지정"
                     )}
                   </td>
-                  <td>{isAdmin && <button onClick={() => doRemoveMember(m.member_id)}>제거</button>}</td>
+                  <td>
+                    {isMe ? (
+                      <button
+                        onClick={doLeave}
+                        disabled={isLastOwner}
+                        title={isLastOwner ? "마지막 소유자는 나갈 수 없습니다 — 다른 멤버를 소유자로 지정하거나 팀스페이스를 삭제하세요" : undefined}
+                      >
+                        나가기
+                      </button>
+                    ) : (
+                      manageable && <button onClick={() => doRemoveMember(m)}>제거</button>
+                    )}
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -220,8 +259,8 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
           <h2>멤버 초대</h2>
           <form className="inline-form" onSubmit={submitInvite}>
             <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
-              <option value="admin">admin</option>
-              <option value="member">member</option>
+              <option value="admin">{SPACE_ROLE_LABEL.admin}</option>
+              <option value="member">{SPACE_ROLE_LABEL.member}</option>
             </select>
             <select value={inviteDiscipline} onChange={(e) => setInviteDiscipline(e.target.value)}>
               <option value="">직무 미지정</option>
@@ -250,7 +289,7 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
         </section>
       )}
 
-      {isAdmin && (
+      {isOwner && (
         <section className="dashboard-section danger-zone">
           <h2>팀스페이스 삭제</h2>
           <p className="muted">

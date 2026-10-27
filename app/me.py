@@ -128,21 +128,21 @@ def confirm_email_change(body: CodeIn, member: dict = Depends(get_current_member
 # --------------------------------------------------------------------- 회원 탈퇴
 
 def _withdraw_blockers(cur, member_id: str) -> list[dict]:
-    """혼자 관리자인데 다른 사람이 남아 있는 곳 — 넘기지 않고 나가면 관리자 없는 공간이 된다."""
+    """혼자 소유자(owner)인데 다른 사람이 남아 있는 곳 — 넘기지 않고 나가면 관리자 없는 공간이 된다."""
     cur.execute(
         """
         SELECT 'workspace' AS kind, w.id, w.name
           FROM workspace_member wm JOIN workspace w ON w.id = wm.workspace_id AND w.deleted_at IS NULL
-         WHERE wm.member_id = %(m)s AND wm.role = 'admin'
+         WHERE wm.member_id = %(m)s AND wm.role = 'owner'
            AND NOT EXISTS (SELECT 1 FROM workspace_member o
-                            WHERE o.workspace_id = w.id AND o.member_id <> %(m)s AND o.role = 'admin')
+                            WHERE o.workspace_id = w.id AND o.member_id <> %(m)s AND o.role = 'owner')
            AND EXISTS (SELECT 1 FROM workspace_member o WHERE o.workspace_id = w.id AND o.member_id <> %(m)s)
         UNION ALL
         SELECT 'teamspace', t.id, t.name
           FROM teamspace_member tm JOIN teamspace t ON t.id = tm.teamspace_id AND t.deleted_at IS NULL
-         WHERE tm.member_id = %(m)s AND tm.role = 'admin'
+         WHERE tm.member_id = %(m)s AND tm.role = 'owner'
            AND NOT EXISTS (SELECT 1 FROM teamspace_member o
-                            WHERE o.teamspace_id = t.id AND o.member_id <> %(m)s AND o.role = 'admin')
+                            WHERE o.teamspace_id = t.id AND o.member_id <> %(m)s AND o.role = 'owner')
            AND EXISTS (SELECT 1 FROM teamspace_member o WHERE o.teamspace_id = t.id AND o.member_id <> %(m)s)
         UNION ALL
         SELECT 'project', p.id, p.name
