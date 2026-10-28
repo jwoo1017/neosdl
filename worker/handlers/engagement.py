@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 
-from app import agents, ai_providers, audit, pentester, sandbox
+from app import agents, ai_providers, audit, pentest_routes, pentester, sandbox
 from app.config import settings
 from app.db import tx
 from app.engagements import set_status
@@ -222,10 +222,15 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
             _seq[0] += 1
 
         approved = (engagement.get("params") or {}).get("approved_commands") or []
+        # 코드그래프 유도: 스캔한 소스에서 실제 엔드포인트를 뽑아 도구를 겨눈다(홈 크롤 대신).
+        endpoints = pentest_routes.enumerate_endpoints(cur, str(engagement.get("scan_id") or ""))
+        if endpoints:
+            log.info("engagement %s 유도 엔드포인트 %d개(예: %s)", eid, len(endpoints),
+                     f"{endpoints[0]['method']} {endpoints[0]['path']}")
         outcome = pentester.run_pentester(
             cur, target=target, llm_generate=llm_generate, toolbox_exec=state["exec"],
             permission_mode=permission_mode, effective_role="manager", actor=actor,
-            approved_commands=approved, trusted_target=True, on_step=persist)
+            approved_commands=approved, trusted_target=True, on_step=persist, endpoints=endpoints)
     finally:
         try:
             runner.destroy(eid)   # 표적 컨테이너·툴박스·네트워크 정리(실패해도 best-effort)
