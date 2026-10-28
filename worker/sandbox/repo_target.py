@@ -70,8 +70,9 @@ def _wait_ready(exec_toolbox, web_ip: str, web_port: int | None, timeout_s: int)
     return False
 
 
-def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable) -> BootedTarget | None:
-    """engagement 레포를 띄우고 BootedTarget 반환. 못 띄우면 None(정적/빈 결과 폴백).
+def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable):
+    """engagement 레포를 띄우고 (BootedTarget, None) 반환. 못 띄우면 (None, reason) — reason 은
+    UI 리포트에 노출돼 운영자가 "왜 안 떴는지" 바로 본다(조용히 실패 아님).
 
     runner: DindRunner. exec_toolbox_factory(network)->exec_toolbox(argv) : 해당 네트워크에 붙은
     툴박스로 readiness 를 확인하기 위한 콜백(호출측이 툴박스를 그 네트워크에 기동해 넘긴다).
@@ -79,12 +80,12 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable) -
     scan_id, repo_id, eid = engagement.get("scan_id"), engagement["repository_id"], str(engagement["id"])
     if not scan_id:
         log.info("engagement %s: 부팅용 소스 스냅샷(scan_id) 없음", eid)
-        return None
+        return None, "no_source_snapshot"
     root = pipeline_source_root(str(scan_id), str(repo_id))
     plan = detect.detect(root)
     if not plan.ok:
         log.info("engagement %s 부팅 불가(감지: %s)", eid, plan.reason)
-        return None
+        return None, f"detect_failed: {plan.reason}"
 
     client = runner.client()
     net = runner.create_network(eid)
@@ -94,7 +95,7 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable) -
             cplan = compose_mod.load_compose(Path(root) / plan.compose)
             if not cplan.ok:
                 log.info("engagement %s compose 파싱 실패(%s)", eid, cplan.reason)
-                return None
+                return None, f"compose_parse_failed: {cplan.reason}"
             web_container = None
             for svc in cplan.services:            # 의존성 순서(백킹 먼저)
                 if svc.build_context:
@@ -114,7 +115,7 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable) -
             # 단일 Dockerfile(또는 매니페스트 run_cmd 없는 Dockerfile 레포). 백킹은 detect 추론.
             if not plan.dockerfile:
                 log.info("engagement %s: compose/Dockerfile 없음 — 합성 부팅은 미지원", eid)
-                return None
+                return None, "no_dockerfile_or_compose"
             app_env: dict = {}
             for svc_name in plan.required_services:
                 if svc_name not in _SERVICES:
@@ -131,11 +132,11 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable) -
 
         if web_container is None:
             log.info("engagement %s: 웹 서비스 컨테이너를 못 정함", eid)
-            return None
+            return None, "no_web_container"
         web_ip = _container_ip(web_container, net)
         if not web_ip:
             log.info("engagement %s: 웹 컨테이너 IP 미할당", eid)
-            return None
+            return None, "no_container_ip"
 
         def teardown():
             try:
@@ -146,15 +147,18 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable) -
         # readiness: 툴박스를 이 네트워크에 띄워 web_ip:web_port 가 열릴 때까지 대기.
         exec_toolbox = exec_toolbox_factory(net)
         ready = _wait_ready(exec_toolbox, web_ip, web_port, settings().sandbox_boot_timeout_s)
-        if not ready:
-            log.info("engagement %s 표적 미기동(timeout) %s:%s", eid, web_ip, web_port)
         log.info("engagement %s 표적 기동 %s ip=%s port=%s ready=%s",
                  eid, plan.compose or plan.dockerfile, web_ip, web_port, ready)
-        return BootedTarget(web_ip=web_ip, web_port=web_port, network=net, teardown=teardown)
-    except Exception:
+        if not ready and web_port:
+            # 포트를 알고도 기동 타임아웃 → 빈 스캔으로 혼란 주지 말고 명시적 실패(정리 포함).
+            log.info("engagement %s 표적 미기동(timeout) %s:%s", eid, web_ip, web_port)
+            teardown()
+            return None, f"boot_timeout: {web_ip}:{web_port} 미응답(빌드 실패 또는 기동 지연)"
+        return BootedTarget(web_ip=web_ip, web_port=web_port, network=net, teardown=teardown), None
+    except Exception as exc:
         log.exception("engagement %s 표적 부팅 실패 — 정리", eid)
         try:
             runner.destroy(eid)
         except Exception:
             pass
-        return None
+        return None, f"boot_exception: {type(exc).__name__}: {str(exc)[:300]}"

@@ -48,7 +48,8 @@ def detect(root: str | Path) -> StackPlan:
 
     # (1) 레포 Dockerfile / compose — 최우선.
     dockerfile = next((p for p in (root / "Dockerfile", root / "dockerfile") if p.exists()), None)
-    compose = next((root / n for n in ("docker-compose.yml", "docker-compose.yaml", "compose.yml")
+    compose = next((root / n for n in ("docker-compose.yml", "docker-compose.yaml",
+                                       "compose.yml", "compose.yaml")
                     if (root / n).exists()), None)
     if compose is not None:
         return StackPlan(ok=True, source="deterministic", compose=compose.name,

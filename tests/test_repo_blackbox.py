@@ -54,7 +54,7 @@ def test_run_repo_blackbox_wires_persists_and_cleans(monkeypatch):
     def fake_boot(engagement, runner, factory):
         factory("neosdl-sbx-net-e1")       # 툴박스를 네트워크에 기동(state["exec"] 채움)
         return repo_target.BootedTarget(web_ip="172.18.0.3", web_port=3000,
-                                        network="neosdl-sbx-net-e1", teardown=lambda: None)
+                                        network="neosdl-sbx-net-e1", teardown=lambda: None), None
 
     monkeypatch.setattr(repo_target, "boot_repo_target", fake_boot)
 
@@ -86,7 +86,8 @@ def test_run_repo_blackbox_boot_failure_is_blocked_report(monkeypatch):
     monkeypatch.setattr(eng.sandbox, "assert_repo_allowed", lambda cur, rid, actor: "finble/exchange")
     monkeypatch.setattr(eng.ai_providers, "resolve_requested_model", lambda x: "m")
     monkeypatch.setattr("worker.sandbox.dind.DindRunner", _FakeRunner)
-    monkeypatch.setattr(repo_target, "boot_repo_target", lambda *a, **k: None)   # 부팅 실패
+    monkeypatch.setattr(repo_target, "boot_repo_target",
+                        lambda *a, **k: (None, "detect_failed: stack_undetermined"))   # 부팅 실패
 
     called = {"run": False}
     monkeypatch.setattr(eng.pentester, "run_pentester",

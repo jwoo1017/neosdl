@@ -188,15 +188,18 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
 
     booted = None
     try:
-        booted = repo_target.boot_repo_target(engagement, runner, exec_toolbox_factory)
+        booted, boot_reason = repo_target.boot_repo_target(engagement, runner, exec_toolbox_factory)
         if booted is None or "exec" not in state:
+            reason = boot_reason or ("no_toolbox" if "exec" not in state else "unknown")
             agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트",
-                                 {"markdown": "# 레포 부팅 블랙박스\n\n표적 앱을 부팅하지 못했습니다"
-                                              "(Dockerfile/compose 감지 실패 또는 기동 타임아웃). 로그를 확인하세요.",
-                                  "status": "boot_failed", "findings": [], "steps": 0})
-            agents._finish_task(cur, task_id, "blocked", {"status": "boot_failed"})
+                                 {"markdown": f"# 레포 부팅 블랙박스\n\n표적 앱을 부팅하지 못했습니다.\n\n"
+                                              f"- 사유: `{reason}`\n\n"
+                                              "감지(Dockerfile/compose)·빌드·기동 단계 중 하나가 실패했습니다. "
+                                              "자세한 내용은 워커 로그를 확인하세요.",
+                                  "status": "boot_failed", "reason": reason, "findings": [], "steps": 0})
+            agents._finish_task(cur, task_id, "blocked", {"status": "boot_failed", "reason": reason})
             return {"kind": "repo_blackbox", "status": "failed", "findings": 0, "steps": 0,
-                    "pending_command": None}
+                    "pending_command": None, "reason": reason}
 
         target = booted.web_ip
         subtask_id = _add_subtask(cur, task_id, eid, "pentester")
