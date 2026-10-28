@@ -34,6 +34,15 @@ services:
     image: docker:27-dind
     privileged: true          # = 호스트 root. Phase 2.5 에서 VM 안으로 이동 대상. 외부 코드 금지.
     restart: unless-stopped
+    # DNS: 이 서버는 외부 DNS 직접조회(8.8.8.8 등)를 pfSense 가 막는다. dind 안 dockerd 가 중첩
+    # 컨테이너에 기본으로 꽂는 8.8.8.8 로는 registry.npmjs.org 가 EAI_AGAIN(이름해석 실패)난다.
+    #   command --dns : dind 이미지 entrypoint 가 `-` 인자를 안쪽 dockerd 에 넘긴다(TLS 는 자동 유지)
+    #                   → 중첩 컨테이너(빌드/표적)가 모두 10.0.0.1(pfSense)을 기본 DNS 로 쓴다. ★핵심★
+    #   dns        : dind 컨테이너 자신의 상위 DNS 도 10.0.0.1 로 고정(경로 명확화).
+    # 10.0.0.1 만 허용 DNS(사내). 443 egress 는 FW-L01 이 이미 허용 — 따로 열 필요 없음.
+    command: ["--dns=10.0.0.1"]
+    dns:
+      - 10.0.0.1
     environment:
       DOCKER_TLS_CERTDIR: /certs
     ports:
