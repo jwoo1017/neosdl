@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { createEngagement, fetchEngagements } from "../api";
+import { createEngagement, fetchEngagements, previewBootRecipe } from "../api";
 import { useProject } from "../ProjectContext";
 import Modal from "../components/Modal";
 
@@ -104,23 +104,59 @@ function CreateEngagementModal({ projectId, onClose, onCreated }) {
   const [permissionMode, setPermissionMode] = useState("ask");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // 부팅 레시피(모달에서 사람이 확인/수정) — repo_blackbox 선택 시 자동완성해 폼에 채운다.
+  const [recipe, setRecipe] = useState(null);       // {base_image, app_port, start_command, dockerfile, needs_build, env, db_credentials, ...}
+  const [recipeLoading, setRecipeLoading] = useState(false);
   const blackbox = kind === "blackbox";
   const repoBlackbox = kind === "repo_blackbox";
 
-  // 레포 부팅 블랙박스는 일회용·격리 표적이라 auto(사전 승인)가 기본 권장 — 선택 시 자동 전환.
-  const onKindChange = (v) => {
+  // 레포 부팅 블랙박스는 일회용·격리 표적이라 auto(사전 승인)가 기본 권장 — 선택 시 자동 전환 +
+  // 레시피 자동완성(LLM/결정적)을 받아 폼에 채운다. 사람은 확인/수정만.
+  const onKindChange = async (v) => {
     setKind(v);
-    if (v === "repo_blackbox") setPermissionMode("auto");
+    setError(null);
+    if (v === "repo_blackbox") {
+      setPermissionMode("auto");
+      if (!recipe) {
+        setRecipeLoading(true);
+        try {
+          const res = await previewBootRecipe(projectId);
+          setRecipe(res.recipe);
+        } catch (e) {
+          setError(`레시피 자동완성 실패: ${e.message} — 아래 값을 직접 채우세요.`);
+          setRecipe({ base_image: "", app_port: 3000, start_command: "", dockerfile: "", needs_build: true, env: {}, db_credentials: {} });
+        } finally {
+          setRecipeLoading(false);
+        }
+      }
+    }
+  };
+
+  const setR = (patch) => setRecipe((r) => ({ ...(r || {}), ...patch }));
+  const envText = recipe ? Object.entries(recipe.env || {}).map(([k, v]) => `${k}=${v}`).join("\n") : "";
+  const onEnvText = (text) => {
+    const env = {};
+    for (const line of text.split("\n")) {
+      const t = line.trim();
+      if (!t || t.startsWith("#") || !t.includes("=")) continue;
+      const i = t.indexOf("=");
+      env[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+    }
+    setR({ env });
   };
 
   const submit = async () => {
     if (!goal.trim()) { setError("목표를 입력하세요."); return; }
     if (blackbox && !target.trim()) { setError("표적(host 또는 URL)을 입력하세요."); return; }
+    if (repoBlackbox && recipe && !recipe.app_port) { setError("앱 포트를 입력하세요."); return; }
     setBusy(true); setError(null);
     try {
       const body = { goal: goal.trim(), mode: "automation", permission_mode: permissionMode };
       if (blackbox) body.target = target.trim();
-      if (repoBlackbox) body.boot_repo = true;
+      if (repoBlackbox) {
+        body.boot_repo = true;
+        if (recipe) body.boot_recipe = { ...recipe, app_port: Number(recipe.app_port) || 0 };
+      }
       const res = await createEngagement(projectId, body);
       onCreated(res.id);
     } catch (e) {
@@ -151,10 +187,52 @@ function CreateEngagementModal({ projectId, onClose, onCreated }) {
         </>
       )}
       {repoBlackbox && (
-        <p className="muted" style={{ marginTop: "0.6rem", fontSize: "0.8rem" }}>
-          이 프로젝트의 레포(Dockerfile/compose)를 샌드박스에 자동으로 띄워 그 앱을 표적으로 점검합니다.
-          표적 IP·allowlist 등록이 필요 없습니다. 최근 완료된 스캔의 소스를 사용합니다.
-        </p>
+        <>
+          <p className="muted" style={{ marginTop: "0.6rem", fontSize: "0.8rem" }}>
+            이 레포를 샌드박스에 띄워 그 앱을 표적으로 점검합니다(표적 IP·allowlist 불필요). 아래 부팅
+            레시피는 README·매니페스트로 자동완성됐습니다 — 확인하고 필요하면 수정하세요.
+          </p>
+          {recipeLoading && <p className="muted" style={{ fontSize: "0.8rem" }}>레시피 자동완성 중…</p>}
+          {recipe && (
+            <div style={{ marginTop: "0.6rem", padding: "0.6rem", border: "1px solid var(--border, #ccc)", borderRadius: 6 }}>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <div style={{ flex: 2 }}>
+                  <label style={{ display: "block", fontSize: "0.75rem", marginBottom: "0.2rem" }}>베이스 이미지</label>
+                  <input value={recipe.base_image || ""} onChange={(e) => setR({ base_image: e.target.value })}
+                         disabled={busy} style={{ width: "100%", boxSizing: "border-box" }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: "block", fontSize: "0.75rem", marginBottom: "0.2rem" }}>앱 포트</label>
+                  <input type="number" value={recipe.app_port || ""} onChange={(e) => setR({ app_port: e.target.value })}
+                         disabled={busy} style={{ width: "100%", boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <label style={{ display: "block", fontSize: "0.75rem", margin: "0.4rem 0 0.2rem" }}>시작 명령</label>
+              <input value={recipe.start_command || ""} onChange={(e) => setR({ start_command: e.target.value })}
+                     disabled={busy} placeholder="예: node server.js"
+                     style={{ width: "100%", boxSizing: "border-box" }} />
+              <label style={{ display: "block", fontSize: "0.75rem", margin: "0.4rem 0 0.2rem" }}>
+                <input type="checkbox" checked={!!recipe.needs_build} onChange={(e) => setR({ needs_build: e.target.checked })}
+                       disabled={busy} /> dind 에서 빌드(레포에 이미지 없음)
+              </label>
+              {recipe.needs_build && (
+                <>
+                  <label style={{ display: "block", fontSize: "0.75rem", margin: "0.2rem 0" }}>Dockerfile (초안 — 레포에 없을 때)</label>
+                  <textarea rows={6} value={recipe.dockerfile || ""} onChange={(e) => setR({ dockerfile: e.target.value })}
+                            disabled={busy} style={{ width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: "0.72rem" }} />
+                </>
+              )}
+              <label style={{ display: "block", fontSize: "0.75rem", margin: "0.4rem 0 0.2rem" }}>런타임 env (KEY=VALUE, 한 줄에 하나 — DB_HOST는 백킹 서비스 별칭)</label>
+              <textarea rows={4} value={envText} onChange={(e) => onEnvText(e.target.value)}
+                        disabled={busy} style={{ width: "100%", boxSizing: "border-box", fontFamily: "monospace", fontSize: "0.72rem" }} />
+              {typeof recipe.confidence === "number" && recipe.confidence < 0.5 && (
+                <p className="muted" style={{ fontSize: "0.72rem", marginTop: "0.3rem" }}>
+                  ⚠ 자동완성 신뢰도 낮음({recipe.notes || "스택 미상"}) — 값을 직접 확인하세요.
+                </p>
+              )}
+            </div>
+          )}
+        </>
       )}
       {!blackbox && !repoBlackbox && (
         <p className="muted" style={{ marginTop: "0.6rem" }}>대상 스캔은 이 프로젝트의 가장 최근 완료된 스캔이 자동 선택됩니다.</p>

@@ -12,6 +12,7 @@ Dockerfile 단일 레포는 detect 의 백킹서비스 추론을 재사용한다
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,20 +42,96 @@ def _container_ip(container, network: str) -> str | None:
     return info.get("IPAddress") or None
 
 
-def _run_service(client, *, image: str, net: str, aliases: list[str], env: dict, eid: str):
+def _run_service(client, *, image: str, net: str, aliases: list[str], env: dict, eid: str,
+                 command: list | None = None):
     """서비스 컨테이너를 engagement 네트워크에 기동(별칭=compose 서비스명 → 서비스간 DNS).
 
     하드닝: privileged=False, 바인드마운트/호스트네트워크 없음, 리소스 상한. 임의 레포 앱·DB 가
     실제로 뜨도록 cap_drop/비root 는 강제하지 않는다(dind·internal 네트워크·호스트마운트 없음으로 격리).
+    command 는 레시피의 start_command override(이미지 CMD 를 덮음) — None 이면 이미지 기본.
     """
     c = client.containers.create(
-        image=image, detach=True, environment=env,
+        image=image, detach=True, environment=env, command=command,
         labels={"neosdl.engagement": eid, "neosdl.role": "target"},
         mem_limit=settings().sandbox_mem_limit, memswap_limit=settings().sandbox_mem_limit,
         pids_limit=settings().sandbox_pids_limit, privileged=False)
     client.networks.get(net).connect(c, aliases=aliases)
     c.start()
     return c
+
+
+_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand(value, subs: dict) -> str:
+    """compose env 값의 `${VAR}`/`${VAR:-기본}`/`$VAR` 를 subs(더미 크리덴셜)로 치환.
+
+    compose 는 원래 .env 로 치환되는데 우리는 그 .env 가 없으므로, 레시피의 단일 더미
+    크리덴셜로 backing(mysql) 과 app 의 DB 설정을 일치시킨다. 미지정이면 기본값(없으면 빈값).
+    """
+    if not isinstance(value, str):
+        return value
+
+    def repl(m):
+        name = m.group(1) or m.group(3)
+        return subs.get(name, m.group(2) or "")
+
+    return _VAR_RE.sub(repl, value)
+
+
+def _boot_from_recipe(runner, client, root: str, plan, net: str, eid: str, recipe: dict,
+                      containers: list):
+    """레시피 구동 부팅(추측 없음) — backing(compose/detect) 기동 → app 빌드/기동. (web_container, web_port)."""
+    from worker.sandbox import boot_recipe as br
+
+    subs = dict(recipe.get("db_credentials") or {})
+    # 1) backing 서비스 — compose 의 백킹서비스(mysql 등)를 ${VAR} 치환해 기동. compose 없으면 detect 추론.
+    if plan.compose:
+        cplan = compose_mod.load_compose(Path(root) / plan.compose)
+        for svc in cplan.services:
+            if svc.is_backing and svc.image:
+                env = {k: _expand(v, subs) for k, v in (svc.env or {}).items()}
+                containers.append(_run_service(client, image=svc.image, net=net,
+                                                aliases=[svc.name], env=env, eid=eid))
+    else:
+        for svc_name in plan.required_services:
+            if svc_name in _SERVICES:
+                image, svc_env, _ = _SERVICES[svc_name]
+                containers.append(_run_service(client, image=image, net=net,
+                                                aliases=[svc_name], env=svc_env, eid=eid))
+
+    # 2) app 이미지 — 빌드(dind egress) 또는 prebuilt. base_image/FROM 은 allowlist 검증(방어 심층화).
+    if recipe.get("needs_build"):
+        base = br.dockerfile_from_image(recipe["dockerfile"]) if recipe.get("dockerfile") \
+            else recipe.get("base_image")
+        if not br.image_allowed(base):
+            raise ValueError(f"base_image_not_allowed: {base}")
+        if recipe.get("dockerfile"):
+            (Path(root) / "Dockerfile.sbx").write_text(recipe["dockerfile"], encoding="utf-8")
+            dfname = "Dockerfile.sbx"
+        else:
+            dfname = recipe.get("dockerfile_path") or "Dockerfile"
+        try:
+            app_img = runner.build_image(str(root), f"neosdl-sbx/{eid[:8]}-app", dfname, eid, pull=True)
+        finally:
+            if recipe.get("dockerfile"):
+                try:
+                    (Path(root) / "Dockerfile.sbx").unlink()
+                except Exception:
+                    pass
+    else:
+        if not br.image_allowed(recipe.get("base_image")):
+            raise ValueError(f"base_image_not_allowed: {recipe.get('base_image')}")
+        app_img = recipe["base_image"]
+
+    # 3) app 컨테이너 — start_command override + 레시피 env(DB_HOST=backing 별칭)로 기동.
+    cmd = recipe.get("start_command")
+    command = ["sh", "-c", cmd] if isinstance(cmd, str) and cmd.strip() else None
+    app = _run_service(client, image=app_img, net=net, aliases=["app"],
+                       env=dict(recipe.get("env") or {}), eid=eid, command=command)
+    containers.append(app)
+    web_port = recipe.get("app_port")
+    return app, int(web_port) if web_port else None
 
 
 def _wait_ready(exec_toolbox, web_ip: str, web_port: int | None, timeout_s: int) -> bool:
@@ -70,9 +147,12 @@ def _wait_ready(exec_toolbox, web_ip: str, web_port: int | None, timeout_s: int)
     return False
 
 
-def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable):
+def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable, recipe: dict | None = None):
     """engagement 레포를 띄우고 (BootedTarget, None) 반환. 못 띄우면 (None, reason) — reason 은
     UI 리포트에 노출돼 운영자가 "왜 안 떴는지" 바로 본다(조용히 실패 아님).
+
+    recipe(부팅 레시피)를 주면 **결정적 경로**로 띄운다(backing+빌드+기동, 추측 없음) — compose 에
+    앱이 없거나 Dockerfile 이 없는 레포도 뜬다. None 이면 기존 자동 감지(Dockerfile/compose) 폴백.
 
     runner: DindRunner. exec_toolbox_factory(network)->exec_toolbox(argv) : 해당 네트워크에 붙은
     툴박스로 readiness 를 확인하기 위한 콜백(호출측이 툴박스를 그 네트워크에 기동해 넘긴다).
@@ -83,7 +163,8 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable):
         return None, "no_source_snapshot"
     root = pipeline_source_root(str(scan_id), str(repo_id))
     plan = detect.detect(root)
-    if not plan.ok:
+    if recipe is None and not plan.ok:
+        # 레시피 없이 자동 감지로만 띄우는데 스택을 못 정함 — 명시적 실패(레시피를 주면 이 경로를 우회).
         log.info("engagement %s 부팅 불가(감지: %s)", eid, plan.reason)
         return None, f"detect_failed: {plan.reason}"
 
@@ -91,7 +172,10 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable):
     net = runner.create_network(eid)
     containers = []
     try:
-        if plan.compose:
+        if recipe is not None:
+            web_container, web_port = _boot_from_recipe(runner, client, root, plan, net, eid,
+                                                        recipe, containers)
+        elif plan.compose:
             cplan = compose_mod.load_compose(Path(root) / plan.compose)
             if not cplan.ok:
                 log.info("engagement %s compose 파싱 실패(%s)", eid, cplan.reason)

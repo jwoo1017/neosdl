@@ -122,6 +122,27 @@ class ProbePlan(BaseModel):
     rationale: str = ""
 
 
+class BootRecipe(BaseModel):
+    """`worker/sandbox/boot_recipe.py` — README/매니페스트에서 LLM 이 제안하는 표적 앱 부팅 레시피.
+
+    결정적 신호(package.json scripts, Dockerfile EXPOSE, compose)를 먼저 채우고 빈칸만 LLM 이
+    메운다. 사람이 모달에서 확인/수정한 뒤 실행하므로 자유 생성이라도 게이트가 있다. 레포에
+    Dockerfile 이 없으면 `needs_build=True`+`dockerfile`(초안)로 플랫폼이 dind 에서 빌드한다.
+    `base_image`·Dockerfile `FROM` 은 boot_recipe.py 가 sandbox_allowed_images 로 재검증한다.
+    """
+
+    base_image: str                      # 예: node:20-slim (allowlist 검증 대상)
+    needs_build: bool                     # True 면 dind 에서 빌드(레포에 이미지 없음)
+    dockerfile: str | None = None         # 레포에 Dockerfile 없을 때 LLM 초안(멀티라인). 있으면 null.
+    dockerfile_path: str | None = None    # 레포가 Dockerfile 을 제공하면 그 상대경로
+    start_command: str | None = None      # 예: "node server.js" (이미지 CMD override, 선택)
+    app_port: int                         # 표적 웹 포트(예: 4000)
+    env: dict[str, str] = {}              # 런타임 더미 env. DB_HOST 등은 compose 서비스 별칭으로.
+    db_credentials: dict[str, str] = {}   # backing(mysql)·app 공유용 단일 더미 크리덴셜(키 통일용)
+    confidence: float = 0.0
+    notes: str = ""
+
+
 class BusinessIpClassification(BaseModel):
     """`app/risk/classify.py::classify_business_ip`의 응답 스키마."""
 

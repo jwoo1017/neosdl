@@ -51,7 +51,7 @@ def test_run_repo_blackbox_wires_persists_and_cleans(monkeypatch):
     monkeypatch.setattr("worker.sandbox.dind.DindRunner", _FakeRunner)
     _FakeRunner.started = _FakeRunner.destroyed = False
 
-    def fake_boot(engagement, runner, factory):
+    def fake_boot(engagement, runner, factory, recipe=None):
         factory("neosdl-sbx-net-e1")       # 툴박스를 네트워크에 기동(state["exec"] 채움)
         return repo_target.BootedTarget(web_ip="172.18.0.3", web_port=3000,
                                         network="neosdl-sbx-net-e1", teardown=lambda: None), None
@@ -80,6 +80,31 @@ def test_run_repo_blackbox_wires_persists_and_cleans(monkeypatch):
     assert captured["trusted"] is True             # self-boot → trusted(host allowlist 우회)
     assert _FakeRunner.started and _FakeRunner.destroyed     # 툴박스 기동 + finally 정리
     assert any("artifact" in sql.lower() for sql, _ in cur.calls)   # 리포트 영속
+
+
+def test_run_repo_blackbox_threads_recipe_from_params(monkeypatch):
+    """params.boot_recipe 가 있으면 boot_repo_target 에 recipe 로 전달된다(결정적 부팅)."""
+    monkeypatch.setattr(eng.sandbox, "assert_repo_allowed", lambda cur, rid, actor: "finble/exchange")
+    monkeypatch.setattr(eng.ai_providers, "resolve_requested_model", lambda x: "m")
+    monkeypatch.setattr("worker.sandbox.dind.DindRunner", _FakeRunner)
+
+    captured = {}
+
+    def fake_boot(engagement, runner, factory, recipe=None):
+        captured["recipe"] = recipe
+        factory("neosdl-sbx-net-e3")
+        return repo_target.BootedTarget(web_ip="172.18.0.9", web_port=4000,
+                                        network="neosdl-sbx-net-e3", teardown=lambda: None), None
+
+    monkeypatch.setattr(repo_target, "boot_repo_target", fake_boot)
+    monkeypatch.setattr(eng.pentester, "run_pentester",
+                        lambda *a, **k: pentester.PentestOutcome("succeeded", findings=[], history=[], steps=1))
+
+    recipe = {"base_image": "node:20-bookworm-slim", "needs_build": True, "app_port": 4000,
+              "start_command": "node server.js", "env": {"DB_HOST": "mysql"}}
+    eng._run_repo_blackbox(_Cur(), {"id": "e3", "project_id": "p1", "repository_id": "r1", "scan_id": "s1",
+                                    "permission_mode": "auto", "params": {"boot_recipe": recipe}})
+    assert captured["recipe"] == recipe        # params → boot_repo_target(recipe=...)
 
 
 def test_run_repo_blackbox_boot_failure_is_blocked_report(monkeypatch):

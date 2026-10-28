@@ -186,9 +186,13 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
         state["exec"] = _exec
         return _exec
 
+    # 부팅 레시피(모달에서 사람이 확인/수정) — 있으면 결정적 부팅, 없으면 자동 감지 폴백.
+    recipe = (engagement.get("params") or {}).get("boot_recipe") or None
+
     booted = None
     try:
-        booted, boot_reason = repo_target.boot_repo_target(engagement, runner, exec_toolbox_factory)
+        booted, boot_reason = repo_target.boot_repo_target(engagement, runner, exec_toolbox_factory,
+                                                           recipe=recipe)
         if booted is None or "exec" not in state:
             reason = boot_reason or ("no_toolbox" if "exec" not in state else "unknown")
             agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트",

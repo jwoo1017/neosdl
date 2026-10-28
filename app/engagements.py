@@ -43,6 +43,9 @@ class CreateEngagementIn(BaseModel):
     # 레포 부팅 블랙박스: 워크스페이스 레포(Dockerfile/compose)를 샌드박스에 띄워 그 앱을 표적으로
     # 점검한다. 표적 IP·allowlist 가 자동이라 운영자 수고가 없다. scan_id(소스 스냅샷) 필요.
     boot_repo: bool = False
+    # 부팅 레시피(BootRecipe) — 모달에서 사람이 확인/수정한 "앱을 어떻게 띄울지". 주면 결정적 부팅,
+    # 없으면 worker 가 자동 감지로 폴백. preview 엔드포인트가 LLM/결정적으로 초안을 돌려준다.
+    boot_recipe: dict | None = None
 
 
 def set_status(cur, engagement_id: str, status: str, *, error: str | None = None,
@@ -101,6 +104,12 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
             scan_val, kind = None, "blackbox"
         elif repo_boot:
             params = {"engagement_kind": "repo_blackbox"}
+            if body.boot_recipe:
+                from app.llm_schemas import BootRecipe
+                try:
+                    params["boot_recipe"] = BootRecipe.model_validate(body.boot_recipe).model_dump()
+                except Exception:
+                    raise HTTPException(422, "invalid boot_recipe")
             scan_val, kind = scan_id, "repo_blackbox"
         else:
             params = {}
@@ -122,6 +131,36 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
                      payload={"mode": body.mode, "permission_mode": body.permission_mode,
                               "scan_id": scan_val, "kind": kind})
     return {"id": engagement_id, "status": "queued"}
+
+
+@router.post("/projects/{project_id}/engagements/boot-recipe/preview")
+def preview_boot_recipe(project_id: UUID, member: dict = Depends(get_current_member)):
+    """레포 부팅 블랙박스 모달용 — 레포 소스에서 부팅 레시피 초안을 돌려준다(읽기전용, 부팅 안 함).
+
+    결정적 신호(package.json/compose/Dockerfile/.env)를 먼저 채우고 빈칸만 LLM 으로 메운다
+    (`worker/sandbox/boot_recipe.py::draft_recipe`). 사람이 모달에서 확인·수정해 create 로 보낸다.
+    """
+    from app import ai_providers
+    from app.llm_schemas import BootRecipe
+    from worker.handlers.clone import pipeline_source_root
+    from worker.sandbox import boot_recipe as br
+
+    with tx() as cur:
+        assert_project_role(cur, project_id, member["id"], "manager")
+        ctx = _resolve_chat_ctx(cur, project_id)
+    scan_id, repo_id = ctx.get("scan_id"), ctx.get("repository_id")
+    if not scan_id or not repo_id:
+        raise HTTPException(409, "no completed scan/repository for this project yet")
+
+    root = pipeline_source_root(str(scan_id), str(repo_id))
+    model = ai_providers.resolve_requested_model(None)
+
+    def llm_generate(prompt: str) -> str:
+        return ai_providers.generate(model, prompt, response_schema=BootRecipe,
+                                     project_id=str(project_id), purpose="boot_recipe")
+
+    recipe = br.draft_recipe(root, llm_generate=llm_generate)
+    return {"recipe": recipe}
 
 
 @router.post("/engagements/{engagement_id}/approve")

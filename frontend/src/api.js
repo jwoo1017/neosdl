@@ -668,6 +668,13 @@ export async function createEngagement(projectId, body) {
   return res.json();
 }
 
+// 레포 부팅 블랙박스 모달용 — 레포 소스에서 부팅 레시피 초안을 받아온다(읽기전용).
+export async function previewBootRecipe(projectId) {
+  const res = await apiFetch(`/projects/${projectId}/engagements/boot-recipe/preview`, { method: "POST" });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `preview failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchEngagement(engagementId) {
   const res = await apiFetch(`/engagements/${engagementId}`);
   if (!res.ok) throw new Error(`GET engagement failed: ${res.status}`);

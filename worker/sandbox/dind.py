@@ -130,11 +130,16 @@ class DindRunner:
                 pass
 
     def build_image(self, context_dir: str, tag: str, dockerfile: str = "Dockerfile",
-                    engagement_id: str | None = None) -> str:
-        """context_dir 를 빌드해 tag 로 태깅. 레포 제공 Dockerfile 전용(Phase 2). 실패 시 예외."""
+                    engagement_id: str | None = None, *, pull: bool = False) -> str:
+        """context_dir 를 빌드해 tag 로 태깅. 실패 시 예외.
+
+        pull=True 는 레시피 합성 빌드용 — 베이스 이미지(node:20 등)를 당겨온다. 빌드는 dind 기본
+        브리지(egress 有)에서 수행되고(npm/pip 설치 가능), 런타임 앱은 engagement internal(무egress)
+        네트워크로 분리된다. pull=False(기본)는 베이스가 이미 dind 스토어에 있는 레포 Dockerfile 용.
+        """
         d = self._docker()
         d.images.build(path=context_dir, dockerfile=dockerfile, tag=tag, rm=True, forcerm=True,
-                       labels={"neosdl.engagement": engagement_id or ""}, pull=False)
+                       labels={"neosdl.engagement": engagement_id or ""}, pull=pull)
         return tag
 
     def start_app(self, image: str, *, network: str, ready_port: int, env: dict | None = None,
