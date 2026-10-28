@@ -195,14 +195,30 @@ def _maybe_pentest_suggestion(question: str, project_id, member_id: str) -> dict
     미인가 표적은 아예 제안하지 않는다(표적을 떠보게 하지 않음). 실행 권한(manager)이 없으면 숨긴다.
     """
     det = chat_pentest.detect(question)
-    if not det or not toolbox.target_allowed(det["target"]):
+    if not det:
         return None
     with tx() as cur:
         try:
             assert_project_role(cur, project_id, member_id, "manager")
         except Exception:
             return None
-    return {"target": det["target"], "goal": f"{det['target']} 블랙박스 보안 점검"}
+        if det.get("repo_boot"):
+            # 레포 부팅 블랙박스 — 이 프로젝트 레포를 샌드박스에 띄워 점검. 샌드박스 on + 레포 + 스캔 필요.
+            from app.config import settings
+            if not settings().sandbox_enabled:
+                return None
+            ctx = _resolve_chat_ctx(cur, project_id)
+            if not (ctx.get("repository_id") and ctx.get("scan_id")):
+                return None
+            cur.execute("SELECT namespace, name FROM repository WHERE id=%s",
+                        (str(ctx["repository_id"]),))
+            row = cur.fetchone()
+            repo = f"{row['namespace']}/{row['name']}" if row else "이 레포"
+            return {"kind": "repo_boot", "repo": repo, "goal": f"{repo} 레포 부팅 블랙박스 점검"}
+    # 외부 표적 — 인가(allowlist) 표적만 제안(미인가는 떠보기 방지).
+    if not toolbox.target_allowed(det.get("target")):
+        return None
+    return {"kind": "external", "target": det["target"], "goal": f"{det['target']} 블랙박스 보안 점검"}
 
 
 def _resolve_chat_ctx(cur, project_id: UUID) -> dict:

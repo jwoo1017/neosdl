@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   chatSocketUrl, createChatSession, createEngagement, deleteChatSession, fetchChatMessages,
-  fetchChatSessions, fetchModels, fetchTeamspaceProjects, renameChatSession, requestScan,
+  fetchChatSessions, fetchModels, fetchTeamspaceProjects, previewBootRecipe, renameChatSession, requestScan,
 } from "../api";
 import { useProjectAnalysis } from "../analysis/useProjectAnalysis";
 import AnalysisLockPanel from "../analysis/AnalysisLockPanel";
@@ -736,8 +736,8 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
         } else if (data.type === "risk") {
           setRiskByCid((prev) => ({ ...prev, [data.client_msg_id]: data.risk }));
         } else if (data.type === "pentest_suggestion") {
-          // 보안 점검 의도 + 인가 표적 감지 — 블랙박스 engagement 실행 제안(사용자 승인 후 실행).
-          setPentestSuggestion({ target: data.target, goal: data.goal });
+          // 보안 점검 의도 감지 — 블랙박스(외부 표적) 또는 레포 부팅 engagement 실행 제안.
+          setPentestSuggestion({ kind: data.kind || "external", target: data.target, repo: data.repo, goal: data.goal });
         } else if (data.type === "error") {
           if (data.error === "analysis_not_ready") {
             // 화면은 열려 있었는데 서버 기준으론 아직 — 상태를 다시 맞춘다.
@@ -1023,12 +1023,25 @@ function PentestSuggestionBanner({ projectId, suggestion, onDismiss }) {
   const [engId, setEngId] = useState(null);
   const [err, setErr] = useState(null);
 
+  const repoBoot = suggestion.kind === "repo_boot";
+
   const start = async () => {
     setBusy(true); setErr(null);
     try {
-      const res = await createEngagement(projectId, {
-        goal: suggestion.goal, mode: "automation", permission_mode: "ask", target: suggestion.target,
-      });
+      let res;
+      if (repoBoot) {
+        // 레시피 자동완성(실패해도 자동감지 폴백) → 레포 부팅 블랙박스 생성(auto 모드).
+        let recipe = null;
+        try { recipe = (await previewBootRecipe(projectId)).recipe; } catch { /* 폴백 */ }
+        res = await createEngagement(projectId, {
+          goal: suggestion.goal, mode: "automation", permission_mode: "auto",
+          boot_repo: true, ...(recipe ? { boot_recipe: recipe } : {}),
+        });
+      } else {
+        res = await createEngagement(projectId, {
+          goal: suggestion.goal, mode: "automation", permission_mode: "ask", target: suggestion.target,
+        });
+      }
       setEngId(res.id);   // 라이브 패널을 채팅 안에서 바로 띄운다
     } catch (e) {
       setErr(e.message);
@@ -1041,11 +1054,15 @@ function PentestSuggestionBanner({ projectId, suggestion, onDismiss }) {
   return (
     <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.6rem 0.8rem",
                                                display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
-      <span>🛡 인가된 표적 <code>{suggestion.target}</code> 에 보안 도구 점검을 실행할까요? (승인 필요 모드로 시작)</span>
+      <span>
+        {repoBoot
+          ? <>🚀 이 프로젝트 레포 <code>{suggestion.repo}</code> 를 샌드박스에 띄워 점검할까요? (자동 모드로 시작)</>
+          : <>🛡 인가된 표적 <code>{suggestion.target}</code> 에 보안 도구 점검을 실행할까요? (승인 필요 모드로 시작)</>}
+      </span>
       {err && <span className="alert-error" style={{ padding: "0.2rem 0.4rem" }}>{err}</span>}
       <span style={{ marginLeft: "auto", display: "flex", gap: "0.4rem" }}>
         <button className="btn-primary" onClick={start} disabled={busy}>
-          {busy ? "시작 중..." : "블랙박스 검증 실행"}
+          {busy ? "시작 중..." : (repoBoot ? "레포 부팅 블랙박스 실행" : "블랙박스 검증 실행")}
         </button>
         <button onClick={onDismiss} disabled={busy}>무시</button>
       </span>
