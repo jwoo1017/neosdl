@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 
-from app import agents, ai_providers, audit, pentest_routes, pentester, sandbox
+from app import agents, ai_providers, audit, engagement_bus, pentest_routes, pentester, sandbox
 from app.config import settings
 from app.db import tx
 from app.engagements import set_status
@@ -104,12 +104,23 @@ def _add_agent_action(cur, subtask_id: str, engagement_id: str, seq: int, rec: d
     else:
         r = rec.get("result") or {}
         output = {"ok": r.get("ok"), "exit_code": r.get("exit_code"),
-                  "timed_out": r.get("timed_out"), "output": (r.get("output") or r.get("error") or "")[:8000]}
+                  "timed_out": r.get("timed_out"), "output": (r.get("output") or r.get("error") or "")[:8000],
+                  "reason": rec.get("reason")}
         status = "done" if r.get("ok") else "error"
     cur.execute(
         "INSERT INTO agent_action (subtask_id, engagement_id, seq, agent_role, tool, input, output, "
         "status, finished_at) VALUES (%s,%s,%s,'pentester','terminal',%s::jsonb,%s::jsonb,%s::action_status, now())",
         (subtask_id, engagement_id, seq, json.dumps({"command": cmd}), json.dumps(output), status))
+
+
+def _step_event(seq: int, rec: dict) -> dict:
+    """pentester 스텝 rec → 라이브 버스 이벤트(채팅/EngageTab 타임라인용). 출력은 잘라 싣는다."""
+    if "rejected" in rec:
+        return {"kind": "step", "seq": seq, "command": rec.get("command"), "rejected": rec["rejected"]}
+    r = rec.get("result") or {}
+    return {"kind": "step", "seq": seq, "command": rec.get("command"), "ok": r.get("ok"),
+            "exit_code": r.get("exit_code"), "timed_out": r.get("timed_out"),
+            "output": (r.get("output") or r.get("error") or "")[:800], "reason": rec.get("reason")}
 
 
 def _load_prior_state(cur, engagement_id: str):
@@ -171,6 +182,7 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
 
     def persist(rec):
         _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
+        engagement_bus.notify_now(eid, _step_event(_seq[0], rec))   # 라이브 스트리밍(채팅/EngageTab)
         _seq[0] += 1
 
     try:
@@ -262,6 +274,7 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
 
         def persist(rec):
             _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
+            engagement_bus.notify_now(eid, _step_event(_seq[0], rec))   # 라이브 스트리밍(채팅/EngageTab)
             _seq[0] += 1
 
         approved = (engagement.get("params") or {}).get("approved_commands") or []

@@ -15,6 +15,7 @@ import { AUTO_MODEL, buildModelGroups, FALLBACK_MODELS, findModelOption } from "
 
 const MODEL_STORAGE_KEY = "neosdl.chat.model";
 import Popover from "../components/Popover";
+import LivePentestPanel from "../chat/LivePentestPanel";
 import PlusIcon from "../icons/PlusIcon";
 import CloseIcon from "../icons/CloseIcon";
 import AutoIcon from "../icons/AutoIcon";
@@ -1019,30 +1020,24 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
 // 채팅에서 공격 도구를 인라인 실행하지 않는다(실행은 샌드박스·permission·HITL·감사가 붙은 engagement).
 function PentestSuggestionBanner({ projectId, suggestion, onDismiss }) {
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
+  const [engId, setEngId] = useState(null);
   const [err, setErr] = useState(null);
 
   const start = async () => {
     setBusy(true); setErr(null);
     try {
-      await createEngagement(projectId, {
+      const res = await createEngagement(projectId, {
         goal: suggestion.goal, mode: "automation", permission_mode: "ask", target: suggestion.target,
       });
-      setDone(true);
+      setEngId(res.id);   // 라이브 패널을 채팅 안에서 바로 띄운다
     } catch (e) {
       setErr(e.message);
       setBusy(false);
     }
   };
 
-  if (done) {
-    return (
-      <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.6rem 0.8rem" }}>
-        블랙박스 검증을 시작했습니다. <strong>Security Analysis → Engagements</strong> 에서 진행·결과를 확인하세요.
-        <button onClick={onDismiss} style={{ marginLeft: "0.6rem" }}>닫기</button>
-      </div>
-    );
-  }
+  // 검증이 시작되면 채팅 안에서 실시간 진행(스텝·추론·승인·발견)을 보여준다.
+  if (engId) return <LivePentestPanel engagementId={engId} onDismiss={onDismiss} />;
   return (
     <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.6rem 0.8rem",
                                                display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>

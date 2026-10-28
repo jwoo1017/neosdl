@@ -30,6 +30,29 @@ def notify_engagement_event(cur, engagement_id, event: dict) -> None:
     )
 
 
+def notify_now(engagement_id, event: dict) -> None:
+    """메인 run tx 와 **별개의 짧은 tx**로 즉시 pg_notify — 스텝 진행을 실시간으로 민다.
+
+    엔게이지먼트는 단일 tx 에서 돌아 notify_engagement_event(같은 tx)는 커밋 시(=끝)에만 발화한다.
+    라이브(채팅/EngageTab 타임라인)를 위해선 중간에 발화해야 하므로, 풀에서 다른 커넥션을 받아
+    즉시 커밋하는 이 함수를 쓴다. 실패는 무시(best-effort — 라이브 못 밀어도 최종 결과는 영속됨).
+    NOTIFY 8KB 제한이라 큰 출력은 잘라 싣는다(전체는 최종 리포트에).
+    """
+    def _clip(v):
+        return v[:600] + "…" if isinstance(v, str) and len(v) > 600 else v
+
+    payload = json.dumps({"engagement_id": str(engagement_id), **event}, default=str)
+    if len(payload.encode("utf-8")) > 7500:
+        payload = json.dumps({"engagement_id": str(engagement_id),
+                              **{k: _clip(v) for k, v in event.items()}}, default=str)
+    try:
+        with tx() as cur:
+            cur.execute("SELECT pg_notify(%s, %s)", (_CHANNEL, payload))
+    except Exception:
+        import logging
+        logging.getLogger("app.engagement_bus").debug("notify_now 발화 실패", exc_info=True)
+
+
 def _fetch_engagement(engagement_id: str) -> dict | None:
     with tx() as cur:
         cur.execute(
