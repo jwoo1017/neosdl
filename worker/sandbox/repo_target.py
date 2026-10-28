@@ -42,6 +42,17 @@ def _container_ip(container, network: str) -> str | None:
     return info.get("IPAddress") or None
 
 
+def _ensure_image(client, image: str) -> None:
+    """이미지가 dind 스토어에 없으면 pull. containers.create 는 run 과 달리 자동 pull 을 안 하므로,
+    빌드하지 않는 backing(mysql/postgres/redis)·prebuilt 앱 이미지는 명시적으로 당겨와야 한다
+    (없으면 create 가 404 ImageNotFound). pull 은 dind 데몬이 수행(Docker Hub egress 사용).
+    """
+    try:
+        client.images.get(image)
+    except Exception:
+        client.images.pull(image)
+
+
 def _run_service(client, *, image: str, net: str, aliases: list[str], env: dict, eid: str,
                  command: list | None = None):
     """서비스 컨테이너를 engagement 네트워크에 기동(별칭=compose 서비스명 → 서비스간 DNS).
@@ -50,6 +61,7 @@ def _run_service(client, *, image: str, net: str, aliases: list[str], env: dict,
     실제로 뜨도록 cap_drop/비root 는 강제하지 않는다(dind·internal 네트워크·호스트마운트 없음으로 격리).
     command 는 레시피의 start_command override(이미지 CMD 를 덮음) — None 이면 이미지 기본.
     """
+    _ensure_image(client, image)   # create 는 자동 pull 안 함 — 없으면 먼저 당겨온다
     c = client.containers.create(
         image=image, detach=True, environment=env, command=command,
         labels={"neosdl.engagement": eid, "neosdl.role": "target"},
