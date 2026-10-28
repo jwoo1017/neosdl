@@ -31,7 +31,7 @@ services:
     # ⚠️ 관리자 권장: digest 로 고정한다(태그만 쓰면 재기동 때 이미지가 바뀔 수 있음).
     #   sudo docker inspect --format '{{index .RepoDigests 0}}' docker:27-dind
     #   → image: docker:27-dind@sha256:<그 값> 으로 교체
-    image: docker:27-dind
+    image: docker@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce  # = docker:27-dind 핀(업그레이드 시 위 명령으로 재확인·bump)
     privileged: true          # = 호스트 root. Phase 2.5 에서 VM 안으로 이동 대상. 외부 코드 금지.
     restart: unless-stopped
     # DNS: 이 서버는 외부 DNS 직접조회(8.8.8.8 등)를 pfSense 가 막는다. dind 안 dockerd 가 중첩
