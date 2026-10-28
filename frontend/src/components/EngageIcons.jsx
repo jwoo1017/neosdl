@@ -92,6 +92,22 @@ export const IconTerminal = (p) => (
 export const IconCheck = (p) => (<Svg {...p} title="성공"><path d="M4 12l5 5L20 6" /></Svg>);
 export const IconX = (p) => (<Svg {...p} title="실패"><path d="M6 6l12 12M18 6L6 18" /></Svg>);
 
+// 에이전트 추론(말풍선)
+export const IconThought = (p) => (
+  <Svg {...p} title="추론">
+    <path d="M5 5h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 3v-3H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />
+    <path d="M8 10h.01M12 10h.01M16 10h.01" />
+  </Svg>
+);
+
+// 인증 필요(자물쇠)
+export const IconLock = (p) => (
+  <Svg {...p} title="인증 필요">
+    <rect x="5" y="11" width="14" height="9" rx="2" />
+    <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+  </Svg>
+);
+
 // 명령어 → 도구 아이콘 매핑(소문자 접두 기준).
 export function toolIcon(command) {
   const c = (command || "").trim().toLowerCase();

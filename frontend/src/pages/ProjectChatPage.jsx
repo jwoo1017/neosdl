@@ -16,6 +16,7 @@ import { AUTO_MODEL, buildModelGroups, FALLBACK_MODELS, findModelOption } from "
 const MODEL_STORAGE_KEY = "neosdl.chat.model";
 import Popover from "../components/Popover";
 import LivePentestPanel from "../chat/LivePentestPanel";
+import { IconBoot, IconFinding } from "../components/EngageIcons";
 import PlusIcon from "../icons/PlusIcon";
 import CloseIcon from "../icons/CloseIcon";
 import AutoIcon from "../icons/AutoIcon";
@@ -1053,7 +1054,9 @@ function PentestSuggestionBanner({ projectId, suggestion, onDismiss }) {
     const envRows = Object.entries(recipe.env || {});
     return (
       <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.7rem 0.9rem" }}>
-        <div style={{ fontWeight: 600 }}>🚀 샌드박스에 이렇게 띄웁니다 — 확인 후 실행</div>
+        <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: "0.35rem" }}>
+          <IconBoot size={16} /> 샌드박스에 이렇게 띄웁니다 — 확인 후 실행
+        </div>
         <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.4rem", fontFamily: "monospace" }}>
           <div>이미지: {recipe.base_image || "-"}{recipe.needs_build ? " (dind 빌드)" : ""}</div>
           <div>시작: {recipe.start_command || "(이미지 기본)"}</div>
@@ -1087,10 +1090,10 @@ function PentestSuggestionBanner({ projectId, suggestion, onDismiss }) {
   return (
     <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.6rem 0.8rem",
                                                display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
-      <span>
+      <span style={{ display: "flex", alignItems: "center", gap: "0.35rem", flexWrap: "wrap" }}>
         {repoBoot
-          ? <>🚀 이 프로젝트 레포 <code>{suggestion.repo}</code> 를 샌드박스에 띄워 점검할까요? (부팅 계획을 먼저 보여드립니다)</>
-          : <>🛡 인가된 표적 <code>{suggestion.target}</code> 에 보안 도구 점검을 실행할까요? (승인 모드 — 각 명령 전 승인)</>}
+          ? <><IconBoot size={16} /> 이 프로젝트 레포 <code>{suggestion.repo}</code> 를 샌드박스에 띄워 점검할까요? (부팅 계획을 먼저 보여드립니다)</>
+          : <><IconFinding size={16} /> 인가된 표적 <code>{suggestion.target}</code> 에 보안 도구 점검을 실행할까요? (승인 모드 — 각 명령 전 승인)</>}
       </span>
       {err && <span className="alert-error" style={{ padding: "0.2rem 0.4rem" }}>{err}</span>}
       <span style={{ marginLeft: "auto", display: "flex", gap: "0.4rem" }}>

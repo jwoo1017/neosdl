@@ -5,7 +5,7 @@ import { useProject } from "../ProjectContext";
 import { createBackoff, isTerminalClose } from "../wsReconnect";
 import MarkdownAnswer from "../chat/MarkdownAnswer";
 import EngageTimeline from "../components/EngageTimeline";
-import { IconBoot, IconScan, IconFinding, IconEndpoint, IconReport, IconPause } from "../components/EngageIcons";
+import { IconBoot, IconScan, IconFinding, IconEndpoint, IconReport, IconPause, IconLock } from "../components/EngageIcons";
 
 // 섹션 제목 + 아이콘.
 function SectionHead({ icon: Icon, children }) {
@@ -174,7 +174,10 @@ export default function EngagementDetailPage() {
                     </td>
                     <td className="muted" style={{ fontSize: "0.78rem" }}>
                       {ep.resolved
-                        ? <>{ep.method} {ep.path}{ep.param ? ` (${ep.param})` : ""}{ep.auth_required ? " 🔒" : ""}</>
+                        ? <span style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem" }}>
+                            {ep.method} {ep.path}{ep.param ? ` (${ep.param})` : ""}
+                            {ep.auth_required ? <IconLock size={12} /> : null}
+                          </span>
                         : <span style={{ color: "var(--text-faint)" }}>미해석({ep.reason || "?"})</span>}
                     </td>
                     <td>
