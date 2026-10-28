@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     sandbox_pids_limit: int = 512
     sandbox_build_timeout_s: int = 600
     sandbox_boot_timeout_s: int = 180
+    # 툴박스 명령(nmap/nikto/sqlmap 등) 1건의 하드 타임아웃. 부팅 타임아웃과 분리 — 버전탐지
+    # 스캔은 부팅보다 오래 걸릴 수 있다. timeout --signal=KILL 로 초과 시 강제 종료(exit 137).
+    sandbox_exec_timeout_s: int = 300
     sandbox_session_ttl_s: int = 1800
     sandbox_egress_mode: Literal["none", "build_only", "proxy"] = "build_only"
     sandbox_artifact_root: str = "./sandbox"            # upload_root 패턴. 서버: /data/neosdl/sandbox

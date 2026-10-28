@@ -93,7 +93,7 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
                                      project_id=str(engagement["project_id"]), purpose="pentest_step")
 
     def toolbox_exec(argv):
-        return runner.exec_toolbox(container, argv, timeout_s=settings().sandbox_boot_timeout_s)
+        return runner.exec_toolbox(container, argv, timeout_s=settings().sandbox_exec_timeout_s)
 
     # 상태 영속/재개(PentAGI식): 이전 실행의 agent_action 을 불러와 이미 실행한 명령은 다시 안 돈다.
     # 승인된 명령(params.approved_commands)만 재개로 바로 실행하고, 매 스텝을 agent_action 에 저장한다.
