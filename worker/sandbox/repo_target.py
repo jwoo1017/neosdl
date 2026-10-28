@@ -159,6 +159,26 @@ def _wait_ready(exec_toolbox, web_ip: str, web_port: int | None, timeout_s: int)
     return False
 
 
+def _diag(containers) -> str:
+    """부팅 실패 시 컨테이너별 상태·종료코드·로그 tail — teardown 전에 호출해 worker.log 에 남긴다.
+
+    boot_timeout(앱이 포트 미개방)·예외의 원인은 거의 앱 로그에 있는데, 실패하면 컨테이너를
+    정리해버려 사후 조회가 안 된다. 그래서 정리 직전에 여기서 진단을 긁어 로그로 보존한다.
+    """
+    out = []
+    for c in containers:
+        try:
+            c.reload()
+            img = (c.attrs.get("Config") or {}).get("Image", "?")
+            state = c.attrs.get("State") or {}
+            logs = c.logs(tail=50).decode("utf-8", "replace")
+            out.append(f"[{img}] status={c.status} exit={state.get('ExitCode')} "
+                       f"err={state.get('Error') or ''}\n{logs[-1800:]}")
+        except Exception as exc:
+            out.append(f"[?] 진단 실패: {type(exc).__name__}: {exc}")
+    return "\n\n".join(out) or "(컨테이너 없음)"
+
+
 def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable, recipe: dict | None = None):
     """engagement 레포를 띄우고 (BootedTarget, None) 반환. 못 띄우면 (None, reason) — reason 은
     UI 리포트에 노출돼 운영자가 "왜 안 떴는지" 바로 본다(조용히 실패 아님).
@@ -247,12 +267,19 @@ def boot_repo_target(engagement: dict, runner, exec_toolbox_factory: Callable, r
                  eid, plan.compose or plan.dockerfile, web_ip, web_port, ready)
         if not ready and web_port:
             # 포트를 알고도 기동 타임아웃 → 빈 스캔으로 혼란 주지 말고 명시적 실패(정리 포함).
-            log.info("engagement %s 표적 미기동(timeout) %s:%s", eid, web_ip, web_port)
+            # 정리 전에 컨테이너 상태·로그를 남긴다(앱이 왜 포트를 못 열었는지 = 거의 여기 있음).
+            log.warning("engagement %s 표적 미기동(timeout) %s:%s — 컨테이너 진단:\n%s",
+                        eid, web_ip, web_port, _diag(containers))
             teardown()
-            return None, f"boot_timeout: {web_ip}:{web_port} 미응답(빌드 실패 또는 기동 지연)"
+            return None, (f"boot_timeout: {web_ip}:{web_port} 미응답 — 앱이 포트를 안 열었습니다"
+                          "(크래시/DB 미연결 가능). 컨테이너 상태·로그는 worker.log 참조")
         return BootedTarget(web_ip=web_ip, web_port=web_port, network=net, teardown=teardown), None
     except Exception as exc:
         log.exception("engagement %s 표적 부팅 실패 — 정리", eid)
+        try:
+            log.warning("engagement %s 예외 시 컨테이너 진단:\n%s", eid, _diag(containers))
+        except Exception:
+            pass
         try:
             runner.destroy(eid)
         except Exception:
