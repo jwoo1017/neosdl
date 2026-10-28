@@ -195,12 +195,20 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
                                                            recipe=recipe)
         if booted is None or "exec" not in state:
             reason = boot_reason or ("no_toolbox" if "exec" not in state else "unknown")
+            md = (
+                "# 레포 부팅 블랙박스 — 부팅 실패\n\n"
+                "표적 앱을 **띄우지 못했습니다.** 아래 사유·컨테이너 로그를 보고 레시피"
+                "(베이스 이미지·시작 명령·포트·env·Dockerfile)를 고쳐 다시 실행하세요.\n\n"
+                "## 사유 / 컨테이너 진단\n```\n" + str(reason)[:6000] + "\n```\n\n"
+                "### 흔한 원인\n"
+                "- 앱 `status=exited` + 로그에 `ECONNREFUSED`/`getaddrinfo <db>`/`Access denied` → "
+                "DB 연결 실패(기동 지연·크리덴셜). 잠시 후 재실행하거나 env 의 `DB_*`/`DB_HOST`(=DB 서비스명) 확인.\n"
+                "- 앱 `status=running`인데 미응답 → 포트 불일치 또는 `127.0.0.1` 바인드. `app_port`·시작 명령 확인.\n"
+                "- DB 컨테이너 `status=exited` → DB 자체가 못 뜸(env·디스크)."
+            )
             agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트",
-                                 {"markdown": f"# 레포 부팅 블랙박스\n\n표적 앱을 부팅하지 못했습니다.\n\n"
-                                              f"- 사유: `{reason}`\n\n"
-                                              "감지(Dockerfile/compose)·빌드·기동 단계 중 하나가 실패했습니다. "
-                                              "자세한 내용은 워커 로그를 확인하세요.",
-                                  "status": "boot_failed", "reason": reason, "findings": [], "steps": 0})
+                                 {"markdown": md, "status": "boot_failed", "reason": reason,
+                                  "findings": [], "steps": 0})
             agents._finish_task(cur, task_id, "blocked", {"status": "boot_failed", "reason": reason})
             return {"kind": "repo_blackbox", "status": "failed", "findings": 0, "steps": 0,
                     "pending_command": None, "reason": reason}
