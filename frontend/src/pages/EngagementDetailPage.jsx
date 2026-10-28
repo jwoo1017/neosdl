@@ -4,6 +4,17 @@ import { approveEngagement, engagementSocketUrl, fetchEngagement } from "../api"
 import { useProject } from "../ProjectContext";
 import { createBackoff, isTerminalClose } from "../wsReconnect";
 import MarkdownAnswer from "../chat/MarkdownAnswer";
+import EngageTimeline from "../components/EngageTimeline";
+import { IconBoot, IconScan, IconFinding, IconEndpoint, IconReport, IconPause } from "../components/EngageIcons";
+
+// 섹션 제목 + 아이콘.
+function SectionHead({ icon: Icon, children }) {
+  return (
+    <h2 style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
+      <Icon size={18} /> {children}
+    </h2>
+  );
+}
 
 const STATUS_BADGE = {
   queued: "badge-risk-low", planning: "badge-risk-low", running: "badge-risk-medium",
@@ -81,7 +92,10 @@ export default function EngagementDetailPage() {
   if (data === null) return <div className="dashboard"><p className="muted">불러오는 중...</p></div>;
 
   const eng = data.engagement;
-  const blackbox = !!(eng.params?.target);
+  // 블랙박스 계열(외부 표적 / 레포 부팅)은 모두 BlackboxDetail 로 — repo_blackbox 는 target 이 없어
+  // 예전엔 화이트박스 경로로 새어 소스열·점검범위가 안 보였다(수정).
+  const kind = eng.params?.engagement_kind;
+  const blackbox = !!(eng.params?.target) || kind === "blackbox" || kind === "repo_blackbox";
   if (blackbox) return (
     <BlackboxDetail eng={eng} report={data.report} connected={connected}
                     canApprove={hasProjectRole("manager")} onChange={load} />
@@ -225,24 +239,29 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
       setApproving(false);
     }
   };
+  const repoBoot = eng.params?.engagement_kind === "repo_blackbox";
+  const target = eng.params?.target || r.target || "-";
   return (
     <div className="dashboard">
-      <h1>
-        Engagement{" "}
+      <h1 style={{ display: "flex", alignItems: "center", gap: "0.45rem", flexWrap: "wrap" }}>
+        <IconBoot size={22} /> Engagement
         <span className={`badge ${STATUS_BADGE[eng.status] || ""}`}>{STATUS_LABEL[eng.status] || eng.status}</span>
-        <span className="badge" style={{ marginLeft: "0.4rem" }}>블랙박스</span>
-        {connected && <span className="muted" style={{ fontSize: "0.7rem", marginLeft: "0.5rem" }}>● 실시간</span>}
+        <span className="badge">{repoBoot ? "레포 부팅 블랙박스" : "블랙박스"}</span>
+        {connected && <span className="muted" style={{ fontSize: "0.7rem" }}>● 실시간</span>}
       </h1>
       <p className="muted">{eng.goal}</p>
       <div className="muted" style={{ fontSize: "0.8rem", marginBottom: "0.8rem" }}>
-        표적: <code>{eng.params?.target}</code>
+        표적: <code>{target}</code>
+        {r.web_port ? <> · 포트 <code>{r.web_port}</code></> : null}
         {" · "}권한 모드: {PERMISSION_LABEL[eng.permission_mode] || eng.permission_mode}
         {eng.error && <span style={{ color: "var(--danger, #ff6b74)" }}>{" · 오류: " + eng.error}</span>}
       </div>
 
       {awaiting && (
         <div className="dashboard-section" style={{ marginBottom: "0.8rem", padding: "0.7rem 0.9rem" }}>
-          <div>⏸ 승인 대기 — 다음 명령은 침투성이라 사람 승인이 필요합니다:</div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+            <IconPause size={16} /> 승인 대기 — 다음 명령은 침투성이라 사람 승인이 필요합니다:
+          </div>
           <div style={{ margin: "0.4rem 0" }}><code>{pending || r.pending_command}</code></div>
           {approveErr && <div className="alert-error" style={{ marginBottom: "0.5rem" }}>{approveErr}</div>}
           {canApprove ? (
@@ -266,7 +285,9 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
       </div>
 
       {(r.findings || []).length > 0 && (
-        <div className="table-scroll">
+        <div className="dashboard-section" style={{ marginTop: "1.2rem" }}>
+          <SectionHead icon={IconFinding}>발견 ({r.findings.length})</SectionHead>
+          <div className="table-scroll">
           <table className="repo-table">
             <thead><tr><th>심각도</th><th>제목</th><th>근거</th><th>소스 위치</th></tr></thead>
             <tbody>
@@ -282,12 +303,13 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
       {(r.endpoints || []).length > 0 && (
         <div className="dashboard-section" style={{ marginTop: "1.2rem" }}>
-          <h2>점검 범위 (엔드포인트 → 소스)</h2>
+          <SectionHead icon={IconEndpoint}>점검 범위 (엔드포인트 → 소스)</SectionHead>
           <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.3rem" }}>
             사원이 확인할 파일 범위입니다 — 발견 유무와 무관하게 점검한 엔드포인트의 소스 위치.
           </p>
@@ -312,10 +334,21 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
         </div>
       )}
 
+      {(r.history || []).length > 0 && (
+        <div className="dashboard-section" style={{ marginTop: "1.2rem" }}>
+          <SectionHead icon={IconScan}>실행 타임라인</SectionHead>
+          <EngageTimeline steps={r.history} />
+        </div>
+      )}
+
       {r.markdown && (
         <div className="dashboard-section" style={{ marginTop: "1.2rem" }}>
-          <h2>점검 리포트 (명령 로그)</h2>
-          <MarkdownAnswer content={r.markdown} />
+          <details>
+            <summary style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: "0.45rem" }}>
+              <IconReport size={16} /> 원문 리포트 (markdown)
+            </summary>
+            <div style={{ marginTop: "0.6rem" }}><MarkdownAnswer content={r.markdown} /></div>
+          </details>
         </div>
       )}
     </div>

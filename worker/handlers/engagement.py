@@ -73,9 +73,20 @@ def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list |
             h = f" — {e['handler']}" if e.get("handler") else ""
             flag = " [인증필요]" if e.get("auth") else ""
             lines.append(f"- `{e['method']} {e['path']}`{flag}  →  `{src}`{h}")
+    # 구조화 history — UI 가 마크다운 덤프 대신 스텝 카드(아이콘·상태·출력)로 렌더한다.
+    hist = []
+    for h in outcome.history:
+        if "rejected" in h:
+            hist.append({"command": h.get("command"), "rejected": h["rejected"]})
+            continue
+        r = h.get("result") or {}
+        hist.append({"command": h.get("command"), "ok": r.get("ok"),
+                     "exit_code": r.get("exit_code"), "timed_out": r.get("timed_out"),
+                     "output": (r.get("output") or r.get("error") or "")[:1800]})
     return {"markdown": "\n".join(lines), "target": target, "status": outcome.status,
             "findings": outcome.findings, "steps": outcome.steps,
-            "pending_command": outcome.pending_command, "endpoints": endpoints or []}
+            "pending_command": outcome.pending_command, "endpoints": endpoints or [],
+            "history": hist}
 
 
 def _add_subtask(cur, task_id: str, engagement_id: str, role: str) -> str:
