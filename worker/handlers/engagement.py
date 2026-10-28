@@ -23,8 +23,31 @@ log = logging.getLogger("worker.engagement")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 
 
-def _blackbox_report_body(target: str, outcome, *, title: str) -> dict:
-    """pentester outcome → 리포트 아티팩트 body(markdown + 구조화). 외부/레포 블랙박스 공용."""
+def _attach_source(findings: list, endpoints: list) -> list:
+    """발견에 소스 위치를 붙인다 — title/evidence 에 엔드포인트 path 가 있으면 그 엔드포인트의 file:line.
+
+    블랙박스 발견(sqlmap 등)은 URL 을 때린 결과라 소스 링크가 없다. 우린 코드그래프로 엔드포인트→
+    핸들러 소스를 알므로, "어떤 파일 몇 번째 줄" 을 발견에 역매핑해 사원이 바로 고칠 수 있게 한다.
+    """
+    if not endpoints:
+        return findings
+    eps = sorted(endpoints, key=lambda e: len(e.get("path") or ""), reverse=True)  # 긴 path 우선
+    for f in findings:
+        hay = f"{f.get('title', '')} {f.get('evidence', '')}"
+        for e in eps:
+            p = e.get("path")
+            if p and p in hay and e.get("file"):
+                f["file"], f["line"] = e["file"], e.get("line")
+                f["endpoint"] = f"{e['method']} {p}"
+                break
+    return findings
+
+
+def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list | None = None) -> dict:
+    """pentester outcome → 리포트 아티팩트 body(markdown + 구조화). 외부/레포 블랙박스 공용.
+
+    endpoints(소스 포함)를 주면 '점검 범위' 섹션으로 사원이 확인할 파일 범위를 특정한다.
+    """
     lines = [f"# {title}", f"- 표적: {target}", f"- 스텝: {outcome.steps}",
              f"- 상태: {outcome.status}", ""]
     for i, h in enumerate(outcome.history):
@@ -40,10 +63,19 @@ def _blackbox_report_body(target: str, outcome, *, title: str) -> dict:
     if outcome.findings:
         lines.append("\n## 발견")
         for f in outcome.findings:
-            lines.append(f"- [{f.get('severity','?')}] {f.get('title','')}: {f.get('evidence','')}")
+            loc = f"  →  `{f['file']}:{f.get('line')}`" if f.get("file") else ""
+            lines.append(f"- [{f.get('severity','?')}] {f.get('title','')}: {f.get('evidence','')}{loc}")
+    if endpoints:
+        lines.append("\n## 점검 범위 (엔드포인트 → 소스)")
+        lines.append("사원이 확인할 파일 범위입니다 — 발견 유무와 무관하게 점검한 엔드포인트의 소스 위치:")
+        for e in endpoints[:20]:
+            src = f"{e['file']}:{e.get('line')}" if e.get("file") else "(소스 미상)"
+            h = f" — {e['handler']}" if e.get("handler") else ""
+            flag = " [인증필요]" if e.get("auth") else ""
+            lines.append(f"- `{e['method']} {e['path']}`{flag}  →  `{src}`{h}")
     return {"markdown": "\n".join(lines), "target": target, "status": outcome.status,
             "findings": outcome.findings, "steps": outcome.steps,
-            "pending_command": outcome.pending_command}
+            "pending_command": outcome.pending_command, "endpoints": endpoints or []}
 
 
 def _add_subtask(cur, task_id: str, engagement_id: str, role: str) -> str:
@@ -237,7 +269,8 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
         except Exception:
             log.warning("레포 블랙박스 정리 실패", exc_info=True)
 
-    body = _blackbox_report_body(target, outcome, title="레포 부팅 블랙박스 리포트")
+    _attach_source(outcome.findings, endpoints)   # 발견 → 어떤 파일 몇 번째 줄
+    body = _blackbox_report_body(target, outcome, title="레포 부팅 블랙박스 리포트", endpoints=endpoints)
     body["web_port"] = booted.web_port
     agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트", body)
     agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",

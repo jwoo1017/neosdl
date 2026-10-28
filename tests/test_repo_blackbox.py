@@ -107,6 +107,17 @@ def test_run_repo_blackbox_threads_recipe_from_params(monkeypatch):
     assert captured["recipe"] == recipe        # params → boot_repo_target(recipe=...)
 
 
+def test_attach_source_maps_finding_to_endpoint_file_line():
+    """블랙박스 발견(명령에 엔드포인트 path 포함) → 그 엔드포인트의 소스 file:line 역매핑."""
+    eps = [{"method": "POST", "path": "/api/v1/auth/login",
+            "file": "src/routes/notAuthRouter.js", "line": 28, "handler": "authController.login"}]
+    findings = [{"title": 'SQL 인젝션 확인 — sqlmap -u ".../api/v1/auth/login" --data="email=1"',
+                 "severity": "critical", "evidence": "sqlmap: parameter=email"}]
+    eng._attach_source(findings, eps)
+    assert findings[0]["file"] == "src/routes/notAuthRouter.js" and findings[0]["line"] == 28
+    assert findings[0]["endpoint"] == "POST /api/v1/auth/login"
+
+
 def test_run_repo_blackbox_boot_failure_is_blocked_report(monkeypatch):
     monkeypatch.setattr(eng.sandbox, "assert_repo_allowed", lambda cur, rid, actor: "finble/exchange")
     monkeypatch.setattr(eng.ai_providers, "resolve_requested_model", lambda x: "m")

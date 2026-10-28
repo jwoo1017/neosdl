@@ -268,17 +268,47 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
       {(r.findings || []).length > 0 && (
         <div className="table-scroll">
           <table className="repo-table">
-            <thead><tr><th>심각도</th><th>제목</th><th>근거</th></tr></thead>
+            <thead><tr><th>심각도</th><th>제목</th><th>근거</th><th>소스 위치</th></tr></thead>
             <tbody>
               {r.findings.map((f, i) => (
                 <tr key={i}>
                   <td><span className={`badge ${SEV_BADGE[f.severity] || ""}`}>{f.severity || "?"}</span></td>
                   <td>{f.title}</td>
                   <td className="muted" style={{ fontSize: "0.78rem" }}>{f.evidence}</td>
+                  <td className="muted" style={{ fontSize: "0.75rem", fontFamily: "monospace" }}>
+                    {f.file ? `${f.file}:${f.line ?? "?"}` : "-"}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {(r.endpoints || []).length > 0 && (
+        <div className="dashboard-section" style={{ marginTop: "1.2rem" }}>
+          <h2>점검 범위 (엔드포인트 → 소스)</h2>
+          <p className="muted" style={{ fontSize: "0.8rem", marginTop: "-0.3rem" }}>
+            사원이 확인할 파일 범위입니다 — 발견 유무와 무관하게 점검한 엔드포인트의 소스 위치.
+          </p>
+          <div className="table-scroll">
+            <table className="repo-table">
+              <thead><tr><th>메서드</th><th>경로</th><th>인증</th><th>소스 위치</th></tr></thead>
+              <tbody>
+                {r.endpoints.map((e, i) => (
+                  <tr key={i}>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.78rem" }}>{e.method}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.78rem" }}>{e.path}</td>
+                    <td className="muted" style={{ fontSize: "0.75rem" }}>{e.auth ? "인증필요" : "공개"}</td>
+                    <td className="muted" style={{ fontSize: "0.75rem", fontFamily: "monospace" }}>
+                      {e.file ? `${e.file}:${e.line ?? "?"}` : "-"}
+                      {e.handler ? ` (${e.handler})` : ""}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
