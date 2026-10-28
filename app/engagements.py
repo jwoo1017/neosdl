@@ -40,6 +40,9 @@ class CreateEngagementIn(BaseModel):
     # 블랙박스 외부표적 모드: target(인가된 host/URL)을 주면 스캔 없이 샌드박스 도구로 점검한다.
     # 없으면 기존 화이트박스(스캔 기반 정적→동적 검증) 경로.
     target: str | None = None
+    # 레포 부팅 블랙박스: 워크스페이스 레포(Dockerfile/compose)를 샌드박스에 띄워 그 앱을 표적으로
+    # 점검한다. 표적 IP·allowlist 가 자동이라 운영자 수고가 없다. scan_id(소스 스냅샷) 필요.
+    boot_repo: bool = False
 
 
 def set_status(cur, engagement_id: str, status: str, *, error: str | None = None,
@@ -75,6 +78,7 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
     from app import toolbox
 
     blackbox = bool(body.target)
+    repo_boot = bool(body.boot_repo) and not blackbox
     if blackbox:
         # 표적 형식만 여기서 검증(인가 allowlist 는 실행 직전 worker 에서 assert_target_allowed).
         try:
@@ -88,16 +92,26 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
         ctx = _resolve_chat_ctx(cur, project_id)
         scan_id = body.scan_id or ctx.get("scan_id")
         if not scan_id and not blackbox:
-            # 화이트박스는 검증 대상 정적 스냅샷(스캔)이 반드시 필요. 블랙박스는 표적만 있으면 됨.
+            # 화이트박스·레포부팅은 소스/정적 스냅샷(스캔)이 반드시 필요. 외부표적 블랙박스만 예외.
             raise HTTPException(409, "no completed scan for this project yet")
-        params = {"target": body.target, "engagement_kind": "blackbox"} if blackbox else {}
+        if repo_boot and not ctx.get("repository_id"):
+            raise HTTPException(409, "no repository for this project")
+        if blackbox:
+            params = {"target": body.target, "engagement_kind": "blackbox"}
+            scan_val, kind = None, "blackbox"
+        elif repo_boot:
+            params = {"engagement_kind": "repo_blackbox"}
+            scan_val, kind = scan_id, "repo_blackbox"
+        else:
+            params = {}
+            scan_val, kind = scan_id, "whitebox"
         cur.execute(
             """
             INSERT INTO engagement (project_id, repository_id, scan_id, mode, permission_mode, goal,
                                     params, created_by)
             VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING id
             """,
-            (str(project_id), ctx.get("repository_id"), scan_id if not blackbox else None,
+            (str(project_id), ctx.get("repository_id"), scan_val,
              body.mode, body.permission_mode, body.goal, json.dumps(params), member["id"]),
         )
         engagement_id = str(cur.fetchone()["id"])
@@ -106,8 +120,7 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
         audit.record(cur, actor=f"user:{member['id']}", action="engagement.create",
                      subject={"engagement_id": engagement_id, "project_id": str(project_id)},
                      payload={"mode": body.mode, "permission_mode": body.permission_mode,
-                              "scan_id": scan_id if not blackbox else None,
-                              "kind": "blackbox" if blackbox else "whitebox"})
+                              "scan_id": scan_val, "kind": kind})
     return {"id": engagement_id, "status": "queued"}
 
 

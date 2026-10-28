@@ -43,6 +43,22 @@ def test_target_allowed_fail_closed(monkeypatch):
     assert toolbox.target_allowed("https://evil.example") is False
 
 
+def test_trusted_bypasses_allowlist_but_keeps_scope_lock(monkeypatch):
+    """self-boot 표적(trusted)은 allowlist 에 없어도 통과하되, 명령 안 다른 host 는 여전히 거부."""
+    _patch_allowlist(monkeypatch, allow="")       # allowlist 비어 있음(외부 경로라면 전부 거부)
+    # trusted=False: 부팅 IP 가 allowlist 에 없어 거부
+    with pytest.raises(CommandRejected) as ei:
+        toolbox.validate_command("nmap -Pn 172.18.0.3", "172.18.0.3")
+    assert ei.value.reason == "target_not_authorized"
+    # trusted=True: self-boot 표적이라 allowlist 생략 → 통과
+    argv = toolbox.validate_command("nmap -Pn 172.18.0.3", "172.18.0.3", trusted=True)
+    assert argv[0] == "nmap"
+    # trusted 라도 스코프 잠금은 유지 — 명령에 다른 host 가 섞이면 거부
+    with pytest.raises(CommandRejected) as ei2:
+        toolbox.validate_command("nmap 172.18.0.3 evil.example", "172.18.0.3", trusted=True)
+    assert ei2.value.reason == "out_of_scope_host"
+
+
 # --------------------------------------------------------------- 명령 검증
 def test_validate_allows_recon_tool(monkeypatch):
     _patch_allowlist(monkeypatch)

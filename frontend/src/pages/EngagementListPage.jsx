@@ -98,13 +98,20 @@ export default function EngagementListPage() {
 }
 
 function CreateEngagementModal({ projectId, onClose, onCreated }) {
-  const [kind, setKind] = useState("whitebox"); // whitebox(스캔 기반) | blackbox(외부 표적)
+  const [kind, setKind] = useState("whitebox"); // whitebox | blackbox(외부 표적) | repo_blackbox(레포 부팅)
   const [goal, setGoal] = useState("최신 스캔의 보안 finding 자동 검증(오탐 제거)");
   const [target, setTarget] = useState("");
   const [permissionMode, setPermissionMode] = useState("ask");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const blackbox = kind === "blackbox";
+  const repoBlackbox = kind === "repo_blackbox";
+
+  // 레포 부팅 블랙박스는 일회용·격리 표적이라 auto(사전 승인)가 기본 권장 — 선택 시 자동 전환.
+  const onKindChange = (v) => {
+    setKind(v);
+    if (v === "repo_blackbox") setPermissionMode("auto");
+  };
 
   const submit = async () => {
     if (!goal.trim()) { setError("목표를 입력하세요."); return; }
@@ -113,6 +120,7 @@ function CreateEngagementModal({ projectId, onClose, onCreated }) {
     try {
       const body = { goal: goal.trim(), mode: "automation", permission_mode: permissionMode };
       if (blackbox) body.target = target.trim();
+      if (repoBlackbox) body.boot_repo = true;
       const res = await createEngagement(projectId, body);
       onCreated(res.id);
     } catch (e) {
@@ -124,13 +132,14 @@ function CreateEngagementModal({ projectId, onClose, onCreated }) {
   return (
     <Modal title="검증 run 실행" onClose={onClose}>
       <label style={{ display: "block", marginBottom: "0.25rem" }}>검증 유형</label>
-      <select value={kind} onChange={(e) => setKind(e.target.value)} disabled={busy}
+      <select value={kind} onChange={(e) => onKindChange(e.target.value)} disabled={busy}
               style={{ width: "100%", boxSizing: "border-box" }}>
         <option value="whitebox">화이트박스 — 스캔의 finding을 샌드박스에서 재현/반증(오탐 제거)</option>
+        <option value="repo_blackbox">레포 부팅 블랙박스 — 이 레포(Docker/compose)를 자동으로 띄워 점검(IP·allowlist 불필요)</option>
         <option value="blackbox">블랙박스 — 인가된 외부 표적에 보안 도구(nmap/sqlmap) 점검</option>
       </select>
 
-      {blackbox ? (
+      {blackbox && (
         <>
           <label style={{ display: "block", marginTop: "0.8rem", marginBottom: "0.25rem" }}>표적 (host 또는 URL)</label>
           <input value={target} onChange={(e) => setTarget(e.target.value)} disabled={busy}
@@ -140,7 +149,14 @@ function CreateEngagementModal({ projectId, onClose, onCreated }) {
             표적은 서버 allowlist(법적 권한 보유)에 등록돼 있어야 실행됩니다. 미인가 표적은 거부됩니다.
           </p>
         </>
-      ) : (
+      )}
+      {repoBlackbox && (
+        <p className="muted" style={{ marginTop: "0.6rem", fontSize: "0.8rem" }}>
+          이 프로젝트의 레포(Dockerfile/compose)를 샌드박스에 자동으로 띄워 그 앱을 표적으로 점검합니다.
+          표적 IP·allowlist 등록이 필요 없습니다. 최근 완료된 스캔의 소스를 사용합니다.
+        </p>
+      )}
+      {!blackbox && !repoBlackbox && (
         <p className="muted" style={{ marginTop: "0.6rem" }}>대상 스캔은 이 프로젝트의 가장 최근 완료된 스캔이 자동 선택됩니다.</p>
       )}
 

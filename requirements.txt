@@ -30,3 +30,5 @@ python-multipart==0.0.20
 # sandbox dynamic verification (white-box DAST) - dind/Docker daemon control (worker/sandbox, app/dynamic).
 # sandbox_enabled=False by default; import is lazy. Linux server needs only this package.
 docker==7.1.0
+# compose 기반 레포 부팅 — compose 파일 파싱(worker/sandbox/compose.py). 보통 전이의존으로 이미 깔림.
+pyyaml==6.0.3

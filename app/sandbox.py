@@ -41,8 +41,16 @@ def assert_repo_allowed(cur: Cursor, repository_id: str, *, actor: str) -> str:
                      subject={"repository_id": str(repository_id), "repo": full_name},
                      payload={"reason": "sandbox_disabled"})
         raise HTTPException(409, "sandbox_disabled")
+    # 워크스페이스 멤버십 인가(기본): engagement 는 manager 권한자만 생성하므로, 그 프로젝트/
+    # 워크스페이스에 속한 사내 레포는 allowlist 수동 등록 없이 부팅을 허용한다. 외부/고객 레포는
+    # 애초에 그 워크스페이스에 없어야 하고 KVM 경계(Phase 2.5) 전까지 온보딩 금지.
+    if settings().sandbox_repo_authz == "workspace":
+        audit.record(cur, actor=actor, action="sandbox.authorized",
+                     subject={"repository_id": str(repository_id), "repo": full_name},
+                     payload={"authz": "workspace_membership"})
+        return full_name
     if not repo_allowed(full_name):
-        # 외부/고객 레포 또는 미등록 자사 레포 — Phase 2.5 경계 전까지 실행 금지.
+        # allowlist 모드(보수적): 외부/고객 레포 또는 미등록 자사 레포 — 실행 금지.
         audit.record(cur, actor=actor, action="sandbox.rejected",
                      subject={"repository_id": str(repository_id), "repo": full_name},
                      payload={"reason": "external_repo_not_allowed"})

@@ -23,6 +23,29 @@ log = logging.getLogger("worker.engagement")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 
 
+def _blackbox_report_body(target: str, outcome, *, title: str) -> dict:
+    """pentester outcome → 리포트 아티팩트 body(markdown + 구조화). 외부/레포 블랙박스 공용."""
+    lines = [f"# {title}", f"- 표적: {target}", f"- 스텝: {outcome.steps}",
+             f"- 상태: {outcome.status}", ""]
+    for i, h in enumerate(outcome.history):
+        if "rejected" in h:
+            lines.append(f"- [{i}] 거부({h['rejected']}): `{h['command']}`")
+            continue
+        r = h.get("result") or {}
+        timed = " (타임아웃)" if r.get("timed_out") else ""
+        lines.append(f"- [{i}] `{h['command']}` → ok={r.get('ok')} exit={r.get('exit_code')}{timed}")
+        out = (r.get("output") or r.get("error") or "").strip()
+        if out:   # 명령 출력(마스킹됨) 또는 거부 사유 — 화면에서 원인이 바로 보이게 코드블록으로
+            lines += ["", "```", out[:4000], "```", ""]
+    if outcome.findings:
+        lines.append("\n## 발견")
+        for f in outcome.findings:
+            lines.append(f"- [{f.get('severity','?')}] {f.get('title','')}: {f.get('evidence','')}")
+    return {"markdown": "\n".join(lines), "target": target, "status": outcome.status,
+            "findings": outcome.findings, "steps": outcome.steps,
+            "pending_command": outcome.pending_command}
+
+
 def _add_subtask(cur, task_id: str, engagement_id: str, role: str) -> str:
     cur.execute("INSERT INTO subtask (task_id, engagement_id, seq, assigned_role, status) "
                 "VALUES (%s,%s,%s,%s::agent_role,'running') RETURNING id",
@@ -119,29 +142,87 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
         except Exception:
             log.warning("툴박스 정리 실패", exc_info=True)
 
-    lines = [f"# 블랙박스 점검 리포트", f"- 표적: {target}", f"- 스텝: {outcome.steps}",
-             f"- 상태: {outcome.status}", ""]
-    for i, h in enumerate(outcome.history):
-        if "rejected" in h:
-            lines.append(f"- [{i}] 거부({h['rejected']}): `{h['command']}`")
-            continue
-        r = h.get("result") or {}
-        timed = " (타임아웃)" if r.get("timed_out") else ""
-        lines.append(f"- [{i}] `{h['command']}` → ok={r.get('ok')} exit={r.get('exit_code')}{timed}")
-        out = (r.get("output") or r.get("error") or "").strip()
-        if out:   # 명령 출력(마스킹됨) 또는 거부 사유 — 화면에서 원인이 바로 보이게 코드블록으로
-            lines += ["", "```", out[:4000], "```", ""]
-    if outcome.findings:
-        lines.append("\n## 발견")
-        for f in outcome.findings:
-            lines.append(f"- [{f.get('severity','?')}] {f.get('title','')}: {f.get('evidence','')}")
-    body = {"markdown": "\n".join(lines), "target": target, "status": outcome.status,
-            "findings": outcome.findings, "steps": outcome.steps,
-            "pending_command": outcome.pending_command}
+    body = _blackbox_report_body(target, outcome, title="블랙박스 점검 리포트")
     agents._add_artifact(cur, eid, task_id, "report", "블랙박스 점검 리포트", body)
     agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",
                         {"status": outcome.status, "findings": len(outcome.findings)})
     return {"kind": "blackbox", "status": outcome.status, "findings": len(outcome.findings),
+            "steps": outcome.steps, "pending_command": outcome.pending_command}
+
+
+def _run_repo_blackbox(cur, engagement: dict) -> dict:
+    """레포 부팅 블랙박스 — 워크스페이스 레포를 샌드박스에 띄우고 그 앱을 표적으로 점검한다.
+
+    외부표적(_run_blackbox)과 달리 표적을 우리가 만든다: assert_repo_allowed(워크스페이스 멤버십
+    인가) → 레포(Dockerfile/compose) 부팅 → 웹 컨테이너 IP 가 표적 → 같은 네트워크 툴박스로 점검.
+    표적이 self-boot(trusted)라 host allowlist·IP 조회가 필요 없고, 일회용이라 파괴 도구도 auto 에서
+    자동 허용된다(ask 면 건건 승인). 부팅 실패는 blocked 리포트로 명시(조용히 실패 안 함).
+    """
+    actor = "system:worker"
+    sandbox.assert_repo_allowed(cur, str(engagement["repository_id"]), actor=actor)  # 워크스페이스 인가
+
+    eid = str(engagement["id"])
+    permission_mode = engagement.get("permission_mode", "auto")
+    task_id = agents._add_task(cur, eid, 10, "pentester", "레포 부팅 블랙박스 점검")
+
+    from worker.sandbox import repo_target
+    from worker.sandbox.dind import DindRunner
+    runner = DindRunner()
+    model = ai_providers.resolve_requested_model(None)
+
+    def llm_generate(prompt: str) -> str:
+        return ai_providers.generate(model, prompt, json_mode=True, system=pentester.SYSTEM,
+                                     project_id=str(engagement["project_id"]), purpose="pentest_step")
+
+    # 툴박스는 부팅이 만든 engagement 네트워크에 올라가야 한다(표적 앱과 같은 네트워크). 부팅의
+    # readiness 체크에 쓴 그 툴박스를 펜테스터가 그대로 재사용한다(컨테이너 1개).
+    state: dict = {}
+
+    def exec_toolbox_factory(net):
+        tb = runner.start_toolbox(eid, network=net)
+
+        def _exec(argv):
+            return runner.exec_toolbox(tb, argv, timeout_s=settings().sandbox_exec_timeout_s)
+        state["exec"] = _exec
+        return _exec
+
+    booted = None
+    try:
+        booted = repo_target.boot_repo_target(engagement, runner, exec_toolbox_factory)
+        if booted is None or "exec" not in state:
+            agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트",
+                                 {"markdown": "# 레포 부팅 블랙박스\n\n표적 앱을 부팅하지 못했습니다"
+                                              "(Dockerfile/compose 감지 실패 또는 기동 타임아웃). 로그를 확인하세요.",
+                                  "status": "boot_failed", "findings": [], "steps": 0})
+            agents._finish_task(cur, task_id, "blocked", {"status": "boot_failed"})
+            return {"kind": "repo_blackbox", "status": "failed", "findings": 0, "steps": 0,
+                    "pending_command": None}
+
+        target = booted.web_ip
+        subtask_id = _add_subtask(cur, task_id, eid, "pentester")
+        _seq = [0]
+
+        def persist(rec):
+            _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
+            _seq[0] += 1
+
+        approved = (engagement.get("params") or {}).get("approved_commands") or []
+        outcome = pentester.run_pentester(
+            cur, target=target, llm_generate=llm_generate, toolbox_exec=state["exec"],
+            permission_mode=permission_mode, effective_role="manager", actor=actor,
+            approved_commands=approved, trusted_target=True, on_step=persist)
+    finally:
+        try:
+            runner.destroy(eid)   # 표적 컨테이너·툴박스·네트워크 정리(실패해도 best-effort)
+        except Exception:
+            log.warning("레포 블랙박스 정리 실패", exc_info=True)
+
+    body = _blackbox_report_body(target, outcome, title="레포 부팅 블랙박스 리포트")
+    body["web_port"] = booted.web_port
+    agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트", body)
+    agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",
+                        {"status": outcome.status, "findings": len(outcome.findings)})
+    return {"kind": "repo_blackbox", "status": outcome.status, "findings": len(outcome.findings),
             "steps": outcome.steps, "pending_command": outcome.pending_command}
 
 
@@ -193,13 +274,34 @@ def handle(payload: dict) -> None:
         engagement = dict(row)
         params = engagement.get("params") or {}
         target = params.get("target")
-        if not target and not row["scan_id"]:
+        kind = params.get("engagement_kind")
+        if kind == "repo_blackbox" and not row["scan_id"]:
+            # 레포 부팅 블랙박스는 부팅할 소스 스냅샷(스캔)이 필요하다.
+            set_status(cur, engagement_id, "failed", error="부팅할 소스 스냅샷(스캔)이 없습니다")
+            return
+        if not target and kind != "repo_blackbox" and not row["scan_id"]:
             # 화이트박스인데 스캔이 없다 — 검증할 정적 스냅샷이 없으므로 실패.
             set_status(cur, engagement_id, "failed", error="검증 대상 스캔이 없습니다")
             return
         set_status(cur, engagement_id, "running")
 
     try:
+        if kind == "repo_blackbox":
+            # --- 레포 부팅 블랙박스: 워크스페이스 레포를 띄워 그 앱을 표적으로 점검 ---
+            with tx() as cur:
+                cur.execute("SELECT status FROM engagement WHERE id=%s", (engagement_id,))
+                if cur.fetchone()["status"] == "cancelled":
+                    return
+                result = _run_repo_blackbox(cur, engagement)
+                status = result["status"]
+                final = status if status in ("awaiting_approval", "failed") else "succeeded"
+                set_status(cur, engagement_id, final, result=result)
+                audit.record(cur, actor="system:worker", action="engagement.finished",
+                             subject={"engagement_id": engagement_id}, payload=result)
+            log.info("engagement %s(repo_blackbox) %s: findings=%s steps=%s", engagement_id,
+                     result["status"], result["findings"], result["steps"])
+            return
+
         if target:
             # --- 블랙박스 외부표적: 스캔 없이 샌드박스 도구로 인가 표적 점검 ---
             with tx() as cur:

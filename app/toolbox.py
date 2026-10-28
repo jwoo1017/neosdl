@@ -123,10 +123,14 @@ def _extract_hosts(tokens: list[str]) -> set[str]:
     return hosts
 
 
-def validate_command(command: str, target: str) -> list[str]:
+def validate_command(command: str, target: str, *, trusted: bool = False) -> list[str]:
     """terminal 명령 문자열을 검증해 argv 로 반환. 통과 못 하면 CommandRejected.
 
     target 은 호출측이 인가받은 표적(host/URL). 명령 안의 모든 host 는 이 표적 host 로 고정돼야 한다.
+
+    trusted=True 는 표적이 **우리가 샌드박스에 직접 띄운 일회용 앱**(self-boot)일 때 — 그 경우
+    표적 인가는 레포 부팅 게이트(assert_repo_allowed)가 이미 담당했으므로 host allowlist 검사를
+    생략한다. 스코프 잠금(명령 안 다른 host 거부)·셸/익스플로잇 플래그 검사는 그대로 적용한다.
     """
     command = (command or "").strip()
     if not command:
@@ -151,7 +155,7 @@ def validate_command(command: str, target: str) -> list[str]:
             raise CommandRejected("forbidden_flag", flag)
 
     target_host, _ = parse_target(target)
-    if not host_in_scope(target_host):
+    if not trusted and not host_in_scope(target_host):
         raise CommandRejected("target_not_authorized", target_host)
     foreign = {h for h in _extract_hosts(argv[1:]) if h != target_host}
     if foreign:

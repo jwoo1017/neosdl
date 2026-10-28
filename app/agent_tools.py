@@ -61,7 +61,8 @@ class AuthzDecision:
 
 
 def authorize(spec: "ToolSpec", *, permission_mode: str, effective_role: str | None,
-              params: dict | None = None, approved: bool = False) -> AuthzDecision:
+              params: dict | None = None, approved: bool = False,
+              trusted_target: bool = False) -> AuthzDecision:
     """도구 호출을 permission_mode·역할·destructive 로 게이트(순수 함수 — Docker/DB 무의존).
 
     - read 도구: 항상 허용(채팅과 동일, 이미 엔드포인트에서 인가됨).
@@ -69,6 +70,11 @@ def authorize(spec: "ToolSpec", *, permission_mode: str, effective_role: str | N
     - ask: 모든 exec 가 승인 필요.
     - auto: 자동 진행하되 destructive 는 항상 승인 필요(하드 가드).
     역할 미달은 승인으로도 못 넘는 거부(needs_approval=False).
+
+    trusted_target=True 는 **우리가 직접 띄운 일회용 샌드박스 앱**(self-boot)이 표적일 때 — 그
+    경우 파괴 도구(sqlmap 등)도 격리된 throwaway 대상이라 auto 에서 자동 허용한다(destructive
+    하드가드 면제). 단 plan(exec 금지)·ask(건건 승인)·역할 게이트는 그대로다. 외부 표적
+    (trusted_target=False)은 기존대로 auto 라도 destructive 는 승인 필요.
     """
     if spec.kind == "read":
         return AuthzDecision(True, False)
@@ -76,7 +82,7 @@ def authorize(spec: "ToolSpec", *, permission_mode: str, effective_role: str | N
         return AuthzDecision(False, False, "insufficient_role")
     if permission_mode == "plan":
         return AuthzDecision(False, False, "plan_mode_no_exec")
-    needs_approval = (permission_mode == "ask") or spec.is_destructive(params)
+    needs_approval = (permission_mode == "ask") or (spec.is_destructive(params) and not trusted_target)
     if needs_approval and not approved:
         return AuthzDecision(False, True, "approval_required")
     return AuthzDecision(True, needs_approval)

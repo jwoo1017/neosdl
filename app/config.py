@@ -113,6 +113,12 @@ class Settings(BaseSettings):
     # privileged dind = 호스트 root 이므로 fail-closed: 비어 있으면 아무 레포도 실행 못 한다.
     # 외부/고객 레포는 Phase 2.5 격리 경계(KVM VM) 전까지 여기 넣지 않는다 — 자사·검증 레포만.
     sandbox_repo_allowlist: str = ""
+    # 레포 부팅(=코드 실행) 인가 방식.
+    #  - "workspace"(기본): 워크스페이스 멤버십으로 인가. engagement 는 manager 권한자만 생성하므로
+    #    그 프로젝트/워크스페이스에 속한 사내 레포는 별도 allowlist 등록 없이 부팅할 수 있다.
+    #    (사내 코드 전제. 외부/고객 레포는 애초에 그 워크스페이스에 없어야 하며 KVM 경계 전까지 금지.)
+    #  - "allowlist": 보수적. sandbox_repo_allowlist 에 명시된 레포만 부팅(기존 동작).
+    sandbox_repo_authz: Literal["workspace", "allowlist"] = "workspace"
     # --- PentAGI 흡수: 보안 도구 실행(terminal) ---
     # 보안 도구(nmap/sqlmap/...) 20+ 가 내장된 툴박스 이미지. 자체 curated slim 으로 교체 가능.
     sandbox_toolbox_image: str = "vxcontrol/kali-linux"
