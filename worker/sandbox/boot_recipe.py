@@ -142,14 +142,30 @@ def _backing_alias(root: Path, plan: detect.StackPlan) -> str | None:
     return plan.required_services[0] if plan.required_services else None
 
 
+# 앱 전용 DB 네임스페이스까지 통일 대상(DB_HOST, SOLFIN_DB_HOST, DB_HOST_PROD, MYSQL_DB_NAME …).
+_DB_FIELD = re.compile(r"DB_(HOST|PORT|NAME|USER|PASSWORD|ROOT_PASSWORD)(?:_PROD)?$", re.I)
+
+
 def _app_env(root: Path, db_creds: dict[str, str], app_port: int) -> dict[str, str]:
-    """런타임 app env — .env.example 을 더미로 채우고 DB_* 통일 + PORT 고정."""
+    """런타임 app env — .env.example 을 더미로 채우고, **모든 DB_* 계열 키**를 backing(mysql)로
+    통일 + PORT 고정. 앱이 DB_* 말고 SOLFIN_DB_* 같은 전용 네임스페이스를 써도 접속되게 한다
+    (단일 mysql·단일 더미 크리덴셜로 수렴 — 사람이 모달에서 더 조정 가능).
+    """
     env: dict[str, str] = {}
     for k, v in _parse_env_file(root / ".env.example").items():
         env[k] = v or "sbx"
     env.update(db_creds)              # DB_* 통일(DB_HOST=backing 별칭 포함)
     env["PORT"] = str(app_port)
     env.setdefault("NODE_ENV", "production")
+    # *_DB_HOST/PORT/NAME/USER/PASSWORD(및 _PROD) 전부 같은 backing·크리덴셜로 수렴.
+    unified = {"HOST": db_creds.get("DB_HOST", ""), "PORT": db_creds.get("DB_PORT", "3306"),
+               "NAME": db_creds.get("DB_NAME", ""), "USER": db_creds.get("DB_USER", ""),
+               "PASSWORD": db_creds.get("DB_PASSWORD", ""),
+               "ROOT_PASSWORD": db_creds.get("DB_ROOT_PASSWORD", "")}
+    for k in list(env.keys()):
+        m = _DB_FIELD.search(k)
+        if m:
+            env[k] = unified[m.group(1).upper()]
     return env
 
 

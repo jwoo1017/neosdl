@@ -11,8 +11,10 @@ Dockerfile 단일 레포는 detect 의 백킹서비스 추론을 재사용한다
 
 from __future__ import annotations
 
+import io
 import logging
 import re
+import tarfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,21 +55,49 @@ def _ensure_image(client, image: str) -> None:
         client.images.pull(image)
 
 
+def _inject_file(container, dest_path: str, content: str) -> None:
+    """컨테이너(미기동)에 파일 1개를 써 넣는다(put_archive). 바인드마운트 없이 /app/.env 주입용.
+
+    일부 앱은 env 변수가 아니라 **물리 .env 파일**을 요구한다(dotenv 로더가 없으면 throw). 빌드
+    이미지에 굽지 않고 기동 직전 넣어 격리를 유지한다. dest_path 의 디렉터리는 이미지에 있어야 한다.
+    """
+    data = content.encode("utf-8")
+    dirpath, _, name = dest_path.rpartition("/")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo(name=name)
+        info.size = len(data)
+        info.mode = 0o644
+        tar.addfile(info, io.BytesIO(data))
+    container.put_archive(dirpath or "/", buf.getvalue())
+
+
 def _run_service(client, *, image: str, net: str, aliases: list[str], env: dict, eid: str,
-                 command: list | None = None):
+                 command: list | None = None, env_file: tuple[str, str] | None = None,
+                 restart: bool = False):
     """서비스 컨테이너를 engagement 네트워크에 기동(별칭=compose 서비스명 → 서비스간 DNS).
 
     하드닝: privileged=False, 바인드마운트/호스트네트워크 없음, 리소스 상한. 임의 레포 앱·DB 가
     실제로 뜨도록 cap_drop/비root 는 강제하지 않는다(dind·internal 네트워크·호스트마운트 없음으로 격리).
     command 는 레시피의 start_command override(이미지 CMD 를 덮음) — None 이면 이미지 기본.
+    env_file=(경로, 내용) 이면 기동 직전 그 파일을 써 넣는다(물리 .env 요구 앱용).
+    restart=True 면 on-failure 재시작 — 앱이 DB(backing) 준비 전에 떠서 크래시해도 준비되면 복구.
     """
     _ensure_image(client, image)   # create 는 자동 pull 안 함 — 없으면 먼저 당겨온다
+    kw = {}
+    if restart:
+        kw["restart_policy"] = {"Name": "on-failure", "MaximumRetryCount": 20}
     c = client.containers.create(
         image=image, detach=True, environment=env, command=command,
         labels={"neosdl.engagement": eid, "neosdl.role": "target"},
         mem_limit=settings().sandbox_mem_limit, memswap_limit=settings().sandbox_mem_limit,
-        pids_limit=settings().sandbox_pids_limit, privileged=False)
+        pids_limit=settings().sandbox_pids_limit, privileged=False, **kw)
     client.networks.get(net).connect(c, aliases=aliases)
+    if env_file is not None:
+        try:
+            _inject_file(c, env_file[0], env_file[1])
+        except Exception:
+            log.warning("engagement %s .env 주입 실패(%s)", eid, env_file[0], exc_info=True)
     c.start()
     return c
 
@@ -137,10 +167,14 @@ def _boot_from_recipe(runner, client, root: str, plan, net: str, eid: str, recip
         app_img = recipe["base_image"]
 
     # 3) app 컨테이너 — start_command override + 레시피 env(DB_HOST=backing 별칭)로 기동.
+    #    env 는 process.env 로도 넣고, 물리 .env 파일(/app/.env)로도 써 넣는다(dotenv 요구 앱 대비).
+    app_env = dict(recipe.get("env") or {})
     cmd = recipe.get("start_command")
     command = ["sh", "-c", cmd] if isinstance(cmd, str) and cmd.strip() else None
-    app = _run_service(client, image=app_img, net=net, aliases=["app"],
-                       env=dict(recipe.get("env") or {}), eid=eid, command=command)
+    dotenv = "".join(f"{k}={v}\n" for k, v in app_env.items())
+    env_path = recipe.get("env_file_path") or "/app/.env"
+    app = _run_service(client, image=app_img, net=net, aliases=["app"], env=app_env, eid=eid,
+                       command=command, env_file=(env_path, dotenv), restart=True)
     containers.append(app)
     web_port = recipe.get("app_port")
     return app, int(web_port) if web_port else None

@@ -34,7 +34,10 @@ _PKG = {
     "dependencies": {"express": "^5.2.1", "mysql2": "^3.22.5", "sequelize": "^6.37.8"},
 }
 
-_ENV_EXAMPLE = "PORT=4000\nDB_HOST=localhost\nDB_PORT=3306\nDB_NAME=exchange\nDB_USER=root\nDB_PASSWORD=secret\n"
+_ENV_EXAMPLE = (
+    "PORT=4000\nDB_HOST=localhost\nDB_PORT=3306\nDB_NAME=exchange\nDB_USER=root\nDB_PASSWORD=secret\n"
+    # 앱 전용 DB 네임스페이스(실제 exchange-sample-backend 가 쓰는 solfin 커넥션) — localhost 로 박혀 있음
+    "SOLFIN_DB_HOST=127.0.0.1\nSOLFIN_DB_NAME=finble\nSOLFIN_DB_USER=finble\nSOLFIN_DB_PASSWORD=change-me\n")
 
 
 def _exchange_like(tmp_path):
@@ -69,6 +72,10 @@ def test_draft_recipe_wires_db_env_to_backing_alias(tmp_path):
     # backing(${DB_PASSWORD})과 app 이 같은 더미값을 쓰도록 db_credentials 로 묶임
     assert recipe["db_credentials"]["DB_PASSWORD"] == recipe["env"]["DB_PASSWORD"]
     assert recipe["db_credentials"]["DB_NAME"] == recipe["env"]["DB_NAME"]
+    # 앱 전용 네임스페이스(SOLFIN_DB_*)도 같은 backing/크리덴셜로 통일 — 127.0.0.1 → mysql
+    assert recipe["env"]["SOLFIN_DB_HOST"] == "mysql"
+    assert recipe["env"]["SOLFIN_DB_USER"] == recipe["db_credentials"]["DB_USER"]
+    assert recipe["env"]["SOLFIN_DB_PASSWORD"] == recipe["db_credentials"]["DB_PASSWORD"]
 
 
 def test_image_allowed_repo_level(tmp_path):
