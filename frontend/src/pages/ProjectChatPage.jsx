@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
-  chatSocketUrl, createChatSession, createEngagement, deleteChatSession, fetchChatMessages,
-  fetchChatSessions, fetchModels, fetchTeamspaceProjects, previewBootRecipe, renameChatSession, requestScan,
+  chatSocketUrl, createChatSession, deleteChatSession, fetchChatMessages,
+  fetchChatSessions, fetchModels, fetchTeamspaceProjects, renameChatSession, requestScan,
 } from "../api";
 import { useProjectAnalysis } from "../analysis/useProjectAnalysis";
 import AnalysisLockPanel from "../analysis/AnalysisLockPanel";
@@ -15,14 +15,14 @@ import { AUTO_MODEL, buildModelGroups, FALLBACK_MODELS, findModelOption } from "
 
 const MODEL_STORAGE_KEY = "neosdl.chat.model";
 import Popover from "../components/Popover";
-import LivePentestPanel from "../chat/LivePentestPanel";
-import { IconBoot, IconFinding } from "../components/EngageIcons";
+import PentestActionCard from "../chat/PentestActionCard";
 import PlusIcon from "../icons/PlusIcon";
 import CloseIcon from "../icons/CloseIcon";
 import AutoIcon from "../icons/AutoIcon";
 import { historyEvents } from "../AgentActivityTimeline";
 import ChatMessage from "../chat/ChatMessage";
 import { useMe } from "../MeContext";
+import { useDialog } from "../dialog/DialogContext";
 import { createBackoff, isTerminalClose } from "../wsReconnect";
 import { useThrottledValue } from "../chat/useThrottledValue";
 import {
@@ -398,6 +398,7 @@ function ChatHeader({
   const [sessionQuery, setSessionQuery] = useState("");
   const sessionBtnRef = useRef(null);
   const moreBtnRef = useRef(null);
+  const dialog = useDialog();
 
   const closeMenu = () => {
     setOpenMenu(null);
@@ -421,16 +422,21 @@ function ChatHeader({
     }
   };
 
-  const renameActive = () => {
+  const renameActive = async () => {
     const current = list.find((s) => s.id === activeSessionId);
-    const next = window.prompt("세션 이름 바꾸기", current?.title || "");
-    if (next != null && next.trim()) onRenameSession(activeSessionId, next);
     closeMenu();
+    const next = await dialog.prompt({ title: "세션 이름 바꾸기", defaultValue: current?.title || "" });
+    if (next != null && next.trim()) onRenameSession(activeSessionId, next);
   };
 
-  const deleteActive = () => {
-    if (window.confirm("이 세션을 삭제할까요? 목록에서 사라집니다.")) onDeleteSession(activeSessionId);
+  const deleteActive = async () => {
     closeMenu();
+    if (await dialog.confirm({
+      title: "세션 삭제",
+      message: "이 세션을 삭제할까요? 목록에서 사라집니다.",
+      confirmLabel: "삭제",
+      danger: true,
+    })) onDeleteSession(activeSessionId);
   };
 
   return (
@@ -975,7 +981,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
       {error && <div className="alert-error">{error}</div>}
 
       {pentestSuggestion && (
-        <PentestSuggestionBanner
+        <PentestActionCard
           projectId={projectId}
           suggestion={pentestSuggestion}
           onDismiss={() => setPentestSuggestion(null)}
@@ -1019,89 +1025,4 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
 
 // 보안 점검 의도가 감지되면 뜨는 배너 — 승인(버튼 클릭) 시에만 블랙박스 engagement 를 띄운다.
 // 채팅에서 공격 도구를 인라인 실행하지 않는다(실행은 샌드박스·permission·HITL·감사가 붙은 engagement).
-function PentestSuggestionBanner({ projectId, suggestion, onDismiss }) {
-  const [busy, setBusy] = useState(false);
-  const [engId, setEngId] = useState(null);
-  const [err, setErr] = useState(null);
-  const [recipe, setRecipe] = useState(null);   // repo_boot: 부팅 전 확인용 레시피(env/계획)
-  const repoBoot = suggestion.kind === "repo_boot";
-
-  // repo_boot 1단계: 레시피(이미지·시작명령·env·docker)를 먼저 받아 "무엇을 어떻게 띄울지" 보여준다.
-  const prepare = async () => {
-    setBusy(true); setErr(null);
-    try { setRecipe((await previewBootRecipe(projectId)).recipe || {}); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
-
-  // 실제 생성 — 둘 다 ask 모드(각 명령은 실행 전 승인). repo_boot 는 확인한 recipe 를 그대로 사용.
-  const create = async (body) => {
-    setBusy(true); setErr(null);
-    try { setEngId((await createEngagement(projectId, body)).id); }
-    catch (e) { setErr(e.message); setBusy(false); }
-  };
-  const startExternal = () => create({
-    goal: suggestion.goal, mode: "automation", permission_mode: "ask", target: suggestion.target });
-  const startRepoBoot = () => create({
-    goal: suggestion.goal, mode: "automation", permission_mode: "ask", boot_repo: true,
-    ...(recipe && Object.keys(recipe).length ? { boot_recipe: recipe } : {}) });
-
-  // 검증이 시작되면 채팅 안에서 실시간 진행(스텝·추론·승인·발견)을 보여준다.
-  if (engId) return <LivePentestPanel engagementId={engId} onDismiss={onDismiss} />;
-
-  // repo_boot 2단계: 부팅 계획/ env 확인 후 "이대로 띄우기"(승인 모드).
-  if (repoBoot && recipe) {
-    const envRows = Object.entries(recipe.env || {});
-    return (
-      <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.7rem 0.9rem" }}>
-        <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: "0.35rem" }}>
-          <IconBoot size={16} /> 샌드박스에 이렇게 띄웁니다 — 확인 후 실행
-        </div>
-        <div className="muted" style={{ fontSize: "0.8rem", marginTop: "0.4rem", fontFamily: "monospace" }}>
-          <div>이미지: {recipe.base_image || "-"}{recipe.needs_build ? " (dind 빌드)" : ""}</div>
-          <div>시작: {recipe.start_command || "(이미지 기본)"}</div>
-          <div>포트: {recipe.app_port ?? "-"}</div>
-        </div>
-        {envRows.length > 0 && (
-          <details style={{ marginTop: "0.4rem" }}>
-            <summary style={{ cursor: "pointer", fontSize: "0.8rem" }}>env ({envRows.length}개) 보기</summary>
-            <pre style={{ fontSize: "0.72rem", maxHeight: 160, overflow: "auto",
-                          background: "var(--code-bg, rgba(127,127,127,0.1))", padding: "0.5rem", borderRadius: 6 }}>
-              {envRows.map(([k, v]) => `${k}=${v}`).join("\n")}
-            </pre>
-          </details>
-        )}
-        <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.4rem" }}>
-          승인 모드로 시작합니다 — nmap/sqlmap 등 각 명령은 <strong>실행 전 승인</strong>을 받습니다.
-          세밀한 조정은 Security → Engagements 모달에서.
-        </p>
-        {err && <div className="alert-error" style={{ marginTop: "0.4rem" }}>{err}</div>}
-        <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.5rem" }}>
-          <button className="btn-primary" onClick={startRepoBoot} disabled={busy}>
-            {busy ? "기동 중..." : "이대로 띄우기"}
-          </button>
-          <button onClick={onDismiss} disabled={busy}>취소</button>
-        </div>
-      </div>
-    );
-  }
-
-  // 초기 제안 배너
-  return (
-    <div className="dashboard-section" style={{ margin: "0.4rem 0", padding: "0.6rem 0.8rem",
-                                               display: "flex", alignItems: "center", gap: "0.6rem", flexWrap: "wrap" }}>
-      <span style={{ display: "flex", alignItems: "center", gap: "0.35rem", flexWrap: "wrap" }}>
-        {repoBoot
-          ? <><IconBoot size={16} /> 이 프로젝트 레포 <code>{suggestion.repo}</code> 를 샌드박스에 띄워 점검할까요? (부팅 계획을 먼저 보여드립니다)</>
-          : <><IconFinding size={16} /> 인가된 표적 <code>{suggestion.target}</code> 에 보안 도구 점검을 실행할까요? (승인 모드 — 각 명령 전 승인)</>}
-      </span>
-      {err && <span className="alert-error" style={{ padding: "0.2rem 0.4rem" }}>{err}</span>}
-      <span style={{ marginLeft: "auto", display: "flex", gap: "0.4rem" }}>
-        <button className="btn-primary" onClick={repoBoot ? prepare : startExternal} disabled={busy}>
-          {busy ? "준비 중..." : (repoBoot ? "부팅 계획 보기" : "블랙박스 검증 실행")}
-        </button>
-        <button onClick={onDismiss} disabled={busy}>무시</button>
-      </span>
-    </div>
-  );
-}
+// PentestSuggestionBanner 는 chat/PentestActionCard.jsx 로 분리·재설계됨(LLM 채팅 액션 카드).
