@@ -36,6 +36,20 @@ _GLOSSARY = [
     (re.compile(r"접근통제 결함|broken access|비인증 접근", re.I), "access", "접근통제 결함(비인증 접근)",
      "로그인이 필요한 엔드포인트가 인증 없이도 응답합니다. 남의 데이터 열람·변조(IDOR 포함) 위험이 있습니다.",
      "서버에서 모든 보호 라우트에 인증·인가 미들웨어를 강제하고, 객체 소유권(본인 자원인지)을 매 요청 확인하세요."),
+    # nikto 가 영어 원문으로 내는 '웹에 노출된 파일/디렉터리'류 — 사전이 없으면 info 로 떨어져 영어 그대로
+    # 나오고 소스 줄도 안 붙던 것(사용자 지적). 소스 엔드포인트가 아니라 정적 서빙·배포 설정 문제라
+    # kind=exposure 로 묶어 한국어 설명 + 정적 서빙 줄 앵커를 붙인다.
+    (re.compile(r"\.(?:bash|sh|zsh|ksh|mysql|psql|sqlite)_history|shell history|"
+                r"home directory may be set to the web root|database sql", re.I), "exposure",
+     "명령 기록 파일 노출(셸/DB 히스토리)",
+     "서버의 셸·DB 접속 기록 파일(.bash_history, .mysql_history 등)이 웹에 그대로 열립니다. 과거 실행한 명령과, 때로는 평문 비밀번호까지 읽힙니다.",
+     "홈 디렉터리를 웹 루트로 쓰지 말고, 정적 서빙 디렉터리에서 점(.)으로 시작하는 숨김 파일이 노출되지 않게 차단하세요."),
+    (re.compile(r"\.htpasswd|authorization information", re.I), "exposure", "인증 정보 파일(.htpasswd) 노출",
+     "HTTP 기본 인증의 사용자명·비밀번호 해시가 담긴 .htpasswd 파일이 웹에서 열립니다. 해시를 받아 크랙하면 계정이 뚫립니다.",
+     "이 파일을 웹 루트 밖으로 옮기거나 웹 서버에서 접근을 차단(deny)하세요. 노출됐다면 해당 비밀번호를 즉시 교체하세요."),
+    (re.compile(r"might be interesting|directory indexing|index of /", re.I), "exposure", "노출된 경로/디렉터리",
+     "숨겨져 있어야 할 경로나 디렉터리 목록이 웹에 노출됩니다. 내부 파일 구조·업로드물·백업이 드러나 추가 공격의 발판이 됩니다.",
+     "필요 없으면 해당 경로를 제거하고, 디렉터리 리스팅을 끄거나(autoindex off / express.static 의 자동 인덱싱 비활성) 접근을 제한하세요."),
     (re.compile(r"민감 경로 노출|민감파일|sensitive (?:path|file)", re.I), "exposure", "민감 경로/파일 노출",
      "소스·백업·설정·비밀 파일(.git, .env, *.sql 등)이 웹에서 바로 내려받아집니다. 그대로 자격증명·코드 유출로 이어집니다.",
      "해당 경로를 웹루트에서 제거하거나 접근 차단(deny)하고, 비밀은 환경변수·시크릿 매니저로 옮긴 뒤 노출된 값은 즉시 교체하세요."),
@@ -74,6 +88,11 @@ _ANCHORS = {
     "header": [re.compile(r"\bhelmet\s*\("), re.compile(r"=\s*express\s*\(\s*\)"),
                re.compile(r"=\s*FastAPI\s*\("), re.compile(r"=\s*Flask\s*\("),
                re.compile(r"\.listen\s*\("), re.compile(r"\buvicorn\.run\s*\(")],
+    # 노출 파일/디렉터리는 소스 엔드포인트가 없다 — '어디서 고치나'는 정적 서빙 설정 줄이다(express.static,
+    # app.use('/public', …), serveStatic, FastAPI StaticFiles/mount). 없으면(=웹서버가 서빙) 앵커 없이 설명만.
+    "exposure": [re.compile(r"express\.static\s*\("), re.compile(r"\bserveStatic\b"),
+                 re.compile(r"\.use\(\s*['\"][^'\"]*(?:public|static|files|uploads|ftp)", re.I),
+                 re.compile(r"\bStaticFiles\s*\("), re.compile(r"\.mount\s*\(")],
 }
 
 # Python 앱(앵커 파일이 .py)일 때의 고치는 법 — 사전의 fix 는 Express(helmet) 기준이라.

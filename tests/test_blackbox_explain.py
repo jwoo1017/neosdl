@@ -124,6 +124,39 @@ def test_header_hygiene_findings_collapse_to_one_helmet_finding():
     assert len(fs) == 3                                             # 묶음1 + info2
 
 
+def test_nikto_file_exposures_get_korean_and_static_anchor():
+    """nikto 영어 원문(.htpasswd·셸 히스토리·흥미로운 경로)이 한국어 설명을 받고, 정적 서빙 줄로 앵커링된다."""
+    src = "\n".join(["const express = require('express');", "const app = express();",
+                     "app.use(express.static('public'));", "app.listen(3000);"])
+    reader = lambda p: {"server.js": src}.get(p)
+    fs = [
+        {"title": "/.htpasswd — /.htpasswd: Contains authorization information.", "severity": "high",
+         "evidence": "nikto: /.htpasswd", "source": "nikto"},
+        {"title": "/.bash_history — A user's home directory may be set to the web root, the shell history was retrieved.",
+         "severity": "high", "evidence": "nikto: /.bash_history", "source": "nikto"},
+        {"title": "/ftp/ — /ftp/: This might be interesting.", "severity": "medium",
+         "evidence": "nikto: /ftp/", "source": "nikto"},
+    ]
+    bx.attach_code(fs, reader=reader, module_paths=["server.js"], entry_names=("server.js",))
+    labels = [f["label"] for f in fs]
+    assert "인증 정보 파일(.htpasswd) 노출" in labels
+    assert any("명령 기록" in l for l in labels) and any("노출된 경로" in l for l in labels)
+    for f in fs:
+        assert f["kind"] == "exposure" and f["plain"] and f["fix"]          # 한국어 설명·수정법
+        assert (f["file"], f["line"]) == ("server.js", 3)                   # express.static 줄
+        assert f["snippet"]["lines"][f["snippet"]["focus"] - f["snippet"]["start"]] == "app.use(express.static('public'));"
+
+
+def test_file_exposure_without_static_serving_has_no_bogus_anchor():
+    """정적 서빙 코드가 없으면(웹서버가 서빙) 노출 발견에 엉뚱한 소스 줄을 붙이지 않는다."""
+    reader = lambda p: {"server.js": "const app = express();\napp.listen(3000);"}.get(p)
+    fs = [{"title": "/.htpasswd — Contains authorization information.", "severity": "high",
+           "evidence": "nikto: /.htpasswd", "source": "nikto"}]
+    bx.attach_code(fs, reader=reader, module_paths=["server.js"], entry_names=("server.js",))
+    assert fs[0]["kind"] == "exposure" and fs[0]["plain"]       # 설명은 한국어로 붙되
+    assert "file" not in fs[0] and "snippet" not in fs[0]       # 소스 줄은 억지로 안 붙임
+
+
 def test_sqli_findings_are_never_merged():
     fs = [{"title": "SQL 인젝션 확인 — /login", "severity": "critical", "evidence": "", "file": "a.js", "line": 1},
           {"title": "SQL 인젝션 확인 — /signup", "severity": "critical", "evidence": "", "file": "a.js", "line": 9}]
