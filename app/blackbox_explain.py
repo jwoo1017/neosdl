@@ -51,9 +51,28 @@ _GLOSSARY = [
 ]
 
 # kind → 소스에서 찾을 앵커 줄(위에서부터 우선). 헤더류는 앱 생성 지점에 미들웨어를 추가하게 된다.
+# Express 뿐 아니라 Python(FastAPI/Flask) 앱도 — 예전엔 JS 패턴만 있어서 FastAPI 레포를 부팅해
+# 점검하면 앵커를 못 찾아 "코드 위치"가 통째로 빠졌다(neosdl 자체 점검에서 발견).
 _ANCHORS = {
-    "cors": [re.compile(r"\bcors\s*\("), re.compile(r"Access-Control-Allow-Origin", re.I)],
-    "header": [re.compile(r"\bhelmet\s*\("), re.compile(r"=\s*express\s*\(\s*\)"), re.compile(r"\.listen\s*\(")],
+    "cors": [re.compile(r"\bcors\s*\("), re.compile(r"\bCORSMiddleware\b"), re.compile(r"\bCORS\s*\(\s*app\b"),
+             re.compile(r"Access-Control-Allow-Origin", re.I)],
+    "header": [re.compile(r"\bhelmet\s*\("), re.compile(r"=\s*express\s*\(\s*\)"),
+               re.compile(r"=\s*FastAPI\s*\("), re.compile(r"=\s*Flask\s*\("),
+               re.compile(r"\.listen\s*\("), re.compile(r"\buvicorn\.run\s*\(")],
+}
+
+# Python 앱(앵커 파일이 .py)일 때의 고치는 법 — 사전의 fix 는 Express(helmet) 기준이라.
+_PY_HEADER_FIX = ("앱 생성 직후 `@app.middleware(\"http\")` 로 응답 헤더 `{h}` 를 붙이세요"
+                  "(또는 `secure` 패키지 같은 보안 헤더 미들웨어).")
+_PY_FIX = {
+    "CORS 전체 허용(*)": "`CORSMiddleware(allow_origins=[\"https://우리-도메인\"])` 처럼 허용할 출처를 명시하세요.",
+    "서버 기술 정보 노출": "uvicorn 이면 `--no-server-header`(또는 `server_header=False`)로 서버 종류 헤더를 숨기세요.",
+    "CSP(콘텐츠 보안 정책) 없음": _PY_HEADER_FIX.format(h="Content-Security-Policy: default-src 'self'"),
+    "HTTPS 강제(HSTS) 없음": _PY_HEADER_FIX.format(h="Strict-Transport-Security: max-age=31536000"),
+    "파일 형식 추측(MIME 스니핑) 방지 없음": _PY_HEADER_FIX.format(h="X-Content-Type-Options: nosniff"),
+    "Referrer-Policy 없음": _PY_HEADER_FIX.format(h="Referrer-Policy: no-referrer"),
+    "Permissions-Policy 없음": _PY_HEADER_FIX.format(h="Permissions-Policy: camera=(), microphone=(), geolocation=()"),
+    "클릭재킹 방지 설정 없음/구식": _PY_HEADER_FIX.format(h="Content-Security-Policy: frame-ancestors 'self'"),
 }
 _SEV_KO = {"critical": "치명", "high": "높음", "medium": "중간", "low": "낮음"}
 _SEV_ORDER = ("critical", "high", "medium", "low")
@@ -91,12 +110,44 @@ def snippet(lines: list[str], path: str, focus: int, radius: int = SNIPPET_RADIU
     return {"path": path, "start": start, "focus": focus, "lines": lines[start - 1:end]}
 
 
+_SEV_RANK = {s: i for i, s in enumerate(("critical", "high", "medium", "low", "info"))}
+
+
+def _dedupe(findings: list) -> list:
+    """쉬운 이름이 같은 발견은 하나로 — nikto 는 같은 문제를 문구만 달리해 여러 번 낸다
+    (CSP 누락 + frame-ancestors 등). SQLi 는 엔드포인트마다 따로 봐야 하고, 사전에 없는 발견(info)은
+    원문이 서로 달라 합치지 않는다. 합친 원문은 `also` 에 남기고 심각도는 더 높은 쪽을 쓴다."""
+    out: list = []
+    seen: dict[tuple, dict] = {}
+    for f in findings:
+        kind = f.get("kind")
+        if kind in ("sqli", "info", None):
+            out.append(f)
+            continue
+        key = (kind, f.get("label"))
+        first = seen.get(key)
+        if first is None:
+            seen[key] = f
+            out.append(f)
+            continue
+        first.setdefault("also", []).append(f.get("title"))
+        if _SEV_RANK.get(f.get("severity"), 9) < _SEV_RANK.get(first.get("severity"), 9):
+            first["severity"] = f["severity"]
+    return out
+
+
 def attach_code(findings: list, *, reader, module_paths: list[str], entry_names: tuple) -> list:
-    """발견마다 explain 결과 + 소스 앵커(file/line) + ±5줄 스니펫을 붙인다. reader 가 없으면 설명만."""
-    anchors: dict[str, tuple | None] = {}
+    """발견마다 explain 결과 + 소스 앵커(file/line) + ±5줄 스니펫을 붙인다. reader 가 없으면 설명만.
+
+    같은 문제의 중복 발견은 합친다 — 리스트를 제자리에서 바꾼다(호출측이 outcome.findings 를 그대로 쓴다).
+    """
     for f in findings:
         info = explain(f)
         f.update({k: v for k, v in info.items() if v is not None})
+    findings[:] = _dedupe(findings)
+    anchors: dict[str, tuple | None] = {}
+    for f in findings:
+        info = {"kind": f.get("kind")}
         if reader is None:
             continue
         if not f.get("file") and info["kind"] in _ANCHORS:
@@ -106,6 +157,8 @@ def attach_code(findings: list, *, reader, module_paths: list[str], entry_names:
                     anchors["cors"] = _find_anchor(reader, module_paths, entry_names, "header")
             if anchors[info["kind"]]:
                 f["file"], f["line"] = anchors[info["kind"]]
+        if str(f.get("file") or "").endswith(".py") and f.get("label") in _PY_FIX:
+            f["fix"] = _PY_FIX[f["label"]]
         if f.get("file") and f.get("line"):
             src = reader(f["file"])
             if src:
