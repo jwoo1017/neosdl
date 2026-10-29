@@ -46,8 +46,11 @@ ALLOWED_TOOLS: dict[str, bool] = {
     "msfconsole": True, "msfvenom": True,
 }
 
-# 어떤 토큰에도 등장하면 안 되는 셸 메타문자/시퀀스(셸 주입·리디렉션·명령연쇄).
-_SHELL_META = re.compile(r"[;&|<>`$\n\r]|\$\(|\|\|")
+# 셸 주입·명령연쇄·치환·리디렉션 거부. 명령은 셸이 아니라 argv 로 실행되지만(pentest_tools
+# 의 toolbox_exec) 심층방어로 원문 단계에서 한 번 더 막는다. 단, 단독 '&'(폼 바디 필드
+# 구분자 — sqlmap --data="a=1&b=2")와 단독 '$'(페이로드/비밀번호 값)는 argv 실행에 무해하고
+# 정상 사용이 많아 허용하고, 연쇄('&&' '||')와 치환('$(' '${')만 거부한다.
+_SHELL_META = re.compile(r"[;|<>`\n\r]|\$[({]|&&|\|\|")
 
 # 바이너리별 금지 플래그(익스플로잇/파일쓰기/셸 획득 — Phase A 범위 밖).
 _FORBIDDEN_FLAGS = {
