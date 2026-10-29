@@ -46,6 +46,19 @@ def image_allowed(image: str | None) -> bool:
     return False
 
 
+def base_image_gate(image: str | None) -> bool:
+    """베이스 이미지 허용 여부 — **레포 인가 모드와 일관**되게 판정한다.
+
+    workspace 모드(워크스페이스 멤버 레포를 이미 신뢰해 등록 없이 부팅)에선 베이스 이미지 허용 목록을
+    건너뛴다: 레포의 Dockerfile 이 빌드 단계에서 임의 FROM/RUN 을 이미 돌릴 수 있어(빌드는 레포가 통제),
+    '최종 베이스 이미지'만 따로 막는 건 보안 이득 없이 마찰만 준다(내부 레포가 distroless 등으로 못 뜸).
+    allowlist 모드(보수적)면 기존대로 image_allowed 로 엄격 검증한다. fail-closed 는 image_allowed 가 유지.
+    """
+    if settings().sandbox_repo_authz == "workspace":
+        return True
+    return image_allowed(image)
+
+
 def dockerfile_from_image(text: str) -> str | None:
     """Dockerfile 텍스트의 마지막 FROM 이미지(멀티스테이지면 최종 런타임 베이스)를 뽑는다."""
     froms = re.findall(r"^\s*FROM\s+(\S+)", text, re.I | re.M)
@@ -228,9 +241,9 @@ def _llm_fill(root: Path, plan: detect.StackPlan, llm_generate) -> dict | None:
         data = BootRecipe.model_validate_json(raw).model_dump()
     except Exception:
         return None
-    if not image_allowed(data.get("base_image")):
+    if not base_image_gate(data.get("base_image")):
         return None
-    if data.get("dockerfile") and not image_allowed(dockerfile_from_image(data["dockerfile"])):
+    if data.get("dockerfile") and not base_image_gate(dockerfile_from_image(data["dockerfile"])):
         return None
     return data
 

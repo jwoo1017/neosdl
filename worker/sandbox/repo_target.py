@@ -146,7 +146,7 @@ def _boot_from_recipe(runner, client, root: str, plan, net: str, eid: str, recip
     if recipe.get("needs_build"):
         base = br.dockerfile_from_image(recipe["dockerfile"]) if recipe.get("dockerfile") \
             else recipe.get("base_image")
-        if not br.image_allowed(base):
+        if not br.base_image_gate(base):
             raise ValueError(f"base_image_not_allowed: {base}")
         if recipe.get("dockerfile"):
             (Path(root) / "Dockerfile.sbx").write_text(recipe["dockerfile"], encoding="utf-8")
@@ -162,7 +162,7 @@ def _boot_from_recipe(runner, client, root: str, plan, net: str, eid: str, recip
                 except Exception:
                     pass
     else:
-        if not br.image_allowed(recipe.get("base_image")):
+        if not br.base_image_gate(recipe.get("base_image")):
             raise ValueError(f"base_image_not_allowed: {recipe.get('base_image')}")
         app_img = recipe["base_image"]
 

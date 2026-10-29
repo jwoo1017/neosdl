@@ -86,6 +86,21 @@ def test_image_allowed_repo_level(tmp_path):
     assert not br.image_allowed(None)
 
 
+def test_base_image_gate_follows_repo_authz(monkeypatch):
+    """workspace 모드(워크스페이스 레포 신뢰)면 베이스 이미지 허용 목록을 건너뛴다 — 내부 레포가
+    distroless 등으로 떠도 등록 없이 부팅. allowlist 모드면 기존대로 엄격 검증."""
+    from app.config import settings
+    distroless = "gcr.io/distroless/nodejs24-debian13"
+
+    monkeypatch.setattr(settings(), "sandbox_repo_authz", "workspace")
+    assert br.base_image_gate(distroless) is True            # workspace: 허용 목록 우회
+    assert br.base_image_gate("evil/backdoor:latest") is True
+
+    monkeypatch.setattr(settings(), "sandbox_repo_authz", "allowlist")
+    assert br.base_image_gate(distroless) is False           # allowlist: 엄격(미등록 이미지 거부)
+    assert br.base_image_gate("node:20") is True             # allowlist: 등록된 repo 는 통과
+
+
 def test_draft_recipe_unknown_stack_low_confidence(tmp_path):
     """매니페스트·Dockerfile·compose 다 없으면 저신뢰 기본(조용히 실패 아님 — 사람이 채움)."""
     recipe = br.draft_recipe(tmp_path)   # 빈 디렉터리
