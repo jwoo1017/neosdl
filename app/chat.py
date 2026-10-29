@@ -195,18 +195,24 @@ def _maybe_pentest_suggestion(question: str, project_id, member_id: str, model: 
 
     미인가 표적은 아예 제안하지 않는다(표적을 떠보게 하지 않음). 실행 권한(manager)이 없으면 숨긴다.
     """
-    det = chat_pentest.detect(question)
-    # 키워드로 못 잡았지만 보안 신호가 있으면 LLM 으로 의도 분류(#2 자연어 해석, 보수적·질문만 전송).
-    if not det and model and chat_pentest.has_security_hint(question):
-        from app.llm_schemas import PentestIntent
+    # 의도 판정(B: LLM 1차, 키워드는 보조). kw 는 키워드 결과(외부표적 fast-path + LLM 실패 폴백용).
+    from app.llm_schemas import PentestIntent
 
-        def _gen(prompt: str) -> str:
-            return ai_providers.generate(model, prompt, response_schema=PentestIntent,
-                                         project_id=str(project_id), purpose="pentest_intent")
+    def _gen(prompt: str) -> str:
+        return ai_providers.generate(model, prompt, response_schema=PentestIntent,
+                                     project_id=str(project_id), purpose="pentest_intent")
+
+    kw = chat_pentest.detect(question)
+    if kw and kw.get("target"):
+        det = kw                                   # 외부 표적이 명시되면 명확 — LLM 없이 외부 블랙박스.
+    elif model and chat_pentest.has_security_hint(question):
         try:
-            det = chat_pentest.classify(question, _gen)
+            det = chat_pentest.classify(question, _gen)   # ★ LLM 이 1차로 의도 판정(repo/none)
         except Exception:
-            det = None
+            log.debug("pentest 의도 LLM 분류 실패 — 키워드 폴백", exc_info=True)
+            det = kw                               # LLM 을 못 돌림 → 키워드 결과로 폴백
+    else:
+        det = kw                                   # 모델 없음/보안 신호 없음 → 키워드(대개 None)
     if not det:
         return None
     with tx() as cur:
