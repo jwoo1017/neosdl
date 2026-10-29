@@ -15,9 +15,10 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WEB_ROOT=/var/www/neosdl
 BACKUP_DIR=/backup/neosdl/postgres
-# nginx 가 http(80) 를 전부 https 로 301 하므로 https 로 직접 확인한다.
-# 사내 인증서라 공인 CA 검증은 건너뛴다(-k) — 서버 자기 자신을 보는 헬스체크 용도라 무방.
-HEALTH_URL=https://intranet.finble.internal/healthz
+# 방금 재시작한 backend 를 **루프백으로 직접** 확인한다. 엣지(nginx/pfSense)는 서버 자신이 보낸
+# 요청을 ACL/DNS 로 막아(403 등) 매번 false-fail 하므로, 배포 게이트는 엣지를 거치지 않는다.
+# (엣지 자체 점검은 nginx 를 건드렸을 때만 필요하며, release 는 nginx 를 재시작하지 않는다.)
+HEALTH_URL=http://127.0.0.1:8000/healthz
 MIGRATE_ENV=/srv/projects/neosdl/secrets/migrate.env   # root:root 600
 
 cd "$APP_DIR"
@@ -57,8 +58,9 @@ release() {
   systemctl restart neosdl-backend neosdl-worker
 
   echo -n "health "
-  for _ in $(seq 1 20); do
-    if curl -fsSk "$HEALTH_URL" >/dev/null 2>&1; then
+  # 종료 시 열린 WebSocket 정리로 재기동이 길어질 수 있어 창을 넉넉히(최대 120초).
+  for _ in $(seq 1 40); do
+    if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
       echo "ok — $(git rev-parse --short HEAD) 배포 완료"
       return 0
     fi
