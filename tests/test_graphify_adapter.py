@@ -144,3 +144,45 @@ def test_query_subgraph_does_not_expand_through_hubs():
     kept = ga.query_subgraph(syms, edges, ["seed"], depth=2)
     assert "near" in kept and "hub" not in kept
     assert not any(k.startswith("leaf") for k in kept)
+
+
+# ------------------------------------------------------------- 한국어 추천 질문 / 모듈 이름
+
+def test_korean_questions_from_signals():
+    communities = [
+        {"id": 0, "name": "주문", "size": 20, "cohesion": 0.05, "hub": "x", "top_dir": "src/order"},
+        {"id": 1, "name": "봇", "size": 9, "cohesion": 0.5, "hub": "y", "top_dir": "src/bot"},
+        {"id": ga.OTHER_ID, "name": ga.OTHER_NAME, "size": 3, "cohesion": 0.0, "hub": None, "top_dir": None},
+    ]
+    links = [{"source": 1, "target": 0, "weight": 7}, {"source": 0, "target": ga.OTHER_ID, "weight": 50}]
+    report = {"key_symbols": [{"symbol_key": "k", "label": "cancelOrder", "degree": 9}],
+              "surprising": [{"source": "placeOrder", "target": "sleep"}]}
+    qs = ga.korean_questions(report, communities, links)
+    assert qs == [
+        "cancelOrder 함수는 어떤 역할을 하고 어디서 호출돼?",
+        "봇 모듈은 주문 모듈을 어떻게 사용해?",  # '기타' 로 가는 연결은 질문으로 안 만든다
+        "placeOrder 함수가 sleep 함수를 호출하는 이유는 뭐야?",
+        "주문 모듈에는 어떤 기능들이 섞여 있어?",
+    ]
+    assert all("`" not in q for q in qs)
+
+
+def test_korean_questions_empty_signals():
+    assert ga.korean_questions({"key_symbols": [], "surprising": []}, [], []) == []
+
+
+def test_module_names_prefer_domain_and_disambiguate(no_graphify):
+    syms = [_sym(f"a{i}", "src/order/a.js", domain="주문") for i in range(3)]
+    syms += [_sym(f"b{i}", "src/order2/b.js", domain="주문") for i in range(3)]
+    cm = ga.compute_code_map(syms, [])
+    names = sorted(c["name"] for c in cm["communities"])
+    assert len(set(names)) == 2 and all(n.startswith("주문 · ") for n in names)
+
+
+def test_graphify_report_questions_are_korean():
+    pytest.importorskip("graphify")
+    syms, edges = _clustered_fixture()
+    cm = ga.compute_code_map(syms, edges)
+    assert cm["report"]["questions"]
+    assert all(not q.isascii() for q in cm["report"]["questions"])
+    assert cm["engine"].endswith(f"/{ga.REPORT_VERSION}")

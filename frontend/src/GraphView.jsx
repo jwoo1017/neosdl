@@ -429,7 +429,9 @@ export default function GraphView({ scanId, initialHighlight = null }) {
       : filteredFunctions;
 
   const isSymbolView = !isDomainView && !isFunctionView && !isMapOverview && !isHighlight;
-  const allNodes = rawGraph && isSymbolView ? rawGraph.nodes : [];
+  // 뷰 전환 직후엔 rawGraph 가 아직 이전 뷰(모듈 지도 = 커뮤니티 목록, data 없음) 응답이다 —
+  // 종류가 맞을 때만 심볼 목록으로 쓴다(안 그러면 n.data.id 에서 패널이 죽는다).
+  const allNodes = rawGraph && isSymbolView && rawGraph.kind === dataKind ? rawGraph.nodes : [];
   const focusOptions = focusFilter.trim()
     ? allNodes.filter((n) => {
         const q = focusFilter.toLowerCase();

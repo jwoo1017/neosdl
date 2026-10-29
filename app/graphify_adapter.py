@@ -3,7 +3,7 @@
 추출은 우리 파이프라인(tree-sitter → symbol / symbol_edge)을 그대로 쓰고, 그 위에
 graphify 의 클러스터링·분석을 라이브러리로 직접 호출한다:
     graphify.cluster.cluster / label_communities_by_hub / score_all  → 모듈(커뮤니티)
-    graphify.analyze.god_nodes / surprising_connections / suggest_questions → 요약 카드
+    graphify.analyze.god_nodes / surprising_connections → 요약 카드(추천 질문은 한국어로 직접 생성)
 graphify 내부 API 는 0.9.x 에서 빠르게 바뀌므로 호출은 이 파일 한 곳에만 둔다
 (requirements 에서 버전 고정). graphify 가 없으면 디렉터리 단위 묶음으로 폴백해
 화면은 그대로 동작한다.
@@ -23,6 +23,8 @@ MIN_COMMUNITY_SIZE = 3
 OTHER_ID = -1
 OTHER_NAME = "기타"
 FALLBACK_ENGINE = "fallback:directory"
+# 모듈 이름·추천 질문 규칙의 버전 — 바꾸면 올려서 code_map 캐시를 다시 만들게 한다.
+REPORT_VERSION = "r2"
 HUB_MIN_DEGREE = 10  # 근거 서브그래프에서 이보다 연결이 적으면 허브로 보지 않는다
 
 
@@ -140,7 +142,7 @@ def _top_dir(paths: list[str]) -> str | None:
 def compute_code_map(symbols: list[dict], edges: list[dict]) -> dict:
     """심볼/엣지 → {engine, communities, membership, links, report}. 순수 함수(테스트 가능)."""
     try:
-        from graphify.analyze import god_nodes, suggest_questions, surprising_connections
+        from graphify.analyze import god_nodes, surprising_connections
         from graphify.cluster import cluster, label_communities_by_hub, score_all
     except ImportError:
         cluster = None
@@ -168,15 +170,23 @@ def compute_code_map(symbols: list[dict], edges: list[dict]) -> dict:
         domain = domains.most_common(1)[0][0] if domains else None
         top_dir = _top_dir(paths)
         hub = hub_names.get(cid) or (posixpath.basename(top_dir) if top_dir else None)
+        # 이름은 사람이 읽는 단위(도메인 > 디렉터리)로. 허브 함수명(fail/sleep 같은 유틸)은
+        # 이름으로 쓰면 오해를 사서, 같은 이름이 겹칠 때 구분용으로만 붙인다(아래).
         if cid == OTHER_ID:
             name = OTHER_NAME
         else:
-            name = " · ".join(x for x in (domain, hub) if x) or f"모듈 {cid + 1}"
+            name = domain or (posixpath.basename(top_dir) if top_dir else None) or hub or f"모듈 {cid + 1}"
         communities.append({
             "id": cid, "name": name, "hub": hub, "domain": domain, "size": len(members),
             "cohesion": round(float(cohesion.get(cid, 0.0)), 3), "top_dir": top_dir,
             "file_count": len(set(paths)),
         })
+
+    name_count = Counter(c["name"] for c in communities)
+    for c in communities:
+        if name_count[c["name"]] > 1 and c["id"] != OTHER_ID:
+            extra = c["hub"] if c["hub"] and c["hub"] != c["name"] else posixpath.basename(c["top_dir"] or "")
+            c["name"] = f"{c['name']} · {extra}" if extra else f"{c['name']} {c['id'] + 1}"
 
     # 모듈 간 연결 — 지도 뷰의 엣지(가중치 = 호출/의존 수)
     link_w: Counter = Counter()
@@ -189,13 +199,13 @@ def compute_code_map(symbols: list[dict], edges: list[dict]) -> dict:
 
     report = {"key_symbols": [], "surprising": [], "questions": []}
     if G is not None:
-        report = _graphify_report(G, partition, {c["id"]: c["name"] for c in communities},
-                                  god_nodes, surprising_connections, suggest_questions)
+        report = _graphify_report(G, partition, god_nodes, surprising_connections)
+        report["questions"] = korean_questions(report, communities, links)
     return {"engine": engine, "communities": communities, "membership": membership,
             "links": links, "report": report}
 
 
-def _graphify_report(G, partition, labels, god_nodes, surprising_connections, suggest_questions) -> dict:
+def _graphify_report(G, partition, god_nodes, surprising_connections) -> dict:
     """graphify GRAPH_REPORT 의 핵심 개념 / 의외의 연결 / 추천 질문을 카드용 JSON 으로."""
     comms = {c: m for c, m in partition.items() if c != OTHER_ID}
     und = G.to_undirected()
@@ -213,12 +223,43 @@ def _graphify_report(G, partition, labels, god_nodes, surprising_connections, su
         ]
     except Exception:  # noqa: BLE001
         pass
-    try:
-        out["questions"] = [q["question"] for q in suggest_questions(und, comms, labels, top_n=5)
-                            if q.get("question")]
-    except Exception:  # noqa: BLE001
-        pass
     return out
+
+
+MAX_QUESTIONS = 4
+LOW_COHESION = 0.15  # 이보다 낮고 큰 모듈은 "여러 기능이 섞였다"는 신호
+MIN_SPLIT_SIZE = 8
+
+
+def korean_questions(report: dict, communities: list[dict], links: list[dict]) -> list[str]:
+    """요약 카드의 추천 질문 — graphify 신호(핵심 함수·의외의 연결·응집도)로 한국어 질문을 만든다.
+
+    graphify suggest_questions 는 영어 템플릿 문장만 내놓아서 쓰지 않는다. 질문은 그대로
+    "AI에게 질문"에 들어가므로 우리 에이전트가 답할 수 있는 형태(함수 역할·호출 관계·모듈 연결)로.
+    """
+    names = {c["id"]: c["name"] for c in communities}
+    out: list[str] = []
+
+    def add(q: str) -> None:
+        if q not in out:
+            out.append(q)
+
+    if report.get("key_symbols"):
+        add(f"{report['key_symbols'][0]['label']} 함수는 어떤 역할을 하고 어디서 호출돼?")
+    cross = [l for l in links if l["source"] != OTHER_ID and l["target"] != OTHER_ID]
+    if cross:
+        top = max(cross, key=lambda l: (l["weight"], -l["source"], -l["target"]))
+        add(f"{names[top['source']]} 모듈은 {names[top['target']]} 모듈을 어떻게 사용해?")
+    for s in report.get("surprising") or []:
+        if s.get("source") and s.get("target") and s["source"] != s["target"]:
+            add(f"{s['source']} 함수가 {s['target']} 함수를 호출하는 이유는 뭐야?")
+            break
+    loose = [c for c in communities
+             if c["id"] != OTHER_ID and c["size"] >= MIN_SPLIT_SIZE and c["cohesion"] < LOW_COHESION]
+    if loose:
+        c = min(loose, key=lambda c: (c["cohesion"], -c["size"]))
+        add(f"{c['name']} 모듈에는 어떤 기능들이 섞여 있어?")
+    return out[:MAX_QUESTIONS]
 
 
 def current_engine() -> str:
@@ -230,7 +271,7 @@ def current_engine() -> str:
     try:
         from importlib.metadata import version
 
-        return f"graphify {version('graphifyy')}"
+        return f"graphify {version('graphifyy')}/{REPORT_VERSION}"
     except Exception:  # noqa: BLE001 — 메타데이터 없는 설치(소스 체크아웃 등)
         return "graphify"
 
