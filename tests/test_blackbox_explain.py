@@ -105,19 +105,23 @@ def test_express_repo_keeps_express_fix():
     assert "helmet" in fs[0]["fix"]
 
 
-def test_same_problem_from_different_tool_wording_is_merged():
+def test_header_hygiene_findings_collapse_to_one_helmet_finding():
+    """보안 헤더 누락들은 helmet() 한 건으로 묶인다(= 전부 같은 줄을 가리켜 '다 server.js' 되던 것 해소).
+    개별 항목은 also·evidence 로 보존하고, 사전에 없는 발견(info)은 묶지 않는다."""
     fs = [_nikto("Suggested security header missing: content-security-policy."),
           _nikto("Retrieved x-content-type-options header is missing."),
           {**_nikto("CSP header missing on /api"), "severity": "medium"},
           _nikto("X-Content-Type-Options header not set."),
           _nikto("Something odd A"), _nikto("Something odd B")]
     bx.attach_code(fs, reader=None, module_paths=[], entry_names=_ENTRY)
-    labels = [f["label"] for f in fs]
-    assert labels.count("CSP(콘텐츠 보안 정책) 없음") == 1
-    assert labels.count("파일 형식 추측(MIME 스니핑) 방지 없음") == 1
-    csp = next(f for f in fs if f["kind"] == "header" and f["label"].startswith("CSP"))
-    assert csp["severity"] == "medium" and len(csp["also"]) == 1     # 더 높은 심각도로, 원문은 보존
-    assert sum(f["kind"] == "info" for f in fs) == 2                 # 사전에 없는 발견은 안 합친다
+    heads = [f for f in fs if f.get("kind") == "header"]
+    assert len(heads) == 1                                           # 헤더 위생은 한 건으로
+    merged = heads[0]
+    assert merged["label"] == "보안 헤더 여러 개 누락" and "helmet" in merged["fix"]
+    assert merged["severity"] == "medium"                           # 묶음은 더 높은 심각도를 따른다
+    assert len(merged["also"]) == 2                                  # CSP·MIME 원문 보존(dedupe 후)
+    assert sum(f["kind"] == "info" for f in fs) == 2                 # 사전에 없는 발견은 안 묶는다
+    assert len(fs) == 3                                             # 묶음1 + info2
 
 
 def test_sqli_findings_are_never_merged():

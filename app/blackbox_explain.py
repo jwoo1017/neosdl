@@ -153,6 +153,42 @@ def _dedupe(findings: list) -> list:
     return out
 
 
+def _collapse_headers(findings: list) -> list:
+    """helmet() 한 줄로 한꺼번에 고치는 보안 헤더 누락들을 **하나의 발견**으로 묶는다.
+
+    HSTS·CSP·MIME·Referrer·Permissions·x-powered-by 등은 각각 따로 뜨면 전부 같은 줄(express() 생성
+    지점)을 가리켜 "다 server.js" 처럼 보이고 목록만 길어진다. 실제 고침은 `helmet()` 한 줄이므로 묶어
+    보여주되, 개별 항목은 evidence·also 에 남겨 아무 것도 숨기지 않는다. CORS 는 고침·위치가 달라 제외."""
+    heads = [f for f in findings if f.get("kind") == "header"]
+    if len(heads) < 2:
+        return findings
+    names = []
+    for f in heads:
+        m = re.search(r"(x-[\w-]+|strict-transport-security|content-security-policy|referrer-policy|"
+                      r"permissions-policy|x-frame-options)", f"{f.get('title','')} {f.get('evidence','')}", re.I)
+        names.append(m.group(1).lower() if m else (f.get("label") or "헤더"))
+    sev = min((f.get("severity", "low") for f in heads), key=lambda s: _SEV_RANK.get(s, 9))
+    merged = {
+        "kind": "header", "severity": sev, "source": "merged",
+        "title": f"보안 헤더 여러 개 누락 — helmet() 미적용 ({len(heads)}건)",
+        "label": "보안 헤더 여러 개 누락",
+        "plain": f"응답에 보안 헤더 {len(heads)}개({', '.join(dict.fromkeys(names))})가 빠져 있습니다. "
+                 "각각 바로 뚫리는 취약점은 아니지만, 한 번에 보완하는 게 좋습니다.",
+        "fix": "`app.use(helmet())` 한 줄이면 대부분이 한꺼번에 설정됩니다(필요 시 CSP 만 조정).",
+        "evidence": "missing: " + ", ".join(dict.fromkeys(names)),
+        "also": [f.get("title") for f in heads],
+    }
+    out, placed = [], False
+    for f in findings:
+        if f.get("kind") == "header":
+            if not placed:          # 첫 헤더 자리에 묶음 1건을 넣고 나머지 헤더는 버린다(also 로 보존)
+                out.append(merged)
+                placed = True
+            continue
+        out.append(f)
+    return out
+
+
 def attach_code(findings: list, *, reader, module_paths: list[str], entry_names: tuple) -> list:
     """발견마다 explain 결과 + 소스 앵커(file/line) + ±5줄 스니펫을 붙인다. reader 가 없으면 설명만.
 
@@ -161,7 +197,7 @@ def attach_code(findings: list, *, reader, module_paths: list[str], entry_names:
     for f in findings:
         info = explain(f)
         f.update({k: v for k, v in info.items() if v is not None})
-    findings[:] = _dedupe(findings)
+    findings[:] = _collapse_headers(_dedupe(findings))
     anchors: dict[str, tuple | None] = {}
     for f in findings:
         info = {"kind": f.get("kind")}
