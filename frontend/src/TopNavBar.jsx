@@ -27,7 +27,6 @@ export default function TopNavBar() {
             className="navbar-expand-toggle"
             onClick={() => setCollapsed(false)}
             aria-label="사이드바 펼치기"
-            title="사이드바 펼치기"
           >
             <HamburgerIcon />
           </button>

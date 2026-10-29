@@ -5,6 +5,7 @@ import { useProject } from "../ProjectContext";
 import { createBackoff, isTerminalClose } from "../wsReconnect";
 import MarkdownAnswer from "../chat/MarkdownAnswer";
 import EngageTimeline from "../components/EngageTimeline";
+import EngageLiveStatus from "../components/EngageLiveStatus";
 import { IconBoot, IconScan, IconFinding, IconEndpoint, IconReport, IconPause, IconLock } from "../components/EngageIcons";
 
 // 섹션 제목 + 아이콘.
@@ -42,6 +43,11 @@ export default function EngagementDetailPage() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [connected, setConnected] = useState(false);
+  // 라이브: WS 로 들어오는 스텝을 누적하고, 마지막 활동 시각을 기록해 "진행/멈춤" 을 구분한다.
+  // 리포트 history 는 실행이 끝나야 써지므로, 실행 중엔 이 liveSteps 가 유일한 진행 신호다.
+  const [liveSteps, setLiveSteps] = useState([]);
+  const [lastActivityAt, setLastActivityAt] = useState(null);
+  const seenRef = useRef(new Set());
 
   const load = useCallback(() => {
     if (!engagementId) return;
@@ -50,6 +56,7 @@ export default function EngagementDetailPage() {
 
   useEffect(() => {
     setData(null); setError(null);
+    setLiveSteps([]); setLastActivityAt(null); seenRef.current = new Set();
     load();
   }, [load]);
 
@@ -69,7 +76,22 @@ export default function EngagementDetailPage() {
       const ws = new WebSocket(engagementSocketUrl(engagementId));
       wsRef.current = ws;
       ws.onopen = () => { if (!cancelled) { backoff.reset(); setConnected(true); load(); } };
-      ws.onmessage = () => { if (!cancelled) load(); };
+      ws.onmessage = (e) => {
+        if (cancelled) return;
+        setLastActivityAt(Date.now());   // 어떤 이벤트든 = 서버가 살아있다는 신호
+        let msg; try { msg = JSON.parse(e.data); } catch { load(); return; }
+        const ev = msg.event || {};
+        if (ev.kind === "step") {
+          // 스텝은 빈번하다 — 전체 refetch 없이 누적만(리포트/상태 전이는 아래 else 에서 refetch).
+          const key = `${ev.seq}:${ev.command}`;
+          if (!seenRef.current.has(key)) {
+            seenRef.current.add(key);
+            setLiveSteps((s) => [...s, ev]);
+          }
+        } else {
+          load();   // status 전이·승인요청 등 → 전체 로드(리포트·pending·findings)
+        }
+      };
       ws.onclose = (evt) => {
         if (cancelled) return;
         setConnected(false);
@@ -98,6 +120,7 @@ export default function EngagementDetailPage() {
   const blackbox = !!(eng.params?.target) || kind === "blackbox" || kind === "repo_blackbox";
   if (blackbox) return (
     <BlackboxDetail eng={eng} report={data.report} connected={connected}
+                    liveSteps={liveSteps} lastActivityAt={lastActivityAt}
                     canApprove={hasProjectRole("manager")} onChange={load} />
   );
 
@@ -224,13 +247,22 @@ function Stat({ label, value }) {
 const SEV_BADGE = { critical: "badge-risk-critical", high: "badge-risk-high",
   medium: "badge-risk-medium", low: "badge-risk-low" };
 
+const TERMINAL_STATUS = ["succeeded", "failed", "cancelled"];
+
 // 블랙박스(외부 표적) 점검 결과 — Pentester가 터미널 도구로 점검한 리포트/발견/승인 대기.
-function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
+function BlackboxDetail({ eng, report, connected, liveSteps = [], lastActivityAt, canApprove, onChange }) {
   const r = report || {};
   const awaiting = eng.status === "awaiting_approval";
   const [approving, setApproving] = useState(false);
   const [approveErr, setApproveErr] = useState(null);
   const pending = eng.result?.pending_command;
+
+  // 타임라인에 쓸 스텝: 리포트 history(실행 종료 후 전체 출력 포함)가 라이브보다 많으면 그걸,
+  // 아니면 WS 로 쌓인 라이브 스텝을 쓴다 — 실행 중엔 라이브가 유일한 진행 신호.
+  const histLen = (r.history || []).length;
+  const steps = histLen >= liveSteps.length ? (r.history || []) : liveSteps;
+  const running = !TERMINAL_STATUS.includes(eng.status);
+  const startedMs = eng.started_at ? Date.parse(eng.started_at) : null;
 
   const approve = async () => {
     setApproving(true); setApproveErr(null);
@@ -260,6 +292,9 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
         {eng.error && <span style={{ color: "var(--danger, #ff6b74)" }}>{" · 오류: " + eng.error}</span>}
       </div>
 
+      <EngageLiveStatus status={eng.status} connected={connected} steps={steps}
+                        lastActivityAt={lastActivityAt} startedAt={startedMs} />
+
       {awaiting && (
         <div className="dashboard-section" style={{ marginBottom: "0.8rem", padding: "0.7rem 0.9rem" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
@@ -282,7 +317,7 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
 
       <div className="dashboard-section">
         <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap" }}>
-          <Stat label="실행 스텝" value={r.steps ?? "-"} />
+          <Stat label="실행 스텝" value={steps.length || r.steps || 0} />
           <Stat label="발견" value={(r.findings || []).length} />
         </div>
       </div>
@@ -337,10 +372,12 @@ function BlackboxDetail({ eng, report, connected, canApprove, onChange }) {
         </div>
       )}
 
-      {(r.history || []).length > 0 && (
+      {steps.length > 0 && (
         <div className="dashboard-section" style={{ marginTop: "1.2rem" }}>
-          <SectionHead icon={IconScan}>실행 타임라인</SectionHead>
-          <EngageTimeline steps={r.history} />
+          <SectionHead icon={IconScan}>
+            실행 타임라인{running ? " (실시간)" : ""}
+          </SectionHead>
+          <EngageTimeline steps={steps} />
         </div>
       )}
 

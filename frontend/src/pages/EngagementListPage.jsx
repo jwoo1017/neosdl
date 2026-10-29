@@ -3,6 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { createEngagement, fetchEngagements, previewBootRecipe } from "../api";
 import { useProject } from "../ProjectContext";
 import Modal from "../components/Modal";
+import {
+  AskModeIcon, AutoModeIcon, BlackboxIcon, PlanModeIcon, RadioCheckIcon, RepoBootIcon, WhiteboxIcon,
+} from "../icons/EngagementKindIcons";
 
 // engagement = 자율 보안 검증 run. 정적 finding 을 샌드박스에서 실제로 재현/반증해
 // 오탐을 자동 제거하고 confirmed 만 남긴다. 생성은 manager 이상(코드를 실제로 때리는 행위).
@@ -167,32 +170,27 @@ function CreateEngagementModal({ projectId, onClose, onCreated }) {
 
   return (
     <Modal title="검증 run 실행" onClose={onClose}>
-      <label style={{ display: "block", marginBottom: "0.25rem" }}>검증 유형</label>
-      <select value={kind} onChange={(e) => onKindChange(e.target.value)} disabled={busy}
-              style={{ width: "100%", boxSizing: "border-box" }}>
-        <option value="whitebox">화이트박스 — 스캔의 finding을 샌드박스에서 재현/반증(오탐 제거)</option>
-        <option value="repo_blackbox">레포 부팅 블랙박스 — 이 레포(Docker/compose)를 자동으로 띄워 점검(IP·allowlist 불필요)</option>
-        <option value="blackbox">블랙박스 — 인가된 외부 표적에 보안 도구(nmap/sqlmap) 점검</option>
-      </select>
+      <div className="eng-modal-label">검증 유형</div>
+      <OptionCards label="검증 유형" options={KIND_OPTIONS} value={kind}
+                   onChange={onKindChange} disabled={busy} />
 
       {blackbox && (
         <>
-          <label style={{ display: "block", marginTop: "0.8rem", marginBottom: "0.25rem" }}>표적 (host 또는 URL)</label>
-          <input value={target} onChange={(e) => setTarget(e.target.value)} disabled={busy}
-                 placeholder="예: test.internal 또는 http://10.0.0.5:8080/app"
-                 style={{ width: "100%", boxSizing: "border-box" }} />
-          <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>
+          <label className="eng-modal-label" htmlFor="eng-target">표적 (host 또는 URL)</label>
+          <input id="eng-target" className="eng-modal-input" value={target} onChange={(e) => setTarget(e.target.value)}
+                 disabled={busy} placeholder="예: test.internal 또는 http://10.0.0.5:8080/app" />
+          <p className="eng-modal-hint">
             표적은 서버 allowlist(법적 권한 보유)에 등록돼 있어야 실행됩니다. 미인가 표적은 거부됩니다.
           </p>
         </>
       )}
       {repoBlackbox && (
         <>
-          <p className="muted" style={{ marginTop: "0.6rem", fontSize: "0.8rem" }}>
+          <p className="eng-modal-hint">
             이 레포를 샌드박스에 띄워 그 앱을 표적으로 점검합니다(표적 IP·allowlist 불필요). 아래 부팅
             레시피는 README·매니페스트로 자동완성됐습니다 — 확인하고 필요하면 수정하세요.
           </p>
-          {recipeLoading && <p className="muted" style={{ fontSize: "0.8rem" }}>레시피 자동완성 중…</p>}
+          {recipeLoading && <p className="eng-modal-hint">레시피 자동완성 중…</p>}
           {recipe && (
             <div style={{ marginTop: "0.6rem", padding: "0.6rem", border: "1px solid var(--border, #ccc)", borderRadius: 6 }}>
               <div style={{ display: "flex", gap: "0.5rem" }}>
@@ -235,26 +233,79 @@ function CreateEngagementModal({ projectId, onClose, onCreated }) {
         </>
       )}
       {!blackbox && !repoBlackbox && (
-        <p className="muted" style={{ marginTop: "0.6rem" }}>대상 스캔은 이 프로젝트의 가장 최근 완료된 스캔이 자동 선택됩니다.</p>
+        <p className="eng-modal-hint">대상 스캔은 이 프로젝트의 가장 최근 완료된 스캔이 자동 선택됩니다.</p>
       )}
 
-      <label style={{ display: "block", marginTop: "0.8rem", marginBottom: "0.25rem" }}>목표</label>
-      <textarea rows={2} value={goal} onChange={(e) => setGoal(e.target.value)} disabled={busy}
-                style={{ width: "100%", boxSizing: "border-box" }} />
-      <label style={{ display: "block", marginTop: "0.8rem", marginBottom: "0.25rem" }}>권한 모드</label>
-      <select value={permissionMode} onChange={(e) => setPermissionMode(e.target.value)} disabled={busy}
-              style={{ width: "100%", boxSizing: "border-box" }}>
-        <option value="ask">승인 필요(ask) — 실행·파괴 action마다 사람 승인</option>
-        <option value="plan">설계만(plan) — 샌드박스 실행 안 함(정적만)</option>
-        <option value="auto">자동(auto) — 사전 승인, 자동 진행</option>
-      </select>
-      {error && <div className="alert-error" style={{ marginTop: "0.6rem" }}>{error}</div>}
-      <div style={{ display: "flex", gap: "0.5rem", justifyContent: "flex-end", marginTop: "1rem" }}>
-        <button onClick={onClose} disabled={busy}>취소</button>
-        <button className="btn-primary" onClick={submit} disabled={busy}>
+      <label className="eng-modal-label" htmlFor="eng-goal">목표</label>
+      <textarea id="eng-goal" className="eng-modal-input" rows={2} value={goal}
+                onChange={(e) => setGoal(e.target.value)} disabled={busy} />
+
+      <div className="eng-modal-label">권한 모드</div>
+      <OptionCards label="권한 모드" options={PERMISSION_OPTIONS} value={permissionMode}
+                   onChange={setPermissionMode} disabled={busy} compact />
+
+      {error && <div className="alert-error" style={{ marginTop: "0.8rem" }}>{error}</div>}
+      <div className="eng-modal-actions">
+        <button type="button" className="mp-btn mp-btn-secondary eng-modal-btn" onClick={onClose} disabled={busy}>
+          취소
+        </button>
+        <button type="button" className="mp-btn mp-btn-primary eng-modal-btn" onClick={submit} disabled={busy}>
           {busy ? "시작 중..." : "실행"}
         </button>
       </div>
     </Modal>
+  );
+}
+
+const KIND_OPTIONS = [
+  { value: "whitebox", Icon: WhiteboxIcon, title: "화이트박스",
+    desc: "스캔의 finding을 샌드박스에서 재현/반증해 오탐을 제거합니다." },
+  { value: "repo_blackbox", Icon: RepoBootIcon, title: "레포 부팅 블랙박스",
+    desc: "이 레포(Docker/compose)를 자동으로 띄워 점검합니다. IP·allowlist 불필요." },
+  { value: "blackbox", Icon: BlackboxIcon, title: "블랙박스",
+    desc: "인가된 외부 표적에 보안 도구(nmap/sqlmap)로 점검합니다." },
+];
+
+const PERMISSION_OPTIONS = [
+  { value: "ask", Icon: AskModeIcon, title: "승인 필요", tag: "ask", desc: "실행·파괴 action마다 사람이 승인" },
+  { value: "plan", Icon: PlanModeIcon, title: "설계만", tag: "plan", desc: "샌드박스 실행 없이 정적 설계만" },
+  { value: "auto", Icon: AutoModeIcon, title: "자동", tag: "auto", desc: "사전 승인 후 자동 진행" },
+];
+
+// 네이티브 <select> 대신 직접 그린 라디오 카드 — 브라우저 드롭다운에 의존하지 않는다.
+// 화살표 키로 옵션 이동(라디오 그룹 관례), 선택은 즉시 반영.
+function OptionCards({ label, options, value, onChange, disabled, compact = false }) {
+  const onKeyDown = (e) => {
+    const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+    if (!step || disabled) return;
+    e.preventDefault();
+    const i = options.findIndex((o) => o.value === value);
+    const next = options[(i + step + options.length) % options.length];
+    onChange(next.value);
+    e.currentTarget.querySelector(`[data-value="${next.value}"]`)?.focus();
+  };
+  return (
+    <div role="radiogroup" aria-label={label} className={`eng-cards${compact ? " eng-cards-compact" : ""}`}
+         onKeyDown={onKeyDown}>
+      {options.map(({ value: v, Icon, title, tag, desc }) => {
+        const selected = v === value;
+        return (
+          <button key={v} type="button" role="radio" aria-checked={selected} data-value={v}
+                  tabIndex={selected ? 0 : -1} disabled={disabled}
+                  className={`eng-card${selected ? " is-selected" : ""}`} onClick={() => onChange(v)}>
+            <span className="eng-card-icon"><Icon size={compact ? 20 : 22} /></span>
+            <span className="eng-card-text">
+              <span className="eng-card-title">
+                {title}{tag && <span className="eng-card-tag">{tag}</span>}
+              </span>
+              <span className="eng-card-desc">{desc}</span>
+            </span>
+            {!compact && (
+              <span className="eng-card-check">{selected ? <RadioCheckIcon /> : <span className="eng-card-ring" />}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
   );
 }

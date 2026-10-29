@@ -27,15 +27,16 @@ export default function Avatar({ profile, size = 32, status, role, className = "
   const url = profile?.avatar_url;
   const showImage = url && broken !== url;
 
-  const tooltip = title ?? [
+  // 스크린리더용 라벨만 — 브라우저 기본 hover 툴팁(title 속성)은 띄우지 않는다.
+  const label = title ?? [
     profile ? `${profile.nickname}${profile.name && profile.name !== profile.nickname ? ` (${profile.name})` : ""}` : "알 수 없음",
     role && ROLE_LABEL[role],
     status && STATUS_META[status]?.label,
   ].filter(Boolean).join(" · ");
 
   return (
-    <span className={`avatar ${role ? "avatar-has-hat" : ""} ${className}`} style={{ width: size, height: size }} title={tooltip}>
-      <svg width={size} height={size} viewBox="0 0 40 40" role="img" aria-label={tooltip}>
+    <span className={`avatar ${role ? "avatar-has-hat" : ""} ${className}`} style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox="0 0 40 40" role="img" aria-label={label}>
         <defs>
           <clipPath id={clipId}>
             <circle cx="20" cy="20" r="20" />

@@ -1,6 +1,7 @@
 import PaneErrorBoundary from "./PaneErrorBoundary";
 import ChatPane from "./ChatPane";
 import DetailPane from "./DetailPane";
+import WelcomePane from "./WelcomePane";
 
 // flexlayout <Layout factory> — 탭 노드의 component 문자열을 실제 패널
 // 컴포넌트로 매핑한다. (라우트 기반이던 기존 탭 시스템엔 이런 레지스트리가
@@ -22,6 +23,8 @@ export function makePaneFactory({ updateNodeConfig }) {
           onPathChange={(path) => updateNodeConfig(node.getId(), { detailPath: path })}
         />
       );
+    } else if (component === "welcome") {
+      content = <WelcomePane />;
     } else {
       content = <div className="pane-error">알 수 없는 패널: {component}</div>;
     }

@@ -39,8 +39,7 @@ export default function LangToggle() {
       type="button"
       role="switch"
       aria-checked={en}
-      aria-label="Language: KR / EN"
-      title={title}
+      aria-label={`Language: KR / EN — ${title}`}
       translate="no"
       className={`lang-toggle notranslate is-${status}${en ? " is-en" : ""}`}
       onClick={onClick}

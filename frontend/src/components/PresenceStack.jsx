@@ -72,7 +72,7 @@ export default function PresenceStack({ teamspaceId }) {
     .join("\n");
 
   return (
-    <div className="presence-stack" aria-label={`활동 중인 멤버 ${members.length}명`} title={summary}>
+    <div className="presence-stack" aria-label={`활동 중인 멤버 ${members.length}명: ${summary}`}>
       {shown.map((m) => (
         <Avatar key={m.id} profile={m} size={30} status={m.state} role={m.role} className="presence-avatar" />
       ))}

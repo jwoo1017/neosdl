@@ -156,29 +156,17 @@ export function TabsProvider({ children }) {
     if (cfg?.projectId) setActiveProjectIdRef.current(cfg.projectId);
   }, [model, persist]);
 
-  const openPane = useCallback(
-    (component, project) => {
-      if (!project?.id) return;
-      const existing = findTab(model, component, project.id);
+  // 같은 (component, projectId) 탭이 있으면 선택, 없으면 활성 tabset 에 추가.
+  const addOrSelectTab = useCallback(
+    (component, name, config) => {
+      const existing = findTab(model, component, config.projectId);
       if (existing) {
         model.doAction(Actions.selectTab(existing.getId()));
       } else {
         const target = model.getActiveTabset()?.getId() || firstTabsetId(model);
         if (target) {
-          const kindLabel = component === "chat" ? "채팅" : "상세";
           model.doAction(
-            Actions.addTab(
-              {
-                type: "tab",
-                name: `${kindLabel} · ${project.name}`,
-                component,
-                config: { projectId: project.id, projectName: project.name },
-              },
-              target,
-              DockLocation.CENTER,
-              -1,
-              true
-            )
+            Actions.addTab({ type: "tab", name, component, config }, target, DockLocation.CENTER, -1, true)
           );
         }
       }
@@ -192,8 +180,22 @@ export function TabsProvider({ children }) {
     [model, navigate]
   );
 
+  const openPane = useCallback(
+    (component, project) => {
+      if (!project?.id) return;
+      const kindLabel = component === "chat" ? "채팅" : "상세";
+      addOrSelectTab(component, `${kindLabel} · ${project.name}`, {
+        projectId: project.id,
+        projectName: project.name,
+      });
+    },
+    [addOrSelectTab]
+  );
+
   const openChatTab = useCallback((project) => openPane("chat", project), [openPane]);
   const openDetailTab = useCallback((project) => openPane("detail", project), [openPane]);
+  // 프로젝트와 무관한 NeoSDL 시작 페이지(인사말 + 첫 단계 안내) — 한 개만 연다.
+  const openWelcomeTab = useCallback(() => addOrSelectTab("welcome", "NeoSDL 시작하기", {}), [addOrSelectTab]);
 
   // 패널이 자기 하위 경로를 노드 config에 되돌려 저장할 때 쓴다.
   const updateNodeConfig = useCallback(
@@ -224,10 +226,11 @@ export function TabsProvider({ children }) {
       hasTabs: tabCount > 0,
       openChatTab,
       openDetailTab,
+      openWelcomeTab,
       updateNodeConfig,
       resetLayout,
     }),
-    [model, tabCount, openChatTab, openDetailTab, updateNodeConfig, resetLayout]
+    [model, tabCount, openChatTab, openDetailTab, openWelcomeTab, updateNodeConfig, resetLayout]
   );
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;

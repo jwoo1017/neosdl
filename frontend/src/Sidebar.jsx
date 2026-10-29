@@ -18,8 +18,11 @@ import PlusIcon from "./icons/PlusIcon";
 import MoreIcon from "./icons/MoreIcon";
 import PanelCollapseIcon from "./icons/PanelCollapseIcon";
 import PersonalSpaceIcon from "./icons/PersonalSpaceIcon";
+import { ChevronRightIcon, GearIcon, TeamspaceIcon } from "./icons/SpaceIcons";
 import Avatar from "./components/Avatar";
+import Select from "./components/Select";
 import { useMe } from "./MeContext";
+import { useDialog } from "./dialog/DialogContext";
 import logoUrl from "./assets/logo.svg?url";
 
 const VISIBILITY_BADGE = { open: "공개", closed: "참가 제한", private: "비공개" };
@@ -62,29 +65,31 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
+      {/* 팀스페이스와 개인 페이지가 같은 행 구조를 쓴다: 화살표 · 아이콘 · 이름 · (hover) 동작 */}
       <div className="sidebar-teamspace-header">
-        <button type="button" className="sidebar-teamspace-toggle" onClick={() => setExpanded((v) => !v)}>
-          <span className="sidebar-teamspace-caret">{expanded ? "▾" : "▸"}</span>{" "}
-          {personal && <PersonalSpaceIcon />} {personal ? "내 프로젝트" : teamspace.name}
+        <button type="button" className="sidebar-teamspace-toggle" onClick={() => setExpanded((v) => !v)}
+                aria-expanded={expanded}>
+          <ChevronRightIcon size={12} className={`sidebar-teamspace-caret${expanded ? " is-open" : ""}`} />
+          <span className="sidebar-teamspace-icon">
+            {personal ? <PersonalSpaceIcon size={15} /> : <TeamspaceIcon size={15} />}
+          </span>
+          <span className="sidebar-teamspace-name">{personal ? "내 프로젝트" : teamspace.name}</span>
           {!personal && teamspace.visibility !== "open" && (
             <span className="badge sidebar-teamspace-badge">{VISIBILITY_BADGE[teamspace.visibility]}</span>
           )}
         </button>
-        {isMember && (
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => onCreateProject(teamspace)}
-            title="새 프로젝트"
-          >
-            <PlusIcon size={14} />
-          </button>
-        )}
-        {!personal && (
-          <button type="button" className="icon-btn" onClick={() => onManage(teamspace)} title="팀스페이스 관리">
-            ⚙
-          </button>
-        )}
+        <span className="sidebar-teamspace-actions">
+          {isMember && (
+            <button type="button" className="icon-btn" onClick={() => onCreateProject(teamspace)} aria-label="새 프로젝트">
+              <PlusIcon size={14} />
+            </button>
+          )}
+          {!personal && (
+            <button type="button" className="icon-btn" onClick={() => onManage(teamspace)} aria-label="팀스페이스 관리">
+              <GearIcon size={14} />
+            </button>
+          )}
+        </span>
       </div>
       {expanded && (
         <div className="sidebar-teamspace-projects">
@@ -109,7 +114,7 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
                   e.stopPropagation();
                   onQuickMenu(p);
                 }}
-                title="프로젝트 메뉴"
+                aria-label="프로젝트 메뉴"
               >
                 <MoreIcon size={14} />
               </button>
@@ -137,7 +142,8 @@ export default function Sidebar() {
   const { teamspaces, personalSpace, reload: reloadTeamspaces } = useTeamspace();
   const { projects, activeProjectId, setActiveProjectId, reload: reloadProjects } = useProject();
   const { collapsed, setCollapsed } = useSidebar();
-  const { openChatTab, openDetailTab } = useTabs();
+  const { openChatTab, openDetailTab, openWelcomeTab } = useTabs();
+  const dialog = useDialog();
 
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [showCreateTeamspace, setShowCreateTeamspace] = useState(false);
@@ -162,6 +168,23 @@ export default function Sidebar() {
     if (workspaces === null) return;
     setRecent(pruneRecentProjectsByValidWorkspaces(workspaces.map((w) => w.id)));
   }, [location.pathname, workspaces, projects]);
+
+  // 팀스페이스가 하나도 없으면 사이드바에 빈 문구 대신 NeoSDL 시작 탭을 띄운다.
+  // 워크스페이스마다 이 브라우저 세션에서 한 번만 — 닫으면 다시 강제로 열지 않는다.
+  // 마이페이지·회원 관리처럼 다른 화면을 보고 있을 땐 끼어들지 않는다.
+  useEffect(() => {
+    if (!activeWorkspaceId || teamspaces === null || teamspaces.length > 0) return;
+    if (!["/", "/workspace", "/panes"].includes(location.pathname)) return;
+    const key = `neosdl_welcome_shown_${activeWorkspaceId}`;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+    } catch {
+      /* 저장소 차단 — 그래도 한 번 연다 */
+    }
+    openWelcomeTab();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspaceId, teamspaces]);
 
   const projectsByTeamspace = useMemo(() => {
     const map = {};
@@ -199,12 +222,18 @@ export default function Sidebar() {
     if (current?.teamspace_id === teamspace.id) return; // 같은 teamspace로 드롭 — 할 일 없음
     const fromPersonal = personalSpace && current?.teamspace_id === personalSpace.id;
     // 개인 페이지 ↔ 팀스페이스 이동은 "공개 범위" 가 바뀌므로 한 번 확인받는다.
-    if (fromPersonal && !teamspace.personal
-        && !window.confirm(`'${current.name}'을(를) '${teamspace.name}' 팀스페이스로 옮겨 팀원과 공유합니다. 계속할까요?`)) {
+    if (fromPersonal && !teamspace.personal && !(await dialog.confirm({
+      title: "팀스페이스로 옮기기",
+      message: `'${current.name}'을(를) '${teamspace.name}' 팀스페이스로 옮겨 팀원과 공유합니다. 계속할까요?`,
+      confirmLabel: "옮기기",
+    }))) {
       return;
     }
-    if (teamspace.personal && !fromPersonal
-        && !window.confirm(`'${current?.name}'을(를) 개인 페이지로 옮기면 팀원에게 더 이상 보이지 않습니다. 계속할까요?`)) {
+    if (teamspace.personal && !fromPersonal && !(await dialog.confirm({
+      title: "개인 페이지로 옮기기",
+      message: `'${current?.name}'을(를) 개인 페이지로 옮기면 팀원에게 더 이상 보이지 않습니다. 계속할까요?`,
+      confirmLabel: "옮기기",
+    }))) {
       return;
     }
     setDragError(null);
@@ -231,7 +260,6 @@ export default function Sidebar() {
           className="sidebar-collapse-toggle"
           onClick={() => setCollapsed(true)}
           aria-label="사이드바 접기"
-          title="사이드바 접기"
         >
           <PanelCollapseIcon />
         </button>
@@ -245,18 +273,15 @@ export default function Sidebar() {
         {workspaces === null ? (
           <span className="muted">워크스페이스 불러오는 중...</span>
         ) : (
-          <select
+          <Select
             className="team-switcher-select"
+            ariaLabel="워크스페이스 선택"
             value={activeWorkspaceId || ""}
-            onChange={(e) => setActiveWorkspaceId(e.target.value)}
-          >
-            {workspaces.length === 0 && <option value="">워크스페이스 없음</option>}
-            {workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
+            onChange={setActiveWorkspaceId}
+            placeholder="워크스페이스 없음"
+            disabled={workspaces.length === 0}
+            options={workspaces.map((w) => ({ value: w.id, label: w.name }))}
+          />
         )}
         {/* 게스트(회사 도메인 밖, 초대로 가입)는 워크스페이스를 만들 수 없다(app/workspaces.py) */}
         {!me?.is_guest && (
@@ -286,15 +311,12 @@ export default function Sidebar() {
                 type="button"
                 className="team-switcher-new-btn"
                 onClick={() => setShowCreateTeamspace(true)}
-                title="새 팀스페이스"
               >
                 + 새 팀스페이스
               </button>
             </div>
             {teamspaces === null ? (
-              <span className="muted">불러오는 중...</span>
-            ) : teamspaces.length === 0 ? (
-              <span className="muted">팀스페이스가 없습니다.</span>
+              <span className="sidebar-project-empty">불러오는 중...</span>
             ) : (
               teamspaces.map((t) => (
                 <TeamspaceNode
@@ -320,7 +342,7 @@ export default function Sidebar() {
 
         {/* 개인 페이지 — 나만 보는 공간. 프로젝트를 위 팀스페이스로 끌어다 놓으면 공유된다. */}
         {activeWorkspaceId && personalSpace && (
-          <div className="sidebar-section sidebar-personal">
+          <div className="sidebar-section">
             <div className="sidebar-section-label">
               <span>개인 페이지</span>
             </div>
@@ -335,7 +357,7 @@ export default function Sidebar() {
               onManage={() => {}}
               onQuickMenu={setQuickMenuProject}
             />
-            <p className="muted sidebar-personal-hint">나만 볼 수 있어요. 프로젝트를 팀스페이스로 끌어다 놓으면 공유됩니다.</p>
+            <p className="sidebar-personal-hint">나만 볼 수 있어요. 팀스페이스로 끌어다 놓으면 공유됩니다.</p>
           </div>
         )}
       </div>
@@ -362,9 +384,9 @@ export default function Sidebar() {
             type="button"
             className={`sidebar-account-profile ${location.pathname === "/me" ? "active" : ""}`}
             onClick={() => navigate("/me")}
-            title="마이페이지"
+            aria-label="마이페이지"
           >
-            <Avatar profile={me} size={30} title="마이페이지" />
+            <Avatar profile={me} size={30} />
             <span className="sidebar-account-names">
               <span className="login">{me.nickname}</span>
               <span className="sidebar-account-realname">{me.name}</span>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { toolIcon, IconThought } from "./EngageIcons";
+import { toolIcon, describeCommand, IconThought } from "./EngageIcons";
 
 // engagement 실행 스텝 타임라인 — 마크다운 덤프 대신 도구 아이콘·상태·접이식 출력 카드.
 // EngageTab(B)와 채팅 라이브(A) 공용. step: {command, ok, exit_code, timed_out, output, rejected, reason?}
@@ -36,9 +36,11 @@ export function StepCard({ step, index }) {
       <div style={{ flex: 1, minWidth: 0, paddingBottom: "0.4rem" }}>
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
           {index != null && <span className="muted" style={{ fontSize: "0.72rem" }}>#{index + 1}</span>}
-          <code style={{ fontSize: "0.78rem", wordBreak: "break-all" }}>{step.command}</code>
+          <strong style={{ fontSize: "0.8rem" }}>{describeCommand(step.command)}</strong>
           <span className={`badge ${st.cls}`} style={{ fontSize: "0.68rem" }}>{st.label}</span>
         </div>
+        <code style={{ fontSize: "0.76rem", wordBreak: "break-all", color: "var(--text-dim)",
+                       display: "block", marginTop: "0.15rem" }}>{step.command}</code>
         {step.reason && (
           <div className="muted" style={{ fontSize: "0.76rem", marginTop: "0.25rem", fontStyle: "italic",
                                            display: "flex", alignItems: "flex-start", gap: "0.3rem" }}>

@@ -65,7 +65,6 @@ export default function InviteInbox() {
         className="inbox-toggle"
         onClick={() => setOpen((v) => !v)}
         aria-label="초대 수신함"
-        title="초대 수신함"
       >
         <InboxIcon />
         {invites.length > 0 && <span className="inbox-badge">{invites.length}</span>}

@@ -5,6 +5,7 @@ import "./vendor/flexlayout-dark.css";
 import { useTabs } from "./TabsContext";
 import { useProject } from "./ProjectContext";
 import { makePaneFactory } from "./panes/paneFactory";
+import { useDialog } from "./dialog/DialogContext";
 
 const CHAT_RE = /^\/projects\/([^/]+)\/chat\/?$/;
 const DETAIL_RE = /^\/projects\/([^/]+)\/detail(\/.*)?$/;
@@ -17,6 +18,7 @@ export default function MultiPaneLayout() {
   const { projects } = useProject();
   const location = useLocation();
   const navigate = useNavigate();
+  const dialog = useDialog();
 
   useEffect(() => {
     const chat = CHAT_RE.exec(location.pathname);
@@ -42,16 +44,21 @@ export default function MultiPaneLayout() {
           key="reset-layout"
           type="button"
           className="pane-tabset-btn"
-          title="레이아웃 초기화"
-          onClick={() => {
-            if (window.confirm("모든 패널을 닫고 레이아웃을 초기화할까요?")) resetLayout();
+          aria-label="레이아웃 초기화"
+          onClick={async () => {
+            if (await dialog.confirm({
+              title: "레이아웃 초기화",
+              message: "모든 패널을 닫고 레이아웃을 초기화할까요?",
+              confirmLabel: "초기화",
+              danger: true,
+            })) resetLayout();
           }}
         >
           ⟲
         </button>
       );
     },
-    [resetLayout]
+    [resetLayout, dialog]
   );
 
   return (

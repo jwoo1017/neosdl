@@ -26,6 +26,7 @@ import { fetchMe } from "./api";
 import { MeContext } from "./MeContext";
 import MyPage from "./pages/MyPage";
 import { ToastProvider } from "./toast/ToastContext";
+import { DialogProvider } from "./dialog/DialogContext";
 import AnalysisWatcher from "./analysis/AnalysisWatcher";
 import "./App.css";
 
@@ -110,6 +111,7 @@ function AppLayout() {
         <ProjectProvider>
           <TabsProvider>
             <ToastProvider>
+            <DialogProvider>
             <AnalysisWatcher />
             <MascotProvider>
               <SidebarProvider>
@@ -144,6 +146,7 @@ function AppLayout() {
                 </div>
               </SidebarProvider>
             </MascotProvider>
+            </DialogProvider>
             </ToastProvider>
           </TabsProvider>
         </ProjectProvider>

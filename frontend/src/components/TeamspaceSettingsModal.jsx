@@ -10,6 +10,7 @@ import {
   updateTeamspaceMemberRole,
 } from "../api";
 import { useMe } from "../MeContext";
+import { useDialog } from "../dialog/DialogContext";
 import { useTeamspace } from "../TeamspaceContext";
 import { assignableRoles, canManageMember, describeSpaceError, isSpaceAdmin, SPACE_ROLE_LABEL } from "../spaceRoles";
 import { removeRecentProjectsByTeamspace } from "../recentProjects";
@@ -23,6 +24,7 @@ const DISCIPLINE_LABEL = { pm: "PM", frontend: "프론트엔드", backend: "백�
 export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
   const { reload: reloadTeamspaces } = useTeamspace();
   const { me } = useMe();
+  const dialog = useDialog();
 
   const [teamspace, setTeamspace] = useState(null);
   const [error, setError] = useState(null);
@@ -104,7 +106,7 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
   };
 
   const doRemoveMember = async (m) => {
-    if (!window.confirm(`${m.nickname}님을 팀스페이스에서 제거할까요?`)) return;
+    if (!(await dialog.confirm({ title: "멤버 제거", message: `${m.nickname}님을 팀스페이스에서 제거할까요?`, confirmLabel: "제거", danger: true }))) return;
     try {
       setError(null);
       await removeTeamspaceMember(teamspaceId, m.member_id);
@@ -115,7 +117,7 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
   };
 
   const doLeave = async () => {
-    if (!window.confirm(`'${teamspace.name}' 팀스페이스에서 나갈까요?`)) return;
+    if (!(await dialog.confirm({ title: "팀스페이스 나가기", message: `'${teamspace.name}' 팀스페이스에서 나갈까요?`, confirmLabel: "나가기", danger: true }))) return;
     try {
       await leaveTeamspace(teamspaceId);
       await reloadTeamspaces();

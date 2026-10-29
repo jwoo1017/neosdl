@@ -270,12 +270,6 @@
 
 .team-switcher-select {
   width: 100%;
-  padding: 0.4rem 0.5rem;
-  background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  color: var(--text);
-  border-radius: 5px;
-  font-size: 0.85rem;
 }
 
 .team-switcher-new-btn {
@@ -361,31 +355,75 @@
   gap: 0.3rem;
 }
 
+.sidebar-teamspace-header {
+  border-radius: 5px;
+}
+
+.sidebar-teamspace-header:hover {
+  background: var(--surface-2);
+}
+
 .sidebar-teamspace-toggle {
   flex: 1;
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.4rem;
   background: none;
   border: none;
-  padding: 0.3rem 0;
+  padding: 0.34rem 0.3rem;
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
+  font-weight: 500;
   text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.sidebar-teamspace-toggle:hover {
+.sidebar-teamspace-header:hover .sidebar-teamspace-toggle {
   color: var(--text);
 }
 
 .sidebar-teamspace-caret {
   color: var(--text-faint);
-  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.sidebar-teamspace-caret.is-open {
+  transform: rotate(90deg);
+}
+
+.sidebar-teamspace-icon {
+  display: flex;
+  flex: none;
+  color: var(--text-faint);
+}
+
+.sidebar-teamspace-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* +·관리 버튼은 행에 마우스를 올리거나 포커스가 있을 때만 — 팀스페이스/개인 페이지 동일 */
+.sidebar-teamspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding-right: 0.2rem;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.sidebar-teamspace-header:hover .sidebar-teamspace-actions,
+.sidebar-teamspace-header:focus-within .sidebar-teamspace-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .sidebar-teamspace-actions {
+    opacity: 1;
+  }
 }
 
 .sidebar-teamspace-badge {
@@ -395,18 +433,26 @@
 }
 
 .sidebar-teamspace-header .icon-btn {
-  font-size: 0.8rem;
-  opacity: 0.6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--text-faint);
 }
 
 .sidebar-teamspace-header .icon-btn:hover {
-  opacity: 1;
+  background: var(--surface-3);
+  color: var(--text);
 }
 
+/* 프로젝트 이름이 팀스페이스 아이콘 시작점에 맞춰 정렬되게 들여쓴다 */
 .sidebar-teamspace-projects {
   display: flex;
   flex-direction: column;
-  padding-left: 1.1rem;
+  padding-left: 0.95rem;
   gap: 0.05rem;
 }
 
@@ -467,6 +513,7 @@
   display: block;
   padding: 0.32rem 0.5rem;
   font-size: 0.78rem;
+  color: var(--text-faint);
 }
 
 .sidebar-nav {
@@ -1885,6 +1932,167 @@ tr.risk-row:hover { background: var(--surface-2); }
 
 .modal-body {
   padding: 1.2rem;
+}
+
+/* 확인/입력 다이얼로그(dialog/DialogContext) — window.confirm/prompt 대체 */
+.dialog-message {
+  margin: 0 0 1.1rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-line;
+}
+.dialog-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 1.1rem;
+}
+
+/* ------------------------------------------------ 검증 run 실행 모달 */
+.eng-modal-label {
+  display: block;
+  margin: 1.1rem 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.eng-modal-label:first-child {
+  margin-top: 0;
+}
+.eng-modal-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 0.88rem;
+}
+.eng-modal-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+.eng-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.eng-cards-compact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 520px) {
+  .eng-cards-compact {
+    grid-template-columns: 1fr;
+  }
+}
+.eng-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.eng-card:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
+.eng-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.eng-card:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.eng-card.is-selected {
+  border-color: var(--accent);
+  background: rgba(63, 184, 172, 0.1);
+}
+.eng-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 8px;
+  background: var(--surface-3);
+  color: var(--text-dim);
+}
+.eng-card.is-selected .eng-card-icon {
+  background: rgba(63, 184, 172, 0.18);
+  color: var(--accent-strong);
+}
+.eng-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 1;
+}
+.eng-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+.eng-card-tag {
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.eng-card-desc {
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.eng-card-check {
+  flex: none;
+  color: var(--accent);
+}
+.eng-card-ring {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+}
+/* 권한 모드 — 세로로 쌓은 작은 카드 3개 */
+.eng-cards-compact .eng-card {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.7rem;
+}
+.eng-cards-compact .eng-card-icon {
+  width: 32px;
+  height: 32px;
+}
+.eng-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.4rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.eng-modal-btn {
+  height: 36px;
+  min-width: 84px;
+  padding: 0 1.1rem;
 }
 
 /* -------------------------------------------------------- workspace home */
@@ -3919,15 +4127,12 @@ tr.risk-row:hover { background: var(--surface-2); }
   }
 }
 
-/* 개인 페이지 섹션 (Sidebar.jsx) */
-.sidebar-personal .sidebar-teamspace-toggle svg {
-  vertical-align: -2px;
-  color: var(--accent);
-}
+/* 개인 페이지 섹션 (Sidebar.jsx) — 팀스페이스와 같은 행 스타일, 안내 문구만 덧붙는다 */
 .sidebar-personal-hint {
+  margin: 0.15rem 0 0 1.45rem;
   font-size: 0.72rem;
-  margin: 0.3rem 0.4rem 0;
-  line-height: 1.4;
+  line-height: 1.45;
+  color: var(--text-faint);
 }
 /* =====================================================================
    마이페이지 (pages/MyPage.jsx) — 가운데 정렬 설정 화면: 왼쪽 탭 + 오른쪽 본문
@@ -5103,4 +5308,617 @@ tr.risk-row:hover { background: var(--surface-2); }
   .adm-search {
     width: 100%;
   }
+}
+
+/* ---------------------------------------------------- Engagement 라이브 상태 스트립 */
+.eng-live {
+  border: 1px solid var(--border, #3a3a3a);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 0.9rem;
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+}
+.eng-live-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.eng-live-icon {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+.eng-live-title {
+  font-size: 0.92rem;
+}
+.eng-live-metrics {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+.eng-live-metrics span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+.eng-live-caption {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+/* 펄스 — "작업 중" 일 때만. 아이콘 뒤에서 번지는 링. */
+.eng-live-pulse {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+  animation: eng-live-pulse 1.4s ease-out infinite;
+}
+@keyframes eng-live-pulse {
+  0% { transform: scale(0.6); opacity: 0.5; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* 인디터미닛 진행 바 — 끝을 알 수 없는 작업이 "살아있음" 을 보여준다. */
+.eng-live-bar {
+  margin-top: 0.55rem;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--border, rgba(127, 127, 127, 0.25));
+  overflow: hidden;
+}
+.eng-live-bar > span {
+  display: block;
+  height: 100%;
+  width: 40%;
+  border-radius: 3px;
+  background: currentColor;
+  animation: eng-live-bar 1.3s ease-in-out infinite;
+}
+@keyframes eng-live-bar {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+/* 상태별 색 — 테두리/강조색은 currentColor 로 퍼진다. */
+.eng-live--active { color: var(--accent, #6ea8fe); border-left-color: var(--accent, #6ea8fe); }
+.eng-live--warn  { color: var(--warning, #e0a74b); border-left-color: var(--warning, #e0a74b); }
+.eng-live--pause { color: var(--warning, #e0a74b); border-left-color: var(--warning, #e0a74b); }
+.eng-live--done  { color: var(--success, #4bbf7b); border-left-color: var(--success, #4bbf7b); }
+.eng-live--fail  { color: var(--danger, #ff6b74); border-left-color: var(--danger, #ff6b74); }
+.eng-live--idle  { color: var(--text-dim); border-left-color: var(--border, #3a3a3a); }
+.eng-live-title, .eng-live-caption, .eng-live-metrics { color: var(--text, inherit); }
+.eng-live-caption, .eng-live-metrics { color: var(--text-dim); }
+
+@media (prefers-reduced-motion: reduce) {
+  .eng-live-pulse { animation: none; opacity: 0.25; }
+  .eng-live-bar > span { animation: none; width: 100%; opacity: 0.5; }
+}
+
+/* =====================================================================
+   공용 입력 필드 — 브라우저 기본(흰 바탕) 대신 앱 톤으로
+   ===================================================================== */
+.eng-modal-input,
+.dialog-input,
+.ws-input {
+  padding: 0.5rem 0.65rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+.eng-modal-input:focus,
+.dialog-input:focus,
+.ws-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.eng-modal-input::placeholder,
+.dialog-input::placeholder,
+.ws-input::placeholder {
+  color: var(--text-faint);
+}
+textarea.eng-modal-input {
+  resize: vertical;
+}
+
+/* =====================================================================
+   Select (components/Select.jsx) — 네이티브 <select> 대체 드롭다운
+   ===================================================================== */
+.ui-select {
+  position: relative;
+  min-width: 0;
+}
+.ui-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  height: 34px;
+  margin: 0;
+  padding: 0 0.6rem 0 0.7rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+.ui-select-sm .ui-select-trigger {
+  height: 28px;
+  padding: 0 0.45rem 0 0.6rem;
+  font-size: 0.8rem;
+  background: transparent;
+  border-color: transparent;
+}
+.ui-select-sm .ui-select-trigger:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.ui-select-trigger:hover:not(:disabled) {
+  border-color: var(--text-faint);
+}
+.ui-select-trigger:focus-visible,
+.ui-select.is-open .ui-select-trigger {
+  outline: none;
+  border-color: var(--accent);
+}
+.ui-select-trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.ui-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-select-value.is-placeholder {
+  color: var(--text-faint);
+}
+.ui-select-caret {
+  color: var(--text-faint);
+  transition: transform 0.12s ease;
+}
+.ui-select.is-open .ui-select-caret {
+  transform: rotate(180deg);
+}
+.ui-select-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  min-width: 140px;
+  z-index: 120;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.ui-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.42rem 0.55rem;
+  border-radius: 5px;
+  font-size: 0.84rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.ui-select-option.is-cursor {
+  background: var(--surface-3);
+  color: var(--text);
+}
+.ui-select-option.is-selected {
+  color: var(--text);
+}
+.ui-select-option svg {
+  color: var(--accent);
+}
+.ui-select-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* =====================================================================
+   시작 탭 (panes/WelcomePane.jsx)
+   ===================================================================== */
+.welcome-pane {
+  height: 100%;
+  overflow-y: auto;
+  padding: 3.5rem 1.5rem 3rem;
+}
+.welcome-inner {
+  max-width: 620px;
+  margin: 0 auto;
+}
+.welcome-logo {
+  display: block;
+  height: 26px;
+  width: auto;
+  margin-bottom: 2rem;
+  opacity: 0.9;
+}
+.welcome-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.welcome-lead {
+  margin: 0 0 2.25rem;
+  font-size: 0.92rem;
+  line-height: 1.75;
+  color: var(--text-dim);
+}
+.welcome-lead strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.welcome-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+.welcome-step {
+  display: flex;
+  gap: 1rem;
+  padding: 1.2rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.welcome-step-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--text-dim);
+}
+.welcome-step-num {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+.welcome-step.is-done .welcome-step-mark {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #04211d;
+}
+.welcome-step-main {
+  flex: 1;
+  min-width: 0;
+}
+.welcome-step-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 24px;
+}
+.welcome-step-icon {
+  color: var(--text-faint);
+}
+.welcome-step-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.welcome-step.is-done .welcome-step-title {
+  color: var(--text-dim);
+}
+.welcome-step-body {
+  margin: 0.35rem 0 0;
+  font-size: 0.84rem;
+  line-height: 1.65;
+  color: var(--text-dim);
+}
+.welcome-step-btn {
+  margin-top: 0.8rem;
+}
+.welcome-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  margin: 1.5rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text-faint);
+}
+.welcome-foot svg {
+  margin-top: 0.2rem;
+}
+
+/* =====================================================================
+   워크스페이스 관리 모달 (components/WorkspaceSettingsModal.jsx)
+   설정 화면 관례: 왼쪽 라벨·설명 / 오른쪽 컨트롤, 섹션은 가는 구분선으로만.
+   ===================================================================== */
+.ws-loading {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+}
+.ws-error {
+  margin-bottom: 1rem;
+}
+.ws-row {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 1.5rem;
+  padding: 1.25rem 0;
+  border-top: 1px solid var(--border);
+}
+.modal-body > .ws-row:first-child,
+.ws-error + .ws-row {
+  padding-top: 0.25rem;
+  border-top: none;
+}
+@media (max-width: 640px) {
+  .ws-row {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+}
+.ws-row-label h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.3rem;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.ws-row-label p {
+  margin: 0;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+.ws-count {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+.ws-row-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.ws-row-control-end {
+  align-items: flex-start;
+  justify-content: center;
+}
+.ws-inline {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.ws-inline .ws-input {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  box-sizing: border-box;
+}
+.ws-invite-role {
+  width: 104px;
+  flex: none;
+}
+.ws-static {
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.ws-members {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ws-member {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 104px 72px;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+}
+.ws-member + .ws-member {
+  border-top: 1px solid var(--border);
+}
+.ws-member-names {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ws-member-nick {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.86rem;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.ws-member-name {
+  font-size: 0.74rem;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-chip {
+  padding: 0 0.35rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-size: 0.66rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.ws-chip-guest {
+  border-color: rgba(234, 179, 8, 0.4);
+  color: #d6b24a;
+}
+.ws-role-text {
+  padding-left: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.ws-member-action {
+  display: flex;
+  justify-content: flex-end;
+}
+.ws-note {
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.ws-footnote {
+  margin: -0.6rem 0 0 calc(200px + 1.5rem);
+  padding-bottom: 1rem;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+@media (max-width: 640px) {
+  .ws-footnote {
+    margin-left: 0;
+  }
+}
+.ws-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0.25rem 0.45rem;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ws-text-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.ws-text-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ws-text-btn-danger:hover:not(:disabled) {
+  color: #f87171;
+}
+
+.ws-invite-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.ws-invite-result-label {
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+.ws-invite-url {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.35rem 0.35rem 0.65rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.ws-invite-url code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+}
+
+.ws-invites-empty {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+.ws-invites-label {
+  margin: 0.25rem 0 0.4rem;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+.ws-invites ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ws-invite {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+.ws-invite.is-closed {
+  opacity: 0.55;
+}
+.ws-invite-target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.ws-invite-meta {
+  font-size: 0.74rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.ws-invite-status {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.ws-invite-status.is-pending {
+  color: var(--accent-strong);
+}
+.ws-invite-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 96px;
+}
+.ws-row-danger h3 {
+  color: #f0a3a3;
 }

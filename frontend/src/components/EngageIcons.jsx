@@ -108,6 +108,54 @@ export const IconLock = (p) => (
   </Svg>
 );
 
+// 작업 중(심전도형 활동선) — 라이브 진행 표시용
+export const IconActivity = (p) => (
+  <Svg {...p} title="작업 중">
+    <path d="M3 12h4l2-6 4 12 2-6h6" />
+  </Svg>
+);
+
+// 경과/마지막 활동(시계)
+export const IconClock = (p) => (
+  <Svg {...p} title="시간">
+    <circle cx="12" cy="12" r="8" />
+    <path d="M12 8v4l3 2" />
+  </Svg>
+);
+
+// 실시간 연결 끊김(신호 + 사선)
+export const IconSignalOff = (p) => (
+  <Svg {...p} title="연결 끊김">
+    <path d="M5 12.5a10 10 0 0 1 14 0" />
+    <path d="M8.5 16a5 5 0 0 1 7 0" />
+    <path d="M12 19.5h.01" />
+    <path d="M3 3l18 18" />
+  </Svg>
+);
+
+// 완료(깃발)
+export const IconFlag = (p) => (
+  <Svg {...p} title="완료">
+    <path d="M6 21V4M6 4h11l-2 4 2 4H6" />
+  </Svg>
+);
+
+// 명령어 → 사람이 읽는 활동 해석(라이브 로그 해석용). 소문자 접두 기준.
+export function describeCommand(command) {
+  const c = (command || "").trim().toLowerCase();
+  if (c.startsWith("nmap")) return "포트·서비스 스캔";
+  if (c.startsWith("nikto")) return "웹 서버 취약점 점검";
+  if (c.startsWith("sqlmap")) return "SQL 주입 점검";
+  if (c.startsWith("gobuster") || c.startsWith("dirb") || c.startsWith("ffuf") || c.startsWith("feroxbuster"))
+    return "숨은 경로·디렉터리 탐색";
+  if (c.startsWith("whatweb")) return "웹 기술 스택 식별";
+  if (c.startsWith("curl") || c.startsWith("wget")) return "웹 응답 분석";
+  if (c.startsWith("nc ") || c.startsWith("ncat") || c.startsWith("netcat")) return "소켓 연결 점검";
+  if (c.startsWith("hydra")) return "인증 무차별 대입 점검";
+  if (c.startsWith("searchsploit") || c.startsWith("msf")) return "공개 익스플로잇 조회";
+  return "명령 실행";
+}
+
 // 명령어 → 도구 아이콘 매핑(소문자 접두 기준).
 export function toolIcon(command) {
   const c = (command || "").trim().toLowerCase();
