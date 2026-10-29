@@ -30,6 +30,7 @@ import { useThrottledValue } from "../chat/useThrottledValue";
 import {
   IconBack, IconPaperclip, IconSend, IconStar, IconWrench, IconCheck, IconChevronDown, IconPencil, IconSearch,
 } from "../chatIcons";
+import { IconLock } from "../components/EngageIcons";
 import NewChatIcon from "../icons/NewChatIcon";
 import MoreHorizontalIcon from "../icons/MoreHorizontalIcon";
 import LinkIcon from "../icons/LinkIcon";
@@ -60,6 +61,7 @@ function ChatComposer({
   forcedTool, setForcedTool,
   attachedFiles, setAttachedFiles,
   selectedModel, onSelectModel, modelGroups,
+  autoApprove, onToggleAutoApprove,
 }) {
   const [openMenu, setOpenMenu] = useState(null); // null | "plus" | "model"
   const [plusView, setPlusView] = useState("root"); // "root" | "skills"
@@ -195,6 +197,12 @@ function ChatComposer({
         return;
       }
     }
+    // shift+tab — 보안 점검 승인 모드 토글(ask ↔ auto). Claude 세션의 권한 모드 전환과 같은 키.
+    if (e.key === "Tab" && e.shiftKey) {
+      e.preventDefault();
+      onToggleAutoApprove?.();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSubmit(e);
@@ -211,7 +219,7 @@ function ChatComposer({
   const hasChips = attachedFiles.length > 0 || mentionedProjects.length > 0 || !!forcedTool;
 
   return (
-    <form className="chat-composer" onSubmit={onSubmit}>
+    <form className={`chat-composer${autoApprove ? " chat-composer-auto" : ""}`} onSubmit={onSubmit}>
       {hasChips && (
         <div className="chat-composer-chips">
           {attachedFiles.map((f, i) => (
@@ -324,6 +332,16 @@ function ChatComposer({
               )}
             </Popover>
           )}
+          <button
+            type="button"
+            className={`chat-approve-pill${autoApprove ? " is-auto" : ""}`}
+            onClick={onToggleAutoApprove}
+            title="보안 점검 승인 모드 — shift+tab 으로 전환"
+            aria-pressed={autoApprove}
+          >
+            <IconLock size={13} />
+            {autoApprove ? "자동 승인" : "승인 받기"}
+          </button>
         </div>
 
         <div className="chat-composer-toolbar-side">
@@ -596,6 +614,18 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
   // 저장된 메시지(evidence.pentest_suggestion/engagement_id)에서 그려 새로고침해도 남는다.
   const [pentestSuggestion, setPentestSuggestion] = useState(null);
   const [dismissedPentest, setDismissedPentest] = useState(() => new Set()); // 무시/닫기한 카드 메시지 id
+  // 보안 점검 승인 모드 — false=각 침투성 명령 실행 전 승인(ask), true=자동 승인(auto, 샌드박스/allowlist 범위).
+  // shift+tab 으로 토글하며 입력창 아웃라인 색이 바뀐다(Claude 세션의 권한 모드 전환과 같은 감각).
+  const [autoApprove, setAutoApprove] = useState(() => {
+    try { return localStorage.getItem("neosdl.pentest.autoApprove") === "1"; } catch { return false; }
+  });
+  const toggleAutoApprove = useCallback(() => {
+    setAutoApprove((v) => {
+      const next = !v;
+      try { localStorage.setItem("neosdl.pentest.autoApprove", next ? "1" : "0"); } catch { /* private mode */ }
+      return next;
+    });
+  }, []);
   const bottomRef = useRef(null);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -1028,6 +1058,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
                       messageId={m.id}
                       suggestion={m.evidence.pentest_suggestion}
                       engagementId={m.evidence.engagement_id}
+                      permissionMode={autoApprove ? "auto" : "ask"}
                       onStarted={(eid) => markEngagementStarted(m.id, eid)}
                       onDismiss={() => setDismissedPentest((prev) => new Set(prev).add(m.id))}
                       onUpdate={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
@@ -1089,6 +1120,8 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
         selectedModel={selectedModel}
         onSelectModel={selectModel}
         modelGroups={modelGroups}
+        autoApprove={autoApprove}
+        onToggleAutoApprove={toggleAutoApprove}
       />
     </div>
   );

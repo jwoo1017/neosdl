@@ -3370,6 +3370,37 @@ tr.risk-row:hover { background: var(--surface-2); }
   border: 1px solid var(--border-strong);
   border-radius: 18px;
   padding: 0.7rem 0.8rem 0.55rem;
+  transition: border-color .15s, box-shadow .15s;
+}
+
+/* 보안 점검 자동 승인 모드 — 입력창 아웃라인이 경고색으로 바뀌어 "지금 자동 진행" 상태를 알린다
+   (Claude 세션의 권한 모드 전환과 같은 감각). shift+tab 또는 아래 알약 버튼으로 토글. */
+.chat-composer-auto {
+  border-color: var(--warning, #e0a74b);
+  box-shadow: 0 0 0 1px var(--warning, #e0a74b), 0 0 0 4px rgba(224, 167, 75, 0.14);
+}
+
+.chat-approve-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 32px;
+  padding: 0 0.7rem;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chat-approve-pill:hover { background: var(--surface-3); color: var(--text); }
+
+.chat-approve-pill.is-auto {
+  border-color: var(--warning, #e0a74b);
+  color: var(--warning, #e0a74b);
+  background: rgba(224, 167, 75, 0.12);
 }
 
 .chat-composer-chips {
