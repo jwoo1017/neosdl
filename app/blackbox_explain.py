@@ -24,6 +24,21 @@ _GLOSSARY = [
     (re.compile(r"sql 인젝션|sql inj", re.I), "sqli", "SQL 인젝션 확인",
      "입력값이 DB 쿼리에 그대로 이어 붙어, 공격자가 로그인 우회·데이터 열람/변조를 할 수 있습니다. 즉시 수정이 필요합니다.",
      "문자열 연결 대신 파라미터 바인딩(prepared statement, `?` 자리표시자)이나 ORM 쿼리 빌더를 쓰세요."),
+    (re.compile(r"반영 xss|reflected xss|\bxss 확인", re.I), "xss", "반영 XSS(교차 사이트 스크립팅) 확인",
+     "입력값이 페이지에 이스케이프 없이 그대로 출력돼, 공격자가 심은 스크립트가 피해자 브라우저에서 실행됩니다. 세션 탈취·피싱으로 이어집니다.",
+     "출력 시 HTML 이스케이프(템플릿 자동 이스케이프 사용), 입력 검증, 그리고 `helmet()` CSP 로 스크립트 출처를 제한하세요."),
+    (re.compile(r"ssti|템플릿 주입", re.I), "ssti", "서버사이드 템플릿 주입(SSTI) 확인",
+     "입력값이 서버 템플릿 엔진에서 코드로 평가됩니다(예: {{7*7}}→49). 원격 코드 실행까지 번질 수 있는 치명적 결함입니다.",
+     "사용자 입력을 템플릿 소스에 넣지 말고 **데이터로만** 전달하세요(render 변수 바인딩). 템플릿을 문자열 연결로 만들지 마세요."),
+    (re.compile(r"경로순회|path traversal|\blfi\b|파일읽기", re.I), "lfi", "경로순회/로컬 파일 읽기(LFI) 확인",
+     "파일 경로 파라미터에 ../ 를 넣어 서버의 임의 파일(/etc/passwd 등)을 읽어갈 수 있습니다. 소스·설정·비밀이 유출됩니다.",
+     "사용자 입력을 파일 경로에 직접 쓰지 말고, 화이트리스트/인덱스로 매핑하거나 `path.basename` 후 고정 디렉터리에 join 하세요."),
+    (re.compile(r"접근통제 결함|broken access|비인증 접근", re.I), "access", "접근통제 결함(비인증 접근)",
+     "로그인이 필요한 엔드포인트가 인증 없이도 응답합니다. 남의 데이터 열람·변조(IDOR 포함) 위험이 있습니다.",
+     "서버에서 모든 보호 라우트에 인증·인가 미들웨어를 강제하고, 객체 소유권(본인 자원인지)을 매 요청 확인하세요."),
+    (re.compile(r"민감 경로 노출|민감파일|sensitive (?:path|file)", re.I), "exposure", "민감 경로/파일 노출",
+     "소스·백업·설정·비밀 파일(.git, .env, *.sql 등)이 웹에서 바로 내려받아집니다. 그대로 자격증명·코드 유출로 이어집니다.",
+     "해당 경로를 웹루트에서 제거하거나 접근 차단(deny)하고, 비밀은 환경변수·시크릿 매니저로 옮긴 뒤 노출된 값은 즉시 교체하세요."),
     (re.compile(r"x-powered-by", re.I), "header", "서버 기술 정보 노출",
      "응답 헤더에 'Express' 같은 서버 종류가 그대로 나갑니다. 바로 뚫리진 않지만 공격자가 맞춤 공격을 고르는 단서가 됩니다.",
      "`app.disable('x-powered-by')` 를 추가하거나 `app.use(helmet())` 을 적용하세요."),
@@ -121,7 +136,9 @@ def _dedupe(findings: list) -> list:
     seen: dict[tuple, dict] = {}
     for f in findings:
         kind = f.get("kind")
-        if kind in ("sqli", "info", None):
+        # 호스트 단위 위생(헤더·CORS)만 합친다 — nikto 가 같은 문제를 문구만 달리해 여러 번 낸다.
+        # 엔드포인트 단위 취약점(sqli/xss/ssti/lfi/access/exposure)은 경로마다 따로 봐야 하므로 합치지 않는다.
+        if kind not in ("header", "cors"):
             out.append(f)
             continue
         key = (kind, f.get("label"))

@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # sqlmap 플래그. --threads 로 병렬, --technique=BEUS 로 time-based(sleep) 블라인드를 빼 엔드포인트당
     # 수 분씩 걸리던 병목을 없앤다. 더 깊게(느리게) 보려면 --technique 에 T 추가 또는 --level/--risk 상향.
     pentest_sqlmap_flags: str = "--batch --level=2 --risk=2 --threads=4 --technique=BEUS"
+    # nuclei 템플릿 스캔 플래그. jsonl 로 파싱, info 심각도는 추출기에서 버린다(보안헤더 노이즈 억제).
+    pentest_nuclei_flags: str = "-silent -jsonl -severity low,medium,high,critical -timeout 8 -retries 1"
+    # ffuf 콘텐츠 디스커버리 워드리스트. Kali(vxcontrol/kali-linux)에 기본 존재하는 dirb common.
+    pentest_ffuf_wordlist: str = "/usr/share/wordlists/dirb/common.txt"
 
     # --- LLM 실행 추적(Langfuse, 자체호스팅, 개발 전용) ---
     # 둘 다 비어 있으면 app/observability.py 전체가 no-op(fail-open) — 앱 동작 무영향.

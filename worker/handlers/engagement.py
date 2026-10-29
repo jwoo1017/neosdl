@@ -219,7 +219,8 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
             permission_mode=permission_mode, effective_role="manager", actor=actor,
             approved_commands=approved, resume_commands=resume_commands,
             prior_history=prior_history, prior_open_ports=prior_open_ports, on_step=persist,
-            max_steps=settings().pentest_max_steps, sqlmap_flags=settings().pentest_sqlmap_flags)
+            max_steps=settings().pentest_max_steps, sqlmap_flags=settings().pentest_sqlmap_flags,
+            nuclei_flags=settings().pentest_nuclei_flags, ffuf_wordlist=settings().pentest_ffuf_wordlist)
     finally:
         try:
             runner.destroy(eid)   # 툴박스 컨테이너·네트워크 정리(실패해도 best-effort)
@@ -325,7 +326,8 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
             approved_commands=approved, resume_commands=resume_commands,
             prior_history=prior_history, prior_open_ports=prior_open_ports,
             trusted_target=True, on_step=persist, endpoints=endpoints,
-            max_steps=settings().pentest_max_steps, sqlmap_flags=settings().pentest_sqlmap_flags)
+            max_steps=settings().pentest_max_steps, sqlmap_flags=settings().pentest_sqlmap_flags,
+            nuclei_flags=settings().pentest_nuclei_flags, ffuf_wordlist=settings().pentest_ffuf_wordlist)
     finally:
         try:
             runner.destroy(eid)   # 표적 컨테이너·툴박스·네트워크 정리(실패해도 best-effort)
