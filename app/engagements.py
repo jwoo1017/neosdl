@@ -48,7 +48,7 @@ class CreateEngagementIn(BaseModel):
     boot_recipe: dict | None = None
     # 채팅 카드에서 시작했으면 그 assistant 메시지 id — evidence 에 engagement_id 를 남겨 새로고침해도
     # 대화 안에서 점검 진행·결과가 다시 그려지게 한다.
-    chat_message_id: UUID | None = None
+    chat_message_id: int | None = None      # chat_message.id 는 bigserial
 
 
 def set_status(cur, engagement_id: str, status: str, *, error: str | None = None,
@@ -132,7 +132,7 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
                 "UPDATE chat_message SET evidence = COALESCE(evidence, '{}'::jsonb) "
                 "|| jsonb_build_object('engagement_id', %s::text) "
                 "WHERE id=%s AND project_id=%s AND role='assistant'",
-                (engagement_id, str(body.chat_message_id), str(project_id)))
+                (engagement_id, body.chat_message_id, str(project_id)))
         queue.enqueue(cur, "engagement.run", {"engagement_id": engagement_id},
                       dedupe_key=f"engagement:{engagement_id}")
         audit.record(cur, actor=f"user:{member['id']}", action="engagement.create",
