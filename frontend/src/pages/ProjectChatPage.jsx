@@ -972,7 +972,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
               />
             ))
           )}
-          {streamingCid && (
+          {streamingCid && !pentestSuggestion && (
             <ChatMessage
               key={streamingCid}
               role="assistant"

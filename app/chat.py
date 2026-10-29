@@ -513,15 +513,12 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
         # 예전엔 Q&A 답변과 배너가 동시에 떠서 혼란스러웠다(모의 해킹 요청에 코드 분석이 먼저 나옴).
         suggestion = await run_in_threadpool(_maybe_pentest_suggestion, question, project_id, member_id, model)
         if suggestion:
-            if suggestion.get("kind") == "repo_boot":
-                answer = (f"보안 점검 요청으로 이해했어요 — 이 프로젝트 레포 `{suggestion.get('repo', '')}` 를 "
-                          "격리 샌드박스에 띄워 점검합니다. 아래 카드에서 **부팅 계획을 확인하고** 시작하세요. "
-                          "각 명령(nmap·sqlmap 등)은 실행 전 승인을 받습니다.")
-            else:
-                answer = (f"보안 점검 요청으로 이해했어요 — 인가된 표적 `{suggestion.get('target', '')}` 을 "
-                          "아래 카드에서 점검 실행하세요. 각 명령은 실행 전 승인을 받습니다.")
-            await queue.put({"type": "answer_chunk", "client_msg_id": client_msg_id, "delta": answer})
+            # 카드가 곧 응답 UI다 — 프로즈 버블을 스트리밍하지 않고 제안 카드만 띄운다(버블 겹침 방지).
+            # suggestion 을 먼저 보내 프런트가 라이브 버블을 숨기게 하고, 짧은 한 줄만 히스토리에 저장한다.
             await queue.put({"type": "pentest_suggestion", "client_msg_id": client_msg_id, **suggestion})
+            answer = ("보안 점검 요청으로 이해했습니다. 아래 카드에서 확인하고 진행하세요."
+                      if suggestion.get("kind") == "repo_boot"
+                      else f"보안 점검 요청으로 이해했습니다 — {suggestion.get('target', '')}. 아래 카드에서 진행하세요.")
             await run_in_threadpool(_insert_assistant_message, session_id, project_id, answer,
                                      {"pentest_suggestion": suggestion}, [])
             return
