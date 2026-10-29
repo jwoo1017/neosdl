@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     # 펜테스터 루프 1회 최대 스텝(= 도구 실행 횟수). 열거한 라우트를 끝까지 점검하려면 크게 잡는다.
     # 스텝마다 queue.heartbeat 로 job 리스를 갱신하므로 10분 넘는 긴 점검도 안전(이중 실행 없음).
     pentest_max_steps: int = 30
+    # sqlmap 플래그. --threads 로 병렬, --technique=BEUS 로 time-based(sleep) 블라인드를 빼 엔드포인트당
+    # 수 분씩 걸리던 병목을 없앤다. 더 깊게(느리게) 보려면 --technique 에 T 추가 또는 --level/--risk 상향.
+    pentest_sqlmap_flags: str = "--batch --level=2 --risk=2 --threads=4 --technique=BEUS"
 
     # --- LLM 실행 추적(Langfuse, 자체호스팅, 개발 전용) ---
     # 둘 다 비어 있으면 app/observability.py 전체가 no-op(fail-open) — 앱 동작 무영향.
