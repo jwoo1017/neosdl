@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 import logging
 
-from app import agents, ai_providers, audit, engagement_bus, pentest_routes, pentester, sandbox
+from app import (agents, ai_providers, audit, blackbox_explain, engagement_bus, pentest_routes, pentester,
+                 sandbox)
 from app.config import settings
 from app.db import tx
 from app.engagements import set_status
@@ -43,13 +44,38 @@ def _attach_source(findings: list, endpoints: list) -> list:
     return findings
 
 
-def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list | None = None) -> dict:
+def _explain(cur, outcome, *, project_id: str, scan_id: str | None = None) -> str:
+    """발견에 쉬운 설명·수정법·소스 ±5줄을 붙이고 AI 요약을 돌려준다(best-effort — 실패해도 리포트는 남김)."""
+    if outcome.status != "succeeded":
+        return ""
+    model = ai_providers.resolve_requested_model(None)
+
+    def summary_generate(prompt: str) -> str:
+        return ai_providers.generate(model, prompt, project_id=project_id, purpose="pentest_summary")
+
+    try:
+        reader, paths = None, []
+        if scan_id and outcome.findings:
+            reader = pentest_routes.file_reader(cur, scan_id)
+            paths = pentest_routes._module_paths(cur, scan_id) if reader else []
+        blackbox_explain.attach_code(outcome.findings, reader=reader, module_paths=paths,
+                                     entry_names=pentest_routes._ENTRY_NAMES)
+        return blackbox_explain.summarize(outcome.findings, outcome.history, summary_generate)
+    except Exception:
+        log.warning("블랙박스 발견 설명/요약 실패 — 결정적 요약만", exc_info=True)
+        return blackbox_explain.fallback_summary(outcome.findings, outcome.history)
+
+
+def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list | None = None,
+                          summary: str = "") -> dict:
     """pentester outcome → 리포트 아티팩트 body(markdown + 구조화). 외부/레포 블랙박스 공용.
 
     endpoints(소스 포함)를 주면 '점검 범위' 섹션으로 사원이 확인할 파일 범위를 특정한다.
     """
     lines = [f"# {title}", f"- 표적: {target}", f"- 스텝: {outcome.steps}",
              f"- 상태: {outcome.status}", ""]
+    if summary:
+        lines += ["## 요약", summary, ""]
     for i, h in enumerate(outcome.history):
         if "rejected" in h:
             lines.append(f"- [{i}] 거부({h['rejected']}): `{h['command']}`")
@@ -64,7 +90,8 @@ def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list |
         lines.append("\n## 발견")
         for f in outcome.findings:
             loc = f"  →  `{f['file']}:{f.get('line')}`" if f.get("file") else ""
-            lines.append(f"- [{f.get('severity','?')}] {f.get('title','')}: {f.get('evidence','')}{loc}")
+            lines.append(f"- [{f.get('severity','?')}] {f.get('label') or f.get('title','')}: "
+                         f"{f.get('evidence','')}{loc}")
     if endpoints:
         lines.append("\n## 점검 범위 (엔드포인트 → 소스)")
         lines.append("사원이 확인할 파일 범위입니다 — 발견 유무와 무관하게 점검한 엔드포인트의 소스 위치:")
@@ -197,7 +224,8 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
         except Exception:
             log.warning("툴박스 정리 실패", exc_info=True)
 
-    body = _blackbox_report_body(target, outcome, title="블랙박스 점검 리포트")
+    summary = _explain(cur, outcome, project_id=str(engagement["project_id"]))
+    body = _blackbox_report_body(target, outcome, title="블랙박스 점검 리포트", summary=summary)
     agents._add_artifact(cur, eid, task_id, "report", "블랙박스 점검 리포트", body)
     agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",
                         {"status": outcome.status, "findings": len(outcome.findings)})
@@ -294,7 +322,10 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
             log.warning("레포 블랙박스 정리 실패", exc_info=True)
 
     _attach_source(outcome.findings, endpoints)   # 발견 → 어떤 파일 몇 번째 줄
-    body = _blackbox_report_body(target, outcome, title="레포 부팅 블랙박스 리포트", endpoints=endpoints)
+    summary = _explain(cur, outcome, project_id=str(engagement["project_id"]),
+                       scan_id=str(engagement.get("scan_id") or "") or None)   # 쉬운 설명·코드 ±5줄·AI 요약
+    body = _blackbox_report_body(target, outcome, title="레포 부팅 블랙박스 리포트", endpoints=endpoints,
+                                 summary=summary)
     body["web_port"] = booted.web_port
     agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트", body)
     agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",
