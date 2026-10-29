@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { joinTeamspace, logout, moveProject } from "./api";
+import { fetchProjectStatuses, joinTeamspace, logout, moveProject } from "./api";
 import { useWorkspace } from "./WorkspaceContext";
 import { useTeamspace } from "./TeamspaceContext";
 import { useProject } from "./ProjectContext";
@@ -14,6 +14,7 @@ import CreateProjectModal from "./components/CreateProjectModal";
 import WorkspaceSettingsModal from "./components/WorkspaceSettingsModal";
 import TeamspaceSettingsModal from "./components/TeamspaceSettingsModal";
 import PopoverMenu from "./components/PopoverMenu";
+import SessionStatusDot, { isActiveSessionStatus, sessionDotStatus } from "./components/SessionStatusDot";
 import PlusIcon from "./icons/PlusIcon";
 import MoreIcon from "./icons/MoreIcon";
 import PanelCollapseIcon from "./icons/PanelCollapseIcon";
@@ -27,7 +28,7 @@ import logoUrl from "./assets/logo.svg?url";
 
 const VISIBILITY_BADGE = { open: "공개", closed: "참가 제한", private: "비공개" };
 
-function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, onCreateProject, onJoin, onMoveProject, onManage, onQuickMenu }) {
+function TeamspaceNode({ teamspace, projects, activeProjectId, statusByProject, onOpenProject, onCreateProject, onJoin, onMoveProject, onManage, onQuickMenu }) {
   const [expanded, setExpanded] = useState(true);
   const [joining, setJoining] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -105,7 +106,10 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
                 className={`sidebar-project-link ${p.id === activeProjectId ? "active" : ""}`}
                 onClick={() => onOpenProject(p, teamspace)}
               >
-                {p.name}
+                {statusByProject?.[p.id] && (
+                  <SessionStatusDot status={sessionDotStatus({ engagement_status: statusByProject[p.id] })} />
+                )}
+                <span className="sidebar-project-name">{p.name}</span>
               </button>
               <button
                 type="button"
@@ -186,6 +190,33 @@ export default function Sidebar() {
     openWelcomeTab();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkspaceId, teamspaces]);
+
+  // 프로젝트 옆 보안 점검 상태 점 — 점검은 워커에서 돌아 알림이 없으므로 폴링한다.
+  // 진행/대기 중인 프로젝트가 있으면 5초, 없으면 30초(새로 시작한 점검 감지용).
+  const [statusByProject, setStatusByProject] = useState({});
+  const hasActiveCheck = Object.values(statusByProject).some((st) =>
+    isActiveSessionStatus(sessionDotStatus({ engagement_status: st })));
+  useEffect(() => {
+    if (!activeWorkspaceId) {
+      setStatusByProject({});
+      return undefined;
+    }
+    let cancelled = false;
+    const load = () =>
+      fetchProjectStatuses(activeWorkspaceId)
+        .then((rows) => {
+          if (cancelled) return;
+          const next = Object.fromEntries(rows.map((r) => [r.project_id, r.engagement_status]));
+          setStatusByProject((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+        })
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, hasActiveCheck ? 5000 : 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeWorkspaceId, hasActiveCheck]);
 
   const projectsByTeamspace = useMemo(() => {
     const map = {};
@@ -338,6 +369,7 @@ export default function Sidebar() {
                   teamspace={t}
                   projects={projectsByTeamspace[t.id] || []}
                   activeProjectId={activeProjectId}
+                  statusByProject={statusByProject}
                   onOpenProject={openProject}
                   onCreateProject={setCreateProjectIn}
                   onJoin={async (ts) => {
@@ -364,6 +396,7 @@ export default function Sidebar() {
               teamspace={personalSpace}
               projects={projectsByTeamspace[personalSpace.id] || []}
               activeProjectId={activeProjectId}
+              statusByProject={statusByProject}
               onOpenProject={openProject}
               onCreateProject={setCreateProjectIn}
               onJoin={async () => {}}

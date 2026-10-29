@@ -223,6 +223,41 @@ def list_workspace_projects(workspace_id: UUID, member: dict = Depends(get_curre
         return rows
 
 
+@router.get("/workspaces/{workspace_id}/project-status")
+def workspace_project_status(workspace_id: UUID, member: dict = Depends(get_current_member)):
+    """사이드바 프로젝트 옆 상태 점용 — 프로젝트별 보안 점검(engagement) 상태 하나.
+
+    진행 중인 게 여럿이면 사람 손이 필요한 순(승인 대기 > 진행 중 > 대기)으로 고른다.
+    끝난 점검(완료/실패)은 최근 1시간 안의 것만 — 오래된 결과로 사이드바가 계속 물들지 않게.
+    caller 가 볼 수 있는 프로젝트만 돌려준다(가시성은 프로젝트 목록과 같은 규칙).
+    """
+    with tx() as cur:
+        rows = _list_projects_with_effective_role(
+            cur, "p.workspace_id = %s", (member["id"], member["id"], member["id"], str(workspace_id))
+        )
+        ids = [str(r["id"]) for r in rows]
+        if not ids:
+            return []
+        cur.execute(
+            """
+            SELECT DISTINCT ON (e.project_id) e.project_id, e.status::text AS status
+              FROM engagement e
+             WHERE e.project_id = ANY(%s::uuid[])
+               AND (e.status IN ('queued','planning','running','awaiting_approval','paused')
+                    OR (e.status IN ('succeeded','failed')
+                        AND e.finished_at > now() - interval '1 hour'))
+             ORDER BY e.project_id,
+                      CASE e.status WHEN 'awaiting_approval' THEN 0
+                                    WHEN 'running' THEN 1 WHEN 'planning' THEN 1
+                                    WHEN 'queued' THEN 2 WHEN 'paused' THEN 2
+                                    ELSE 3 END,
+                      e.created_at DESC
+            """,
+            (ids,),
+        )
+        return [{"project_id": str(r["project_id"]), "engagement_status": r["status"]} for r in cur.fetchall()]
+
+
 @router.get("/teamspaces/{teamspace_id}/projects")
 def list_teamspace_projects(teamspace_id: UUID, q: str | None = Query(None),
                              member: dict = Depends(get_current_member)):

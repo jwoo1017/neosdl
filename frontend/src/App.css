@@ -6755,3 +6755,16 @@ textarea.eng-modal-input {
 .chat-header-title-btn .session-dot {
   margin-right: 0.15rem;
 }
+
+/* 사이드바 프로젝트 옆 보안 점검 상태 점 */
+.sidebar-project-row .sidebar-project-link {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.sidebar-project-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

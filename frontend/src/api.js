@@ -952,6 +952,13 @@ export async function fetchProjects(workspaceId) {
   return res.json();
 }
 
+// 사이드바 상태 점 — [{ project_id, engagement_status }] (점검이 없거나 오래 끝난 프로젝트는 빠짐)
+export async function fetchProjectStatuses(workspaceId) {
+  const res = await apiFetch(`/workspaces/${workspaceId}/project-status`);
+  if (!res.ok) throw new Error(`GET /workspaces/${workspaceId}/project-status failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchTeamspaceProjects(teamspaceId, q = "") {
   const url = new URL(`${API_BASE}/teamspaces/${teamspaceId}/projects`);
   if (q) url.searchParams.set("q", q);
