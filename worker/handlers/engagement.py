@@ -14,7 +14,7 @@ import json
 import logging
 
 from app import (agents, ai_providers, audit, blackbox_explain, engagement_bus, pentest_routes, pentester,
-                 sandbox)
+                 queue, sandbox)
 from app.config import settings
 from app.db import tx
 from app.engagements import set_status
@@ -210,6 +210,7 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
     def persist(rec):
         _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
         engagement_bus.notify_now(eid, _step_event(_seq[0], rec))   # 라이브 스트리밍(채팅/EngageTab)
+        queue.heartbeat_current(cur)   # 깊은 점검(30스텝)은 10분 초과 — 스텝마다 리스 갱신(이중 실행 방지)
         _seq[0] += 1
 
     try:
@@ -217,7 +218,8 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
             cur, target=target, llm_generate=llm_generate, toolbox_exec=toolbox_exec,
             permission_mode=permission_mode, effective_role="manager", actor=actor,
             approved_commands=approved, resume_commands=resume_commands,
-            prior_history=prior_history, prior_open_ports=prior_open_ports, on_step=persist)
+            prior_history=prior_history, prior_open_ports=prior_open_ports, on_step=persist,
+            max_steps=settings().pentest_max_steps)
     finally:
         try:
             runner.destroy(eid)   # 툴박스 컨테이너·네트워크 정리(실패해도 best-effort)
@@ -303,6 +305,7 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
         def persist(rec):
             _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
             engagement_bus.notify_now(eid, _step_event(_seq[0], rec))   # 라이브 스트리밍(채팅/EngageTab)
+            queue.heartbeat_current(cur)   # 깊은 점검(30스텝)은 10분 초과 — 스텝마다 리스 갱신(이중 실행 방지)
             _seq[0] += 1
 
         approved = (engagement.get("params") or {}).get("approved_commands") or []
@@ -314,7 +317,8 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
         outcome = pentester.run_pentester(
             cur, target=target, llm_generate=llm_generate, toolbox_exec=state["exec"],
             permission_mode=permission_mode, effective_role="manager", actor=actor,
-            approved_commands=approved, trusted_target=True, on_step=persist, endpoints=endpoints)
+            approved_commands=approved, trusted_target=True, on_step=persist, endpoints=endpoints,
+            max_steps=settings().pentest_max_steps)
     finally:
         try:
             runner.destroy(eid)   # 표적 컨테이너·툴박스·네트워크 정리(실패해도 best-effort)

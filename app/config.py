@@ -130,6 +130,9 @@ class Settings(BaseSettings):
     # 대상 앱 컨테이너(화이트박스 boot)는 이 완화와 무관하게 완전 하드닝 유지.
     sandbox_toolbox_caps: str = "NET_RAW,NET_ADMIN,NET_BIND_SERVICE"
     sandbox_toolbox_user: str = "1000:1000"   # 비root. 이미지가 root 를 요구하면 빈 문자열로(이미지 기본).
+    # 펜테스터 루프 1회 최대 스텝(= 도구 실행 횟수). 열거한 라우트를 끝까지 점검하려면 크게 잡는다.
+    # 스텝마다 queue.heartbeat 로 job 리스를 갱신하므로 10분 넘는 긴 점검도 안전(이중 실행 없음).
+    pentest_max_steps: int = 30
 
     # --- LLM 실행 추적(Langfuse, 자체호스팅, 개발 전용) ---
     # 둘 다 비어 있으면 app/observability.py 전체가 no-op(fail-open) — 앱 동작 무영향.

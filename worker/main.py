@@ -79,6 +79,7 @@ def run() -> None:
         idle = 0
         log.info("job %s %s 시작 (attempt %s)", job["id"], job["kind"], job["attempts"])
         _notify_stage(job)
+        queue.set_current_job(job, worker)   # 긴 핸들러가 queue.heartbeat_current 로 리스를 살릴 수 있게
         try:
             HANDLERS[job["kind"]](job["payload"])
         except Exception as exc:                    # noqa: BLE001
@@ -92,6 +93,8 @@ def run() -> None:
             with tx() as cur:
                 queue.finish(cur, job["id"])
             log.info("job %s 완료", job["id"])
+        finally:
+            queue.set_current_job(None)
 
     log.info("worker %s 종료", worker)
 
