@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   chatSocketUrl, createChatSession, deleteChatSession, fetchChatMessages,
@@ -587,7 +587,10 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     }
   });
   const [liveChatTitle, setLiveChatTitle] = useState(null); // 첫 질문 후 서버가 지어준 제목(새로고침 전 즉시 반영용)
-  const [pentestSuggestion, setPentestSuggestion] = useState(null); // {target, goal} — 보안 점검 의도 감지 시 블랙박스 실행 제안
+  // 보안 점검 의도 감지(WS pentest_suggestion) — 이 턴의 라이브 버블을 숨기는 용도. 카드 자체는
+  // 저장된 메시지(evidence.pentest_suggestion/engagement_id)에서 그려 새로고침해도 남는다.
+  const [pentestSuggestion, setPentestSuggestion] = useState(null);
+  const [dismissedPentest, setDismissedPentest] = useState(() => new Set()); // 무시/닫기한 카드 메시지 id
   const bottomRef = useRef(null);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
@@ -701,6 +704,8 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     setLiveShownMessageIds(new Set());
     setError(null);
     setLiveChatTitle(null);
+    setPentestSuggestion(null);
+    setDismissedPentest(new Set());
     loadHistory();
 
     const backoff = createBackoff();
@@ -826,9 +831,16 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     // client_msg_id는 서버가 안 돌려주므로(스키마 변경 없이 상관관계만 주는
     // 필드) 정확한 1:1 매칭은 못 하지만, 응답을 기다리는 중에 새 assistant
     // 메시지가 도착하면 사실상 내가 보낸 질문의 답이 온 것으로 본다.
-    setLiveShownMessageIds((prev) => new Set(prev).add(last.id));
+    // 점검 제안 턴은 라이브 버블을 안 그리므로 히스토리 메시지(+카드)로 그대로 보여준다.
+    if (!last.evidence?.pentest_suggestion) setLiveShownMessageIds((prev) => new Set(prev).add(last.id));
     setPendingClientMsgId(null);
   }, [messages, pendingClientMsgId, liveShownMessageIds]);
+
+  // 채팅 카드에서 점검이 시작되면 그 메시지 evidence 에 engagement_id 를 반영(서버도 같은 값을 저장).
+  const markEngagementStarted = useCallback((messageId, engagementId) => {
+    setMessages((prev) => (prev || []).map((m) => (m.id === messageId
+      ? { ...m, evidence: { ...(m.evidence || {}), engagement_id: engagementId } } : m)));
+  }, []);
 
   const isStreaming = pendingClientMsgId !== null;
   // 실시간 블록으로 이미 보여주고 있는 assistant 메시지는 히스토리 목록에서
@@ -850,6 +862,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     setRiskByCid((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setFlowsByCid((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setLiveShownMessageIds((prev) => (prev.size === 0 ? prev : new Set()));
+    setPentestSuggestion(null);
     // 지금 이 시점까지의 메시지 개수를 스냅샷으로 남긴다 — 위 확인 useEffect가
     // 이 개수를 넘어서는(=이 질문을 보낸 뒤에 새로 도착한) assistant 메시지만
     // "이 질문의 답"으로 인정하게 하기 위함(바로 위 liveShownMessageIds 초기화로
@@ -956,9 +969,9 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
               필요한 데이터를 찾아 답합니다.
             </p>
           ) : (
-            visibleMessages.map((m) => (
+            visibleMessages.map((m, idx) => (
+              <Fragment key={m.id}>
               <ChatMessage
-                key={m.id}
                 role={m.role}
                 content={m.content}
                 author={m.author}
@@ -971,6 +984,25 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
                 flows={m.evidence?.flows}
                 onPlayFlow={(flow) => playFlow(flow, m.evidence?.scan_id)}
               />
+              {/* 점검 카드/진행은 메시지에 붙어 있어 새로고침해도 남는다. 시작 안 한 제안은 마지막 턴에서만. */}
+              {m.evidence?.pentest_suggestion && !dismissedPentest.has(m.id)
+                && (m.evidence.engagement_id || idx === visibleMessages.length - 1) && (
+                <div className="chat-message chat-message-assistant">
+                  <span className="chat-message-avatar chat-message-ai-avatar"><AiAvatarIcon size={30} /></span>
+                  <div className="chat-message-content">
+                    <PentestActionCard
+                      projectId={projectId}
+                      messageId={m.id}
+                      suggestion={m.evidence.pentest_suggestion}
+                      engagementId={m.evidence.engagement_id}
+                      onStarted={(eid) => markEngagementStarted(m.id, eid)}
+                      onDismiss={() => setDismissedPentest((prev) => new Set(prev).add(m.id))}
+                      onUpdate={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
+                    />
+                  </div>
+                </div>
+              )}
+              </Fragment>
             ))
           )}
           {streamingCid && !pentestSuggestion && (
@@ -987,20 +1019,6 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
               streaming={isStreaming}
               pending={!streamingText && (agentEvents[streamingCid] || []).length === 0}
             />
-          )}
-          {/* 점검 제안·라이브 진행은 AI 답변 턴으로 대화 흐름 안에 — 입력창을 밀어내지 않는다. */}
-          {pentestSuggestion && (
-            <div className="chat-message chat-message-assistant">
-              <span className="chat-message-avatar chat-message-ai-avatar"><AiAvatarIcon size={30} /></span>
-              <div className="chat-message-content">
-                <PentestActionCard
-                  projectId={projectId}
-                  suggestion={pentestSuggestion}
-                  onDismiss={() => setPentestSuggestion(null)}
-                  onUpdate={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
-                />
-              </div>
-            </div>
           )}
           <div ref={bottomRef} />
         </div>
