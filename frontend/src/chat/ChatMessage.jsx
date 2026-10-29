@@ -1,6 +1,7 @@
 import AgentActivityTimeline from "../AgentActivityTimeline";
 import Avatar from "../components/Avatar";
 import AiAvatarIcon from "../icons/AiAvatarIcon";
+import AiSpinner from "./AiSpinner";
 import { TOOL_LABELS } from "../toolLabels";
 import { useLanguage } from "../i18n/LanguageContext";
 import EvidencePanel from "./EvidencePanel";
@@ -72,9 +73,7 @@ export default function ChatMessage({
         )}
 
         {pending ? (
-          <div className="chat-typing" aria-label="생각하는 중">
-            <span /><span /><span />
-          </div>
+          <AiSpinner label={lang === "en" ? "Thinking…" : "답변을 생각하는 중…"} />
         ) : content ? (
           <div className="chat-answer">
             <MarkdownAnswer content={content} streaming={streaming} />

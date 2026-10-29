@@ -2969,6 +2969,44 @@ tr.risk-row:hover { background: var(--surface-2); }
   color: var(--text-dim);
 }
 
+/* AI 스피너 (chat/AiSpinner.jsx) — 아바타 별 + 도는 고리 + 반짝이는 문구 */
+.ai-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.2rem 0;
+  vertical-align: middle;
+}
+.ai-spinner svg { flex-shrink: 0; overflow: visible; }
+.ai-spinner svg > * { transform-origin: 20px 20px; }
+.ai-spinner-arc { animation: ai-spinner-rotate 1.1s linear infinite; }
+.ai-spinner-arc-inner { animation: ai-spinner-rotate 1.6s linear infinite reverse; }
+.ai-spinner-orbit { animation: ai-spinner-rotate 2.4s linear infinite; }
+.ai-spinner-core { animation: ai-spinner-pulse 1.4s ease-in-out infinite; }
+.ai-spinner-label {
+  font-size: 0.86rem;
+  font-weight: 500;
+  background: linear-gradient(90deg, var(--text-faint) 0%, var(--text-faint) 35%,
+    var(--accent-strong) 50%, var(--text-faint) 65%, var(--text-faint) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ai-spinner-shimmer 2s linear infinite;
+}
+
+@keyframes ai-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+@keyframes ai-spinner-pulse {
+  0%, 100% { transform: scale(0.82) rotate(0deg); opacity: 0.75; }
+  50% { transform: scale(1.12) rotate(45deg); opacity: 1; }
+}
+@keyframes ai-spinner-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -50% 0; }
+}
+
 /* ── 마크다운 답변 본문 (chat/MarkdownAnswer.jsx) ────────────────────── */
 .md-body {
   font-size: 1rem;
@@ -3295,9 +3333,15 @@ tr.risk-row:hover { background: var(--surface-2); }
   .chat-activity-row,
   .chat-message-bubble,
   .chat-answer,
-  .chat-typing span {
+  .chat-typing span,
+  .ai-spinner-arc-inner,
+  .ai-spinner-orbit,
+  .ai-spinner-core,
+  .ai-spinner-label {
     animation: none;
   }
+  .ai-spinner-label { color: var(--text-dim); }
+  .ai-spinner-arc { animation-duration: 3s; }
   .chat-activity-list-wrap {
     transition: none;
   }
