@@ -53,7 +53,7 @@ export default function GraphViewerPage() {
   }
 
   return (
-    <div className="page">
+    <div className="page graph-page">
       <header className="graph-page-header">
         <div className="graph-page-title">
           <h1>코드 지도</h1>

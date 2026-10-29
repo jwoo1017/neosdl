@@ -6675,3 +6675,33 @@ textarea.eng-modal-input {
   background: var(--accent);
   box-shadow: 0 0 0 3px rgba(63, 184, 172, 0.3);
 }
+
+/* 코드 지도 페이지는 스크롤하지 않고 패널을 꽉 채운다. 예전엔 페이지가 바깥 스크롤
+   컨테이너(.project-detail-content) 안에서 내용 높이만큼 늘어나, 드래그 중 캔버스 크기가
+   바뀌면 스크롤바가 생겼다 사라지며 Sigma 가 다시 리사이즈 → 화면이 부르르 떨렸다. */
+.page.graph-page {
+  min-height: 0;
+  overflow: hidden;
+}
+.graph-page .graph-wrap,
+.graph-page .graph-body,
+.graph-page .graph-canvas-wrap {
+  min-height: 0;
+  overflow: hidden;
+}
+/* 캔버스가 레이아웃 크기 계산에 끼지 않게 — 부모 크기만 따른다 */
+.graph-canvas-wrap > .graph-canvas {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+.graph-layer-toggles {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+}
+.graph-layer-toggles .graph-legend-swatch {
+  display: inline-block;
+}
