@@ -189,12 +189,23 @@ def _assert_session_access(project_id: UUID, session_id: UUID, member_id: str) -
         _assert_session(cur, project_id, session_id)
 
 
-def _maybe_pentest_suggestion(question: str, project_id, member_id: str) -> dict | None:
+def _maybe_pentest_suggestion(question: str, project_id, member_id: str, model: str | None = None) -> dict | None:
     """보안 점검 의도 + 인가(allowlist) 표적 + manager 권한일 때만 블랙박스 실행 제안을 만든다.
 
     미인가 표적은 아예 제안하지 않는다(표적을 떠보게 하지 않음). 실행 권한(manager)이 없으면 숨긴다.
     """
     det = chat_pentest.detect(question)
+    # 키워드로 못 잡았지만 보안 신호가 있으면 LLM 으로 의도 분류(#2 자연어 해석, 보수적·질문만 전송).
+    if not det and model and chat_pentest.has_security_hint(question):
+        from app.llm_schemas import PentestIntent
+
+        def _gen(prompt: str) -> str:
+            return ai_providers.generate(model, prompt, response_schema=PentestIntent,
+                                         project_id=str(project_id), purpose="pentest_intent")
+        try:
+            det = chat_pentest.classify(question, _gen)
+        except Exception:
+            det = None
     if not det:
         return None
     with tx() as cur:
@@ -491,6 +502,23 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
                 _generate_chat_title_task(session_id, project_id, question, model, queue)
             )
 
+        # --- 라우팅(#1): 보안 점검 의도면 코드 분석(run_agentic)을 돌리지 않고 점검 제안 카드만 응답.
+        # 예전엔 Q&A 답변과 배너가 동시에 떠서 혼란스러웠다(모의 해킹 요청에 코드 분석이 먼저 나옴).
+        suggestion = await run_in_threadpool(_maybe_pentest_suggestion, question, project_id, member_id, model)
+        if suggestion:
+            if suggestion.get("kind") == "repo_boot":
+                answer = (f"보안 점검 요청으로 이해했어요 — 이 프로젝트 레포 `{suggestion.get('repo', '')}` 를 "
+                          "격리 샌드박스에 띄워 점검합니다. 아래 카드에서 **부팅 계획을 확인하고** 시작하세요. "
+                          "각 명령(nmap·sqlmap 등)은 실행 전 승인을 받습니다.")
+            else:
+                answer = (f"보안 점검 요청으로 이해했어요 — 인가된 표적 `{suggestion.get('target', '')}` 을 "
+                          "아래 카드에서 점검 실행하세요. 각 명령은 실행 전 승인을 받습니다.")
+            await queue.put({"type": "answer_chunk", "client_msg_id": client_msg_id, "delta": answer})
+            await queue.put({"type": "pentest_suggestion", "client_msg_id": client_msg_id, **suggestion})
+            await run_in_threadpool(_insert_assistant_message, session_id, project_id, answer,
+                                     {"pentest_suggestion": suggestion}, [])
+            return
+
         # run_agentic은 스레드풀(별도 스레드)에서 도는데 매 스텝 진행 상황을
         # 이 연결에 실시간으로 보내야 한다 — app/chat_bus.py의 백그라운드
         # 리스너 스레드와 같은 스레드→루프 전달 문제라, 같은 해법(스레드-세이프
@@ -539,14 +567,7 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
             # 이 답에 쓰인 코드의 Exposure 경계(§11, §16). 스트리밍 연결에만 로컬 전달 —
             # 완성된 assistant 메시지의 evidence 에 함께 저장되므로 히스토리에서도 복원된다.
             await queue.put({"type": "risk", "client_msg_id": client_msg_id, "risk": risk})
-        # 보안 점검 의도 + 인가 표적이면 "블랙박스 engagement 실행"을 제안한다(실행 아님 — 안전).
-        # 실제 공격 도구 실행은 샌드박스·permission·HITL·감사가 붙은 engagement 에서만 일어난다.
-        try:
-            suggestion = await run_in_threadpool(_maybe_pentest_suggestion, question, project_id, member_id)
-            if suggestion:
-                await queue.put({"type": "pentest_suggestion", "client_msg_id": client_msg_id, **suggestion})
-        except Exception:
-            log.debug("pentest 제안 감지 실패(무시)", exc_info=True)
+        # (점검 제안 라우팅은 파이프라인 이전에서 처리됨 — #1)
         await run_in_threadpool(_insert_assistant_message, session_id, project_id, answer,
                                  {"tool_results": evidence, "agent_events": collected_events,
                                   "risk": risk}, tools_used)

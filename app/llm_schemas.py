@@ -143,6 +143,19 @@ class BootRecipe(BaseModel):
     notes: str = ""
 
 
+class PentestIntent(BaseModel):
+    """`app/chat_pentest.py` — 채팅 메시지가 '보안 점검/공격을 **실행**해달라'는 요청인지 분류.
+
+    키워드로 못 잡은 자연어를 보수적으로 판정한다. 보안 관련 '질문'(설명/코드 위치/어디 있나)은
+    none. 실제 점검 실행 요청만 — 외부 표적(URL/host)이 있으면 target, 이 프로젝트 레포를 띄워
+    점검하라는 거면 repo. 로컬 모델이라 confidence 로 보수적 컷(낮으면 Q&A 로 보냄).
+    """
+
+    intent: Literal["none", "repo", "target"]
+    target: str | None = None
+    confidence: float = 0.0
+
+
 class BusinessIpClassification(BaseModel):
     """`app/risk/classify.py::classify_business_ip`의 응답 스키마."""
 
