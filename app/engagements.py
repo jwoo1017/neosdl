@@ -133,6 +133,11 @@ def create_engagement(project_id: UUID, body: CreateEngagementIn,
                 "|| jsonb_build_object('engagement_id', %s::text) "
                 "WHERE id=%s AND project_id=%s AND role='assistant'",
                 (engagement_id, body.chat_message_id, str(project_id)))
+            # 채팅 세션 목록의 상태 점이 이 점검을 따라가게 세션도 잇는다.
+            cur.execute(
+                "UPDATE engagement SET session_id = (SELECT session_id FROM chat_message "
+                "WHERE id=%s AND project_id=%s) WHERE id=%s",
+                (body.chat_message_id, str(project_id), engagement_id))
         queue.enqueue(cur, "engagement.run", {"engagement_id": engagement_id},
                       dedupe_key=f"engagement:{engagement_id}")
         audit.record(cur, actor=f"user:{member['id']}", action="engagement.create",

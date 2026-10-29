@@ -10,6 +10,7 @@ import { watchProjectAnalysis } from "../analysis/analysisWatch";
 import { SpinnerRing } from "../icons/AnalysisIcons";
 import { useProject } from "../ProjectContext";
 import { useTabs } from "../TabsContext";
+import SessionStatusDot, { isActiveSessionStatus, sessionDotStatus } from "../components/SessionStatusDot";
 import { TOOL_LABELS } from "../toolLabels";
 import { AUTO_MODEL, buildModelGroups, FALLBACK_MODELS, findModelOption } from "../modelMenu";
 
@@ -390,7 +391,7 @@ function ChatComposer({
 // 세션(chat_session, sql/018)을 지원하므로 실제 세션 목록을 보여주고 전환/
 // 생성/이름변경/삭제를 모두 연결한다. "링크 복사"는 여전히 순수 프론트 동작.
 function ChatHeader({
-  title, connected, reanalyzing, sessions, activeSessionId,
+  title, connected, reanalyzing, sessions, activeSessionId, answeringSessionId,
   onSelectSession, onNewChat, onRenameSession, onDeleteSession,
 }) {
   const [openMenu, setOpenMenu] = useState(null); // null | "session" | "more"
@@ -410,6 +411,8 @@ function ChatHeader({
   const toggleMoreMenu = () => setOpenMenu((m) => (m === "more" ? null : "more"));
 
   const list = sessions || [];
+  const dotOf = (s) => sessionDotStatus(s, { answering: s.id === answeringSessionId });
+  const activeSession = list.find((s) => s.id === activeSessionId);
   const q = sessionQuery.trim().toLowerCase();
   const filtered = q ? list.filter((s) => (s.title || "새 채팅").toLowerCase().includes(q)) : list;
 
@@ -444,6 +447,7 @@ function ChatHeader({
     <div className="chat-header">
       <div className="chat-header-title-wrap">
         <button ref={sessionBtnRef} type="button" className="chat-header-title-btn" onClick={toggleSessionMenu}>
+          {activeSession && dotOf(activeSession) !== "idle" && <SessionStatusDot status={dotOf(activeSession)} />}
           <span className="chat-header-title-text">{title}</span>
           {!connected && <span className="muted">(연결 중...)</span>}
           <IconChevronDown />
@@ -484,8 +488,9 @@ function ChatHeader({
                       closeMenu();
                     }}
                   >
+                    <SessionStatusDot status={dotOf(s)} />
+                    <span className="chat-popover-item-title">{s.title || "새 채팅"}</span>
                     {s.id === activeSessionId && <IconCheck className="chat-popover-item-check" />}
-                    {s.title || "새 채팅"}
                   </button>
                 ))
               )}
@@ -685,6 +690,33 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
       cancelled = true;
     };
   }, [projectId]);
+
+  // 세션 상태 점 갱신 — 보안 점검은 워커에서 돌아 이 소켓으로 알려오지 않으므로 목록을
+  // 주기적으로 다시 받는다. 진행/대기 중인 세션이 있으면 4초, 없으면 20초(새로 시작한 점검 감지용).
+  const hasActiveEngagement = (sessions || []).some((s) => isActiveSessionStatus(sessionDotStatus(s)));
+  useEffect(() => {
+    if (!projectId || sessions === null) return undefined;
+    const timer = setInterval(() => {
+      fetchChatSessions(projectId)
+        .then((list) => {
+          const byId = new Map(list.map((x) => [x.id, x.engagement_status]));
+          setSessions((prev) => {
+            if (!prev) return prev;
+            let changed = false;
+            const next = prev.map((x) => {
+              const st = byId.has(x.id) ? byId.get(x.id) : x.engagement_status;
+              if (st === x.engagement_status) return x;
+              changed = true;
+              return { ...x, engagement_status: st };
+            });
+            return changed ? next : prev;
+          });
+        })
+        .catch(() => {});
+    }, hasActiveEngagement ? 4000 : 20000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, sessions === null, hasActiveEngagement]);
 
   // WebSocket 연결 — 활성 세션당 하나. 끊기면(네트워크 문제 등) 짧은 backoff로
   // 재연결하고, 재연결 성공 시마다 히스토리를 다시 불러온다 — Postgres NOTIFY는
@@ -953,6 +985,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
         reanalyzing={analysis?.state === "ready_reanalyzing"}
         sessions={sessions}
         activeSessionId={activeSessionId}
+        answeringSessionId={pendingClientMsgId !== null ? activeSessionId : null}
         onSelectSession={selectSession}
         onNewChat={newChatSession}
         onRenameSession={renameSession}

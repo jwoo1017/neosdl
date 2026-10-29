@@ -6705,3 +6705,53 @@ textarea.eng-modal-input {
 .graph-layer-toggles .graph-legend-swatch {
   display: inline-block;
 }
+
+/* 채팅 세션 상태 점 (components/SessionStatusDot.jsx) */
+.session-dot {
+  flex-shrink: 0;
+  overflow: visible;
+}
+.session-dot-idle .session-dot-core { fill: var(--text-faint); }
+.session-dot-done .session-dot-core { fill: #3fb950; }
+.session-dot-failed .session-dot-core { fill: #ff6b74; }
+.session-dot-waiting .session-dot-ring { fill: none; stroke: #e3b341; stroke-width: 1.6; }
+.session-dot-running .session-dot-track { fill: none; stroke: rgba(63, 184, 172, 0.3); stroke-width: 1.4; }
+.session-dot-running .session-dot-arc {
+  fill: none;
+  stroke: var(--accent-strong);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transform-origin: 5px 5px;
+  animation: session-dot-spin 1s linear infinite;
+}
+.session-dot-running .session-dot-core { fill: var(--accent); }
+.session-dot-approval .session-dot-core { fill: #f0883e; }
+.session-dot-approval .session-dot-halo {
+  fill: #f0883e;
+  opacity: 0.35;
+  transform-origin: 5px 5px;
+  animation: session-dot-pulse 1.4s ease-out infinite;
+}
+@keyframes session-dot-spin { to { transform: rotate(360deg); } }
+@keyframes session-dot-pulse {
+  0% { transform: scale(0.7); opacity: 0.55; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-dot-running .session-dot-arc,
+  .session-dot-approval .session-dot-halo { animation: none; }
+}
+.chat-popover-item .chat-popover-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-popover-item .chat-popover-item-check {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.chat-header-title-btn .session-dot {
+  margin-right: 0.15rem;
+}

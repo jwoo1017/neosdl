@@ -92,14 +92,28 @@ def _assert_session(cur, project_id: UUID, session_id: UUID) -> None:
 
 @router.get("/projects/{project_id}/chat/sessions")
 def list_chat_sessions(project_id: UUID, member: dict = Depends(get_current_member)):
-    """이 프로젝트의 채팅 세션 목록 — 최근 활동 순(메시지 없는 세션은 생성 순)."""
+    """이 프로젝트의 채팅 세션 목록 — 최근 활동 순(메시지 없는 세션은 생성 순).
+
+    engagement_status: 그 세션에서 시작한 가장 최근 보안 점검(engagement)의 상태 —
+    세션 목록의 상태 점(진행 중/승인 대기/대기/완료/실패)용. 채팅에서 시작한 점검은
+    engagement.session_id 로, 그 이전 것은 assistant 메시지 evidence.engagement_id 로 잇는다.
+    """
     with tx() as cur:
         assert_project_role(cur, project_id, member["id"])
         cur.execute(
             """
             SELECT s.id, s.title, s.created_at, s.updated_at, s.last_message_at,
-                   (SELECT count(*) FROM chat_message m WHERE m.session_id = s.id) AS message_count
+                   (SELECT count(*) FROM chat_message m WHERE m.session_id = s.id) AS message_count,
+                   eng.status::text AS engagement_status
               FROM chat_session s
+              LEFT JOIN LATERAL (
+                    SELECT e.status FROM engagement e
+                     WHERE e.project_id = s.project_id
+                       AND (e.session_id = s.id
+                            OR e.id::text IN (SELECT m.evidence->>'engagement_id' FROM chat_message m
+                                               WHERE m.session_id = s.id AND m.evidence ? 'engagement_id'))
+                     ORDER BY e.created_at DESC LIMIT 1
+              ) eng ON true
              WHERE s.project_id = %s AND s.deleted_at IS NULL
              ORDER BY COALESCE(s.last_message_at, s.created_at) DESC
             """,
