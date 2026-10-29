@@ -21,6 +21,7 @@ import CloseIcon from "../icons/CloseIcon";
 import AutoIcon from "../icons/AutoIcon";
 import { historyEvents } from "../AgentActivityTimeline";
 import ChatMessage from "../chat/ChatMessage";
+import AiAvatarIcon from "../icons/AiAvatarIcon";
 import { useMe } from "../MeContext";
 import { useDialog } from "../dialog/DialogContext";
 import { createBackoff, isTerminalClose } from "../wsReconnect";
@@ -812,7 +813,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streaming, streamingText, agentEvents]);
+  }, [messages, streaming, streamingText, agentEvents, pentestSuggestion]);
 
   // 보낸 질문의 답변이 확정되면(서버가 브로드캐스트) "응답 대기 중" 상태만
   // 풀어준다 — streaming/agentEvents 자체는 지우지 않아 다음 질문을 보낼
@@ -987,19 +988,25 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
               pending={!streamingText && (agentEvents[streamingCid] || []).length === 0}
             />
           )}
+          {/* 점검 제안·라이브 진행은 AI 답변 턴으로 대화 흐름 안에 — 입력창을 밀어내지 않는다. */}
+          {pentestSuggestion && (
+            <div className="chat-message chat-message-assistant">
+              <span className="chat-message-avatar chat-message-ai-avatar"><AiAvatarIcon size={30} /></span>
+              <div className="chat-message-content">
+                <PentestActionCard
+                  projectId={projectId}
+                  suggestion={pentestSuggestion}
+                  onDismiss={() => setPentestSuggestion(null)}
+                  onUpdate={() => bottomRef.current?.scrollIntoView({ behavior: "smooth" })}
+                />
+              </div>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
       </div>
 
       {error && <div className="alert-error">{error}</div>}
-
-      {pentestSuggestion && (
-        <PentestActionCard
-          projectId={projectId}
-          suggestion={pentestSuggestion}
-          onDismiss={() => setPentestSuggestion(null)}
-        />
-      )}
 
       {chatLocked && (
         <AnalysisLockPanel
