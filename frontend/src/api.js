@@ -472,14 +472,43 @@ export async function fetchScan(scanId) {
   return res.json();
 }
 
-export async function fetchGraph(scanId, includeUnresolved = false, domain = "", view = "all") {
+export async function fetchGraph(scanId, includeUnresolved = false, domain = "", view = "all", community = null) {
   const url = new URL(`${API_BASE}/scans/${scanId}/graph`);
   url.searchParams.set("include_unresolved", includeUnresolved ? "true" : "false");
   if (domain) url.searchParams.set("domain", domain);
   if (view) url.searchParams.set("view", view);
+  if (community !== null && community !== undefined) url.searchParams.set("community", community);
   const res = await apiFetch(url.pathname + url.search);
   if (!res.ok) throw new Error(`GET /scans/${scanId}/graph failed: ${res.status}`);
   return res.json(); // { nodes, edges, max_recent_changes }
+}
+
+// 코드 지도 — graphify 로 묶은 모듈(커뮤니티) + 모듈 간 연결 + 요약 리포트
+export async function fetchCodeMap(scanId) {
+  const res = await apiFetch(`/scans/${scanId}/code-map`);
+  if (!res.ok) throw new Error(`GET /scans/${scanId}/code-map failed: ${res.status}`);
+  return res.json(); // { engine, communities, links, report, symbol_count }
+}
+
+// 근거 서브그래프 — 시드 심볼 + depth 만큼의 이웃(허브 제외). depth=0 이면 시드끼리만.
+export async function fetchSubgraph(scanId, symbolKeys, depth = 1, maxNodes = 60) {
+  const res = await apiFetch(`/scans/${scanId}/subgraph`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ symbol_keys: symbolKeys, depth, max_nodes: maxNodes }),
+  });
+  if (!res.ok) throw new Error(`POST /scans/${scanId}/subgraph failed: ${res.status}`);
+  return res.json(); // { nodes, edges, missing }
+}
+
+// 두 심볼 사이 최단 호출 경로 — 흐름 탭 재생용
+export async function fetchCallPath(scanId, src, dst) {
+  const url = new URL(`${API_BASE}/scans/${scanId}/path`);
+  url.searchParams.set("src", src);
+  url.searchParams.set("dst", dst);
+  const res = await apiFetch(url.pathname + url.search);
+  if (!res.ok) throw new Error(`GET /scans/${scanId}/path failed: ${res.status}`);
+  return res.json(); // { kind, hops: [{ symbol_key, label, qualified_name, path, line }] }
 }
 
 export async function fetchDomainGraph(scanId) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { joinTeamspace, logout, moveProject } from "./api";
 import { useWorkspace } from "./WorkspaceContext";
@@ -13,7 +13,7 @@ import CreateTeamspaceModal from "./components/CreateTeamspaceModal";
 import CreateProjectModal from "./components/CreateProjectModal";
 import WorkspaceSettingsModal from "./components/WorkspaceSettingsModal";
 import TeamspaceSettingsModal from "./components/TeamspaceSettingsModal";
-import ProjectQuickMenuModal from "./components/ProjectQuickMenuModal";
+import PopoverMenu from "./components/PopoverMenu";
 import PlusIcon from "./icons/PlusIcon";
 import MoreIcon from "./icons/MoreIcon";
 import PanelCollapseIcon from "./icons/PanelCollapseIcon";
@@ -112,7 +112,7 @@ function TeamspaceNode({ teamspace, projects, activeProjectId, onOpenProject, on
                 className="icon-btn sidebar-project-menu-btn"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onQuickMenu(p);
+                  onQuickMenu({ project: p, teamspace, anchor: e.currentTarget.getBoundingClientRect() });
                 }}
                 aria-label="프로젝트 메뉴"
               >
@@ -150,7 +150,8 @@ export default function Sidebar() {
   const [createProjectIn, setCreateProjectIn] = useState(null); // teamspace 객체 또는 null
   const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false);
   const [manageTeamspace, setManageTeamspace] = useState(null); // teamspace 객체 또는 null
-  const [quickMenuProject, setQuickMenuProject] = useState(null); // project 객체 또는 null
+  const [quickMenu, setQuickMenu] = useState(null); // { project, teamspace, anchor } 또는 null
+  const closeQuickMenu = useCallback(() => setQuickMenu(null), []);
   const [recent, setRecent] = useState(() => getRecentProjects());
   const [dragError, setDragError] = useState(null);
   const location = useLocation();
@@ -210,6 +211,19 @@ export default function Sidebar() {
     setRecent(getRecentProjects());
     openChatTab(project);
   };
+
+  // "⋯" 메뉴 — 모달 없이 바로 원하는 화면(상세 하위 경로)으로 연다.
+  const openProjectDetail = (project, subPath) => {
+    setActiveProjectId(project.id);
+    openDetailTab(project, subPath);
+  };
+
+  const quickMenuItems = (project) => [
+    { key: "chat", label: "채팅 열기", onSelect: () => openProject(project) },
+    { key: "overview", label: "상세 보기", hint: "레포지토리 · 스캔 설정", onSelect: () => openProjectDetail(project, "overview") },
+    { key: "graph", label: "코드 지도", hint: "함수·모듈 연결 관계 그래프", onSelect: () => openProjectDetail(project, "graph") },
+    { key: "security", label: "보안 분석", hint: "스캔 결과 · 위험", onSelect: () => openProjectDetail(project, "security/scan") },
+  ];
 
   const openRecent = (item) => {
     if (item.workspaceId && item.workspaceId !== activeWorkspaceId) setActiveWorkspaceId(item.workspaceId);
@@ -332,7 +346,7 @@ export default function Sidebar() {
                   }}
                   onMoveProject={moveProjectToTeamspace}
                   onManage={setManageTeamspace}
-                  onQuickMenu={setQuickMenuProject}
+                  onQuickMenu={setQuickMenu}
                 />
               ))
             )}
@@ -355,7 +369,7 @@ export default function Sidebar() {
               onJoin={async () => {}}
               onMoveProject={moveProjectToTeamspace}
               onManage={() => {}}
-              onQuickMenu={setQuickMenuProject}
+              onQuickMenu={setQuickMenu}
             />
             <p className="sidebar-personal-hint">나만 볼 수 있어요. 팀스페이스로 끌어다 놓으면 공유됩니다.</p>
           </div>
@@ -430,11 +444,12 @@ export default function Sidebar() {
         <TeamspaceSettingsModal teamspaceId={manageTeamspace.id} onClose={() => setManageTeamspace(null)} />
       )}
 
-      {quickMenuProject && (
-        <ProjectQuickMenuModal
-          project={quickMenuProject}
-          onOpenDetail={openDetailTab}
-          onClose={() => setQuickMenuProject(null)}
+      {quickMenu && (
+        <PopoverMenu
+          anchor={quickMenu.anchor}
+          ariaLabel={`${quickMenu.project.name} 메뉴`}
+          items={quickMenuItems(quickMenu.project)}
+          onClose={closeQuickMenu}
         />
       )}
     </aside>

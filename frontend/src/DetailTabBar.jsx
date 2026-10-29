@@ -27,6 +27,7 @@ export default function DetailTabBar({ projectId }) {
   const base = `/projects/${projectId}/detail`;
   const isRepository = location.pathname.startsWith(`${base}/repository`);
   const isSecurity = location.pathname.startsWith(`${base}/security`);
+  const isGraph = location.pathname.startsWith(`${base}/graph`);
 
   return (
     <div className="detail-tab-bar">
@@ -36,6 +37,9 @@ export default function DetailTabBar({ projectId }) {
         </NavLink>
         <NavLink to={`${base}/repository/files`} className={() => (isRepository ? "active" : "")}>
           Repository
+        </NavLink>
+        <NavLink to={`${base}/graph`} className={() => (isGraph ? "active" : "")}>
+          Code Map
         </NavLink>
         <NavLink to={`${base}/releases`} className={({ isActive }) => (isActive ? "active" : "")}>
           Releases

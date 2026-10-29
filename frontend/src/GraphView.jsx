@@ -15,9 +15,11 @@ import "@react-sigma/core/lib/style.css";
 import AgentActivityTimeline from "./AgentActivityTimeline";
 import CodeViewer from "./CodeViewer";
 import {
+  fetchCodeMap,
   fetchDataflow,
   fetchDomainGraph,
   fetchDomains,
+  fetchSubgraph,
   fetchFunctionGraph,
   fetchFunctions,
   fetchGraph,
@@ -25,7 +27,9 @@ import {
   streamAskQuestion,
 } from "./api";
 import {
+  buildCommunityMapGraph,
   buildDomainGraph,
+  communityColor,
   buildFunctionGraph,
   buildGraphologyGraph,
   drawNodeLabelBelow,
@@ -38,7 +42,8 @@ import { TOOL_LABELS } from "./toolLabels";
 const NODE_PROGRAM_CLASSES = { [ICON_NODE_TYPE]: NodeImageProgram };
 
 const VIEW_OPTIONS = [
-  { value: "all", label: "Abstract Syntax Tree" },
+  { value: "map", label: "모듈 지도" },
+  { value: "all", label: "전체 심볼 그래프" },
   { value: "cfg", label: "Control Flow Graph" },
   { value: "pdg", label: "Program Dependence Graph" },
   { value: "cpg", label: "Code Property Graph" },
@@ -69,6 +74,60 @@ function collapsePath(path) {
     collapsed.push(hop);
   }
   return collapsed;
+}
+
+// 답변 근거에서 심볼 키를 모은다 — 서버 _collect_evidence_symbols(app/chat.py)와 같은 순서
+// (의미 검색 적중 → 오염 경로 → 도메인 경계 호출 → 호출 그래프), 서브그래프 시드용이라 더 넉넉히.
+const MAX_EVIDENCE_SEEDS = 30;
+function evidenceSymbolKeys(evidence) {
+  const keys = [];
+  const add = (k) => {
+    if (typeof k === "string" && k && !keys.includes(k)) keys.push(k);
+  };
+  for (const r of evidence?.semantic_search || []) add(r.symbol_key);
+  for (const f of evidence?.dataflow_security || []) {
+    add(f.source_symbol_key);
+    for (const h of f.path || []) add(h.symbol_key);
+    add(f.sink_symbol_key);
+  }
+  for (const f of evidence?.dataflow_business || []) {
+    add(f.caller_symbol_key);
+    add(f.callee_symbol_key);
+  }
+  for (const p of evidence?.call_graph || []) {
+    add(p.symbol_key);
+    for (const h of p.chain_hops || []) add(h.symbol_key);
+  }
+  return keys.slice(0, MAX_EVIDENCE_SEEDS);
+}
+
+// 서브그래프가 뜬 직후 시드(근거) 노드를 몇 번 부풀렸다 줄여 "여기"를 알려준다.
+function SeedPulse({ graph }) {
+  const sigma = useSigma();
+  useEffect(() => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return undefined;
+    const g = sigma.getGraph();
+    const seeds = g.filterNodes((_, a) => a.seed);
+    const base = new Map(seeds.map((n) => [n, g.getNodeAttribute(n, "size")]));
+    const DURATION = 2400;
+    let raf = 0;
+    let start = null;
+    const tick = (now) => {
+      if (start === null) start = now;
+      const t = now - start;
+      const k = t >= DURATION ? 0 : Math.sin((t / DURATION) * Math.PI * 6) * (1 - t / DURATION);
+      for (const n of seeds) {
+        if (g.hasNode(n)) g.setNodeAttribute(n, "size", base.get(n) * (1 + 0.45 * Math.max(0, k)));
+      }
+      if (t < DURATION) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      for (const n of seeds) if (g.hasNode(n)) g.setNodeAttribute(n, "size", base.get(n));
+    };
+  }, [graph, sigma]);
+  return null;
 }
 
 function GraphLoader({ graph }) {
@@ -148,7 +207,9 @@ function GraphInteractions({ externalFocus, onEdgeClick, onNodeClick }) {
   return null;
 }
 
-export default function GraphView({ scanId }) {
+// initialHighlight: { keys, mode: "path"|"evidence", title } — 흐름 탭의 "코드 지도에서 보기" 등에서
+// 특정 심볼만 강조한 서브그래프로 바로 연다.
+export default function GraphView({ scanId, initialHighlight = null }) {
   const [rawGraph, setRawGraph] = useState(null); // { nodes, edges } — 서버 응답 그대로
   const [graph, setGraph] = useState(null); // graphology 인스턴스 — hotspotMode 토글 시 서버 재조회 없이 재조립
   const [status, setStatus] = useState("idle");
@@ -158,7 +219,10 @@ export default function GraphView({ scanId }) {
   const [selectedDomain, setSelectedDomain] = useState("");
   const [hotspotMode, setHotspotMode] = useState(false);
   const [maxRecentChanges, setMaxRecentChanges] = useState(0);
-  const [view, setView] = useState("all");
+  const [view, setView] = useState("map");
+  const [codeMap, setCodeMap] = useState(null); // GET /code-map — 모듈 목록 + 요약 리포트
+  const [selectedCommunity, setSelectedCommunity] = useState(null); // 모듈 지도에서 드릴다운한 모듈 id
+  const [highlight, setHighlight] = useState(initialHighlight);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState(null);
   const [searching, setSearching] = useState(false);
@@ -187,6 +251,16 @@ export default function GraphView({ scanId }) {
 
   const isDomainView = view === "domains";
   const isFunctionView = view === "cfg" || view === "pdg" || view === "cpg";
+  const isMapView = view === "map";
+  // highlight: 근거/경로 심볼만 담은 서브그래프 모드(graphify query 방식) — 다른 뷰보다 우선한다.
+  const isHighlight = !!highlight;
+  const isMapOverview = isMapView && selectedCommunity === null && !isHighlight;
+  // 응답 모양이 뷰마다 달라서(모듈 지도 = 커뮤니티 목록), 뷰 전환 직후 이전 응답으로
+  // 엉뚱한 빌더가 돌지 않게 어떤 종류의 데이터인지 표시해 둔다.
+  const dataKind = isHighlight ? "highlight" : isMapOverview ? "map" : "graph";
+  const currentCommunity = isMapView && codeMap
+    ? codeMap.communities.find((c) => c.id === selectedCommunity) || null
+    : null;
 
   useEffect(() => {
     if (!scanId) return;
@@ -226,7 +300,16 @@ export default function GraphView({ scanId }) {
     setFocusSymbol("");
     setFocusFilter("");
     setCodeView(null);
+    setCodeMap(null);
+    setSelectedCommunity(null);
   }, [scanId]);
+
+  // 같은 탭에 다른 경로 강조 요청이 다시 오면(흐름 탭에서 또 누름) 교체한다.
+  const initialHighlightKey = initialHighlight ? `${initialHighlight.mode}:${initialHighlight.keys.join("|")}` : "";
+  useEffect(() => {
+    if (initialHighlight) setHighlight(initialHighlight);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanId, initialHighlightKey]);
 
   useEffect(() => {
     setEdgeInfo(null);
@@ -234,7 +317,7 @@ export default function GraphView({ scanId }) {
 
   useEffect(() => {
     if (!scanId) return;
-    if (isFunctionView && !selectedFunction) {
+    if (isFunctionView && !selectedFunction && !isHighlight) {
       setRawGraph(null);
       setFunctionMeta(null);
       setStatus("idle");
@@ -244,7 +327,16 @@ export default function GraphView({ scanId }) {
     setStatus("loading");
     setSearchResults(null);
 
-    const load = isDomainView
+    const load = isHighlight
+      ? fetchSubgraph(scanId, highlight.keys, highlight.mode === "path" ? 0 : 1)
+      : isMapOverview
+      ? fetchCodeMap(scanId).then((cm) => {
+          setCodeMap(cm);
+          return { nodes: cm.communities, edges: cm.links, max_recent_changes: 0 };
+        })
+      : isMapView
+      ? fetchGraph(scanId, false, "", "all", selectedCommunity)
+      : isDomainView
       ? fetchDomainGraph(scanId).then(({ nodes, edges }) => ({ nodes, edges, max_recent_changes: 0 }))
       : isFunctionView
       ? fetchFunctionGraph(scanId, selectedFunction).then(({ nodes, edges, qualified_name, path }) => {
@@ -258,7 +350,7 @@ export default function GraphView({ scanId }) {
         if (cancelled) return;
         setStats({ nodes: nodes.length, edges: edges.length });
         setMaxRecentChanges(max_recent_changes || 0);
-        setRawGraph({ nodes, edges });
+        setRawGraph({ nodes, edges, kind: dataKind });
         setStatus("ready");
       })
       .catch((err) => {
@@ -271,13 +363,30 @@ export default function GraphView({ scanId }) {
     return () => {
       cancelled = true;
     };
-  }, [scanId, includeUnresolved, selectedDomain, view, isDomainView, isFunctionView, selectedFunction]);
+  }, [scanId, includeUnresolved, selectedDomain, view, isDomainView, isFunctionView, selectedFunction,
+      isMapView, isMapOverview, selectedCommunity, isHighlight, highlight, dataKind]);
 
   // hotspotMode 토글은 이미 받아온 데이터를 다시 조립만 하면 되므로 서버를
   // 다시 부르지 않는다 — 구조 뷰 <-> 핫스팟 뷰 전환이 즉시 반영된다.
   useEffect(() => {
     if (!rawGraph) {
       setGraph(null);
+      return;
+    }
+    if (rawGraph.kind !== dataKind) return; // 새 뷰 데이터가 아직 도착 전
+    if (isHighlight) {
+      // 경로는 순서대로 왼쪽→오른쪽, 근거는 연결된 것끼리 뭉치게.
+      setGraph(buildGraphologyGraph(rawGraph.nodes, rawGraph.edges, {
+        layout: highlight.mode === "path" ? "sequence" : "force",
+        order: highlight.keys,
+        colorBy: "community",
+        emphasizeSeeds: true,
+        pathEdges: highlight.mode === "path" ? highlight.keys : null,
+      }));
+      return;
+    }
+    if (isMapOverview) {
+      setGraph(buildCommunityMapGraph(rawGraph.nodes, rawGraph.edges));
       return;
     }
     if (isDomainView) {
@@ -295,8 +404,15 @@ export default function GraphView({ scanId }) {
     const { nodes, edges } = focusSymbol
       ? filterByFocus(rawGraph.nodes, rawGraph.edges, focusSymbol, focusDepth)
       : rawGraph;
-    setGraph(buildGraphologyGraph(nodes, edges, { hotspotMode, maxRecentChanges }));
-  }, [rawGraph, hotspotMode, maxRecentChanges, isDomainView, isFunctionView, view, focusSymbol, focusDepth]);
+    // 모듈 안(드릴다운)은 모듈 색 + force 배치 — 계층 없는 호출 묶음이라 한 줄로 늘어뜨리지 않는다.
+    setGraph(buildGraphologyGraph(nodes, edges, {
+      hotspotMode,
+      maxRecentChanges,
+      layout: isMapView && !focusSymbol ? "force" : "dagre",
+      colorBy: isMapView ? "community" : "kind",
+    }));
+  }, [rawGraph, hotspotMode, maxRecentChanges, isDomainView, isFunctionView, view, focusSymbol, focusDepth,
+      isMapView, isMapOverview, isHighlight, highlight, dataKind]);
 
   const filteredFunctions = functionFilter.trim()
     ? functions.filter((f) => {
@@ -312,7 +428,8 @@ export default function GraphView({ scanId }) {
       ? [selectedFunctionInList, ...filteredFunctions]
       : filteredFunctions;
 
-  const allNodes = rawGraph && !isDomainView && !isFunctionView ? rawGraph.nodes : [];
+  const isSymbolView = !isDomainView && !isFunctionView && !isMapOverview && !isHighlight;
+  const allNodes = rawGraph && isSymbolView ? rawGraph.nodes : [];
   const focusOptions = focusFilter.trim()
     ? allNodes.filter((n) => {
         const q = focusFilter.toLowerCase();
@@ -382,7 +499,12 @@ export default function GraphView({ scanId }) {
         signal: controller.signal,
         onEvent: (event) => setAskEvents((prev) => [...prev, event]),
         onChunk: (delta) => setAskAnswerText((prev) => prev + delta),
-        onDone: (payload) => setAskFinal({ answer: payload.answer, tools_used: payload.tools_used, evidence: payload.evidence }),
+        onDone: (payload) => {
+          setAskFinal({ answer: payload.answer, tools_used: payload.tools_used, evidence: payload.evidence });
+          // S5 — 답변 근거 심볼만 서브그래프로 바꿔 보여준다.
+          const keys = evidenceSymbolKeys(payload.evidence);
+          if (keys.length > 0) setHighlight({ keys, mode: "evidence", title: "AI 답변 근거" });
+        },
         onError: (message) => setAskFinal({ answer: message, tools_used: [], evidence: {} }),
       });
     } catch (err) {
@@ -405,10 +527,42 @@ export default function GraphView({ scanId }) {
     });
   };
 
+  // 모듈 지도 드릴다운 — 모듈 하나의 심볼 + 바깥 이웃만 다시 불러온다.
+  const openCommunity = (id) => {
+    setFocusSymbol("");
+    setFocusFilter("");
+    setCodeView(null);
+    setSelectedCommunity(id);
+  };
+
+  const backToMap = () => {
+    setFocusSymbol("");
+    setFocusFilter("");
+    setSelectedCommunity(null);
+  };
+
+  // 요약 카드의 핵심 심볼 — 전체 심볼 그래프에서 그 주변 2-hop 만 연다.
+  const focusKeySymbol = (symbolKey) => {
+    setView("all");
+    setFocusDepth(2);
+    setFocusSymbol(symbolKey);
+  };
+
+  const askSuggested = (question) => {
+    setSearchResults(null);
+    setFindings(null);
+    setAskInput(question);
+    setAskOpen(true);
+  };
+
   // AST 뷰: 노드 자체가 path/startLine 을 담고 있다(외부 노드는 path 없음).
   // 함수 뷰(CFG/PDG/CPG): 블록 노드는 startLine 만 있고 path 는 현재 선택된
   // 함수(functionMeta)의 것을 쓴다 — 블록이 속한 파일은 하나뿐이라서다.
   const handleNodeClick = (attrs) => {
+    if (isMapOverview) {
+      if (attrs.communityId !== undefined) openCommunity(attrs.communityId);
+      return;
+    }
     if (isFunctionView) {
       if (functionMeta?.path && attrs.startLine) {
         setCodeView({ path: functionMeta.path, line: attrs.startLine });
@@ -426,7 +580,10 @@ export default function GraphView({ scanId }) {
         <select
           className="graph-domain-select"
           value={view}
-          onChange={(e) => setView(e.target.value)}
+          onChange={(e) => {
+            setHighlight(null);
+            setView(e.target.value);
+          }}
         >
           {VIEW_OPTIONS.map((o) => (
             <option key={o.value} value={o.value}>
@@ -465,11 +622,14 @@ export default function GraphView({ scanId }) {
         <button onClick={toggleFindings} disabled={findingsLoading}>
           {findingsLoading ? "탐지 중..." : findings ? "위험 탐지 닫기" : "위험 탐지"}
         </button>
-        {!isDomainView && !isFunctionView && (
+        {isSymbolView && (
           <>
+            <details className="graph-filters">
+            <summary>필터{focusSymbol || hotspotMode || selectedDomain || includeUnresolved ? " ●" : ""}</summary>
+            <div className="graph-filters-body">
             <input
               className="graph-search-input"
-              placeholder="포커스할 노드 찾기(hairball 줄이기)"
+              placeholder="이 함수 주변만 보기 — 이름으로 찾기"
               value={focusFilter}
               onChange={(e) => setFocusFilter(e.target.value)}
             />
@@ -478,7 +638,7 @@ export default function GraphView({ scanId }) {
               value={focusSymbol}
               onChange={(e) => setFocusSymbol(e.target.value)}
             >
-              <option value="">포커스 없음(전체 표시)</option>
+              <option value="">주변 보기 없음(전체 표시)</option>
               {focusOptions.slice(0, 200).map((n) => (
                 <option key={n.data.id} value={n.data.id}>
                   {n.data.path ? `${n.data.path} · ` : ""}{n.data.label}
@@ -499,14 +659,16 @@ export default function GraphView({ scanId }) {
                 </select>
               </label>
             )}
-            <label className="graph-toggle">
-              <input
-                type="checkbox"
-                checked={includeUnresolved}
-                onChange={(e) => setIncludeUnresolved(e.target.checked)}
-              />
-              미해석/외부 호출 포함
-            </label>
+            {!isMapView && (
+              <label className="graph-toggle">
+                <input
+                  type="checkbox"
+                  checked={includeUnresolved}
+                  onChange={(e) => setIncludeUnresolved(e.target.checked)}
+                />
+                외부 라이브러리 호출 포함
+              </label>
+            )}
             <label className="graph-toggle">
               <input
                 type="checkbox"
@@ -515,7 +677,7 @@ export default function GraphView({ scanId }) {
               />
               변경 빈도 히트맵
             </label>
-            {domains.length > 0 && (
+            {domains.length > 0 && !isMapView && (
               <select
                 className="graph-domain-select"
                 value={selectedDomain}
@@ -529,6 +691,8 @@ export default function GraphView({ scanId }) {
                 ))}
               </select>
             )}
+            </div>
+            </details>
             <input
               className="graph-search-input"
               placeholder="코드 의미 검색 (예: 로그인 처리하는 함수)"
@@ -543,10 +707,74 @@ export default function GraphView({ scanId }) {
         )}
         {stats && (
           <span className="graph-stats-inline">
-            노드 {stats.nodes}개 · 관계 {stats.edges}개
+            {isMapOverview ? `모듈 ${stats.nodes}개 · 심볼 ${codeMap?.symbol_count ?? "-"}개` : `노드 ${stats.nodes}개 · 관계 ${stats.edges}개`}
           </span>
         )}
       </div>
+      {isHighlight && (
+        <div className="code-map-bar code-map-highlight-bar">
+          <span className="code-map-crumb is-current">
+            <span className="code-map-dot code-map-dot-seed" />
+            {highlight.title || (highlight.mode === "path" ? "흐름 경로" : "근거")}
+          </span>
+          <span className="muted code-map-hint">
+            {highlight.mode === "path"
+              ? `경로의 함수 ${highlight.keys.length}개를 순서대로 표시합니다.`
+              : `근거 함수 ${highlight.keys.length}개(굵은 원)와 바로 연결된 함수만 표시합니다.`}
+          </span>
+          <button type="button" className="code-map-crumb" onClick={() => setHighlight(null)}>전체 지도로 돌아가기</button>
+        </div>
+      )}
+      {isMapView && !isHighlight && (
+        <div className="code-map-bar">
+          <nav className="code-map-crumbs" aria-label="코드 지도 위치">
+            {isMapOverview ? (
+              <span className="code-map-crumb is-current">전체 모듈</span>
+            ) : (
+              <>
+                <button type="button" className="code-map-crumb" onClick={backToMap}>전체 모듈</button>
+                <span className="code-map-crumb-sep">›</span>
+                <span className="code-map-crumb is-current">
+                  <span className="code-map-dot" style={{ background: communityColor(selectedCommunity) }} />
+                  {currentCommunity?.name || `모듈 ${selectedCommunity}`}
+                </span>
+                {currentCommunity?.top_dir && <span className="muted code-map-dir">{currentCommunity.top_dir}</span>}
+              </>
+            )}
+          </nav>
+          {isMapOverview && <span className="muted code-map-hint">원을 누르면 그 모듈의 함수들이 펼쳐집니다.</span>}
+          {!isMapOverview && <span className="muted code-map-hint">함수를 누르면 코드가 열립니다. 회색 점은 모듈 밖 연결입니다.</span>}
+        </div>
+      )}
+      {isMapOverview && codeMap?.report && (codeMap.report.key_symbols?.length > 0 || codeMap.report.questions?.length > 0) && (
+        <div className="code-map-summary">
+          {codeMap.report.key_symbols?.length > 0 && (
+            <div className="code-map-summary-col">
+              <div className="code-map-summary-title">핵심 함수 (연결이 가장 많음)</div>
+              <div className="code-map-chips">
+                {codeMap.report.key_symbols.map((k) => (
+                  <button key={k.symbol_key} type="button" className="code-map-chip" onClick={() => focusKeySymbol(k.symbol_key)}
+                          title={`${k.degree}개 연결 — 주변 보기`}>
+                    {k.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {codeMap.report.questions?.length > 0 && (
+            <div className="code-map-summary-col">
+              <div className="code-map-summary-title">이런 걸 물어보세요</div>
+              <div className="code-map-chips">
+                {codeMap.report.questions.slice(0, 3).map((q) => (
+                  <button key={q} type="button" className="code-map-chip is-question" onClick={() => askSuggested(q)}>
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       <div className="graph-body">
       <div className="graph-canvas-wrap">
         {status === "loading" && (
@@ -559,7 +787,7 @@ export default function GraphView({ scanId }) {
         {status === "ready" && isDomainView && stats?.nodes === 0 && (
           <div className="graph-overlay">아직 도메인 태깅이 없습니다 (symbol.annotate 대기 중).</div>
         )}
-        {isFunctionView && !selectedFunction && (
+        {isFunctionView && !selectedFunction && !isHighlight && (
           <div className="graph-overlay">위에서 함수를 먼저 선택하세요.</div>
         )}
         <SigmaContainer
@@ -570,11 +798,16 @@ export default function GraphView({ scanId }) {
             nodeProgramClasses: NODE_PROGRAM_CLASSES,
             defaultDrawNodeLabel: drawNodeLabelBelow,
             labelRenderedSizeThreshold: 9, // 줌아웃해서 노드가 화면상 9px보다 작아지면 라벨 숨김
-            labelSize: 10,
+            labelSize: 11,
+            // 라벨 격자 — 칸마다 큰 노드 라벨만 남겨 겹침을 막는다(줌인하면 더 보임)
+            labelDensity: 0.6,
+            labelGridCellSize: 90,
           }}
         >
           {graph && <GraphLoader graph={graph} />}
+          {isHighlight && graph && <SeedPulse graph={graph} />}
           <GraphInteractions
+            key={`${view}:${selectedCommunity}`}
             externalFocus={focusRequest}
             onEdgeClick={isFunctionView ? setEdgeInfo : undefined}
             onNodeClick={isDomainView ? undefined : handleNodeClick}
@@ -586,7 +819,7 @@ export default function GraphView({ scanId }) {
             <ZoomControl />
           </ControlsContainer>
         </SigmaContainer>
-        {hotspotMode && !isDomainView && !isFunctionView && (
+        {hotspotMode && isSymbolView && (
           <div className="graph-legend">
             <div className="graph-legend-title">최근 변경 빈도</div>
             <div

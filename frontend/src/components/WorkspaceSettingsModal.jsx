@@ -14,7 +14,8 @@ import { useWorkspace } from "../WorkspaceContext";
 import { assignableRoles, canManageMember, describeSpaceError, SPACE_ROLE_LABEL } from "../spaceRoles";
 import Avatar from "./Avatar";
 import Modal from "./Modal";
-import Select from "./Select";
+import { Segmented } from "./Segmented";
+import { roleOptions } from "./spaceOptions";
 import WorkspaceInviteList from "./WorkspaceInviteList";
 import { CopyIcon } from "../icons/SpaceIcons";
 
@@ -186,11 +187,11 @@ export default function WorkspaceSettingsModal({ onClose }) {
                 </div>
                 <div className="ws-member-role">
                   {manageable ? (
-                    <Select size="sm" value={m.role} ariaLabel={`${m.nickname} 역할`}
-                            onChange={(r) => changeMemberRole(m.member_id, r)}
-                            options={assignableRoles(myRole).map((r) => ({ value: r, label: SPACE_ROLE_LABEL[r] }))} />
+                    <Segmented size="sm" value={m.role} ariaLabel={`${m.nickname} 역할`}
+                               onChange={(r) => changeMemberRole(m.member_id, r)}
+                               options={roleOptions(assignableRoles(myRole))} />
                   ) : (
-                    <span className="ws-role-text">{SPACE_ROLE_LABEL[m.role] || m.role}</span>
+                    <span className="ts-role-chip">{SPACE_ROLE_LABEL[m.role] || m.role}</span>
                   )}
                 </div>
                 <div className="ws-member-action">
@@ -226,17 +227,19 @@ export default function WorkspaceSettingsModal({ onClose }) {
             <p>이메일을 비워 두면 링크를 가진 누구나 들어올 수 있습니다.</p>
           </div>
           <div className="ws-row-control">
-            <form className="ws-inline" onSubmit={submitInvite}>
-              <Select size="md" className="ws-invite-role" value={inviteRole} onChange={setInviteRole} ariaLabel="초대 역할"
-                      options={[
-                        { value: "member", label: SPACE_ROLE_LABEL.member },
-                        { value: "admin", label: SPACE_ROLE_LABEL.admin },
-                      ]} />
-              <input className="ws-input" type="email" placeholder="name@company.com"
-                     value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} aria-label="초대 이메일" />
-              <button type="submit" className="mp-btn mp-btn-primary">
-                {inviteEmail.trim() ? "초대 보내기" : "링크 만들기"}
-              </button>
+            <form className="ts-invite-form" onSubmit={submitInvite}>
+              <div className="ts-field">
+                <span className="ts-field-label">역할</span>
+                <Segmented ariaLabel="초대 역할" value={inviteRole} onChange={setInviteRole}
+                           options={roleOptions(["member", "admin"])} />
+              </div>
+              <div className="ws-inline">
+                <input className="ws-input" type="email" placeholder="name@company.com"
+                       value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} aria-label="초대 이메일" />
+                <button type="submit" className="mp-btn mp-btn-primary">
+                  {inviteEmail.trim() ? "초대 보내기" : "링크 만들기"}
+                </button>
+              </div>
             </form>
             {lastInvite && (
               <div className="ws-invite-result">

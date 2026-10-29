@@ -43,7 +43,8 @@ const HEAT_STOPS = [
   [252, 141, 89],  // #fc8d59
   [215, 48, 39],   // #d7301f
 ];
-const HEAT_NEUTRAL = "#e2e8f0"; // 변경 이력이 0인 노드는 눈에 띄지 않는 중립 회색
+const HEAT_NEUTRAL = "#e2e8f0";
+const PATH_EDGE_COLOR = "#3fb8ac"; // 흐름 경로 엣지 강조(테마 accent) // 변경 이력이 0인 노드는 눈에 띄지 않는 중립 회색
 
 // 코드 핫스팟 뷰(변경 빈도 히트맵) 노드 크기 범위.
 const HOTSPOT_MIN_SIZE = 7;
@@ -136,6 +137,117 @@ export function buildDomainGraph(nodes, edges) {
 const LAYER_COLORS = { cfg: "#94a3b8", data: "#3b82f6", control: "#f97316" };
 const BLOCK_COLOR = "#64748b";
 const ENTRY_BLOCK_COLOR = "#22c55e";
+
+/** `src.order.service.cancelOrder` → `cancelOrder` — 그래프 라벨은 짧아야 겹치지 않는다. */
+export function shortLabel(name) {
+  const s = String(name || "");
+  const parts = s.split(/::|#|\./);
+  return parts[parts.length - 1] || s;
+}
+
+// 코드 지도 모듈(커뮤니티) 색 — '기타'(-1)는 중립 회색.
+export function communityColor(id) {
+  if (id === null || id === undefined || id < 0) return "#94a3b8";
+  return DOMAIN_PALETTE[id % DOMAIN_PALETTE.length];
+}
+
+/**
+ * 결정적 force-directed 레이아웃(Fruchterman–Reingold). dagre TB 는 호출 그래프를
+ * 한 줄로 길게 늘어뜨려 라벨이 겹친다 — 모듈 지도/모듈 내부처럼 계층이 없는
+ * 그래프는 연결된 것끼리 뭉치는 배치가 읽기 쉽다. 시드는 원형 배치라 매번 같은
+ * 모양이 나온다. weights: 노드별 질량(클수록 서로 더 밀어냄).
+ */
+export function forceLayout(ids, pairs, { iterations = 250, weights = null } = {}) {
+  const n = ids.length;
+  const pos = new Map();
+  if (n === 0) return pos;
+  const area = 1000 * 1000;
+  const k = Math.sqrt(area / n);
+  ids.forEach((id, i) => {
+    const a = (2 * Math.PI * i) / n;
+    const r = 300 + (i % 7) * 20;
+    pos.set(id, { x: Math.cos(a) * r, y: Math.sin(a) * r });
+  });
+  const mass = (id) => (weights ? weights.get(id) || 1 : 1);
+  const links = pairs.filter(([a, b]) => a !== b && pos.has(a) && pos.has(b));
+  let temp = 120;
+  for (let it = 0; it < iterations; it++) {
+    const disp = new Map(ids.map((id) => [id, { x: 0, y: 0 }]));
+    for (let i = 0; i < n; i++) {
+      const pi = pos.get(ids[i]);
+      for (let j = i + 1; j < n; j++) {
+        const pj = pos.get(ids[j]);
+        let dx = pi.x - pj.x;
+        let dy = pi.y - pj.y;
+        const d = Math.max(0.01, Math.hypot(dx, dy));
+        const f = ((k * k) / d) * Math.sqrt(mass(ids[i]) * mass(ids[j]));
+        dx = (dx / d) * f;
+        dy = (dy / d) * f;
+        const di = disp.get(ids[i]);
+        const dj = disp.get(ids[j]);
+        di.x += dx; di.y += dy;
+        dj.x -= dx; dj.y -= dy;
+      }
+    }
+    for (const [a, b] of links) {
+      const pa = pos.get(a);
+      const pb = pos.get(b);
+      const dx = pa.x - pb.x;
+      const dy = pa.y - pb.y;
+      const d = Math.max(0.01, Math.hypot(dx, dy));
+      const f = (d * d) / k;
+      const da = disp.get(a);
+      const db = disp.get(b);
+      da.x -= (dx / d) * f; da.y -= (dy / d) * f;
+      db.x += (dx / d) * f; db.y += (dy / d) * f;
+    }
+    for (const id of ids) {
+      const p = pos.get(id);
+      const d = disp.get(id);
+      const len = Math.max(0.01, Math.hypot(d.x, d.y));
+      // 약한 중심 인력 — 연결 없는 덩어리가 화면 밖으로 날아가지 않게
+      p.x += (d.x / len) * Math.min(len, temp) - p.x * 0.01;
+      p.y += (d.y / len) * Math.min(len, temp) - p.y * 0.01;
+    }
+    temp = Math.max(2, temp * 0.97);
+  }
+  return pos;
+}
+
+/**
+ * 코드 지도 첫 화면 — 모듈(graphify 커뮤니티)을 노드로, 모듈 간 호출 수를 엣지로.
+ * communities/links 는 GET /scans/{id}/code-map 응답 그대로.
+ */
+export function buildCommunityMapGraph(communities, links) {
+  const ids = communities.map((c) => String(c.id));
+  const maxSize = Math.max(1, ...communities.map((c) => c.size));
+  const weights = new Map(communities.map((c) => [String(c.id), 1 + Math.sqrt(c.size / maxSize) * 2]));
+  const pos = forceLayout(ids, links.map((l) => [String(l.source), String(l.target)]), { weights });
+  const maxWeight = Math.max(1, ...links.map((l) => l.weight));
+
+  const graph = new Graph({ type: "directed" });
+  for (const c of communities) {
+    const p = pos.get(String(c.id)) || { x: 0, y: 0 };
+    graph.addNode(String(c.id), {
+      x: p.x,
+      y: p.y,
+      size: proportionalSize(c.size, maxSize, 9, 34),
+      label: `${c.name} (${c.size})`,
+      color: communityColor(c.id),
+      type: "circle",
+      communityId: c.id,
+      forceLabel: true,
+    });
+  }
+  for (const l of links) {
+    const s = String(l.source);
+    const t = String(l.target);
+    if (!graph.hasNode(s) || !graph.hasNode(t)) continue;
+    const w = Math.log(1 + l.weight) / Math.log(1 + maxWeight);
+    graph.mergeEdge(s, t, { size: 0.6 + w * 5, color: "#94a3b8", weight: l.weight, type: "arrow" });
+  }
+  return graph;
+}
 
 /**
  * 함수 하나의 CFG/PDG/CPG. `GET /scans/{id}/function-graph`가 내려주는
@@ -236,20 +348,41 @@ export function filterByFocus(nodes, edges, focusId, depth) {
  * 단색 원 — 아이콘은 불투명 이미지라 색을 못 씌운다).
  */
 export function buildGraphologyGraph(nodes, edges, options = {}) {
-  const { hotspotMode = false, maxRecentChanges = 0 } = options;
-  const dg = new dagre.graphlib.Graph();
-  dg.setGraph({ rankdir: "TB", nodesep: 40, ranksep: 70 });
-  dg.setDefaultEdgeLabel(() => ({}));
-
-  for (const n of nodes) {
-    dg.setNode(n.data.id, { width: 30, height: 30 });
-  }
-  for (const e of edges) {
-    if (dg.hasNode(e.data.source) && dg.hasNode(e.data.target)) {
-      dg.setEdge(e.data.source, e.data.target);
+  // layout: "force"(모듈 내부 — 연결된 것끼리 뭉침) | "dagre"(전체/포커스 — 위→아래 호출 계층)
+  //         | "sequence"(흐름 경로 — options.order 순서대로 왼쪽→오른쪽)
+  // colorBy: "kind"(아이콘) | "community"(코드 지도 모듈 색 원)
+  // emphasizeSeeds: data.seed 노드(근거)를 크게+라벨 고정, 나머지는 작게
+  // pathEdges: 심볼 키 순서 — 연속한 쌍의 엣지를 강조색으로
+  const {
+    hotspotMode = false, maxRecentChanges = 0, layout = "dagre", colorBy = "kind",
+    order = null, emphasizeSeeds = false, pathEdges = null,
+  } = options;
+  let positionOf;
+  if (layout === "sequence") {
+    const index = new Map((order || []).map((k, i) => [k, i]));
+    let extra = 0;
+    // 지그재그로 살짝 엇갈려 아래 라벨끼리 겹치지 않게
+    positionOf = (id) => (index.has(id)
+      ? { x: index.get(id) * 170, y: (index.get(id) % 2) * 46 }
+      : { x: (extra++) * 170, y: 180 });
+  } else if (layout === "force") {
+    const pos = forceLayout(nodes.map((n) => n.data.id), edges.map((e) => [e.data.source, e.data.target]));
+    positionOf = (id) => pos.get(id);
+  } else {
+    const dg = new dagre.graphlib.Graph();
+    dg.setGraph({ rankdir: "TB", nodesep: 40, ranksep: 70 });
+    dg.setDefaultEdgeLabel(() => ({}));
+    for (const n of nodes) {
+      dg.setNode(n.data.id, { width: 30, height: 30 });
     }
+    for (const e of edges) {
+      if (dg.hasNode(e.data.source) && dg.hasNode(e.data.target)) {
+        dg.setEdge(e.data.source, e.data.target);
+      }
+    }
+    dagre.layout(dg);
+    positionOf = (id) => dg.node(id);
   }
-  dagre.layout(dg);
 
   // multi:true 를 줘도 무의미하다 — @react-sigma/core 의 useLoadGraph 는
   // 이 그래프를 Sigma 내부의 (non-multi) 그래프로 import 하므로 거기서
@@ -257,15 +390,17 @@ export function buildGraphologyGraph(nodes, edges, options = {}) {
   // 대상을 여러 줄에서 부르는 미해석 호출이 실제로 이런 중복을 만든다.
   const graph = new Graph({ type: "directed" });
   for (const n of nodes) {
-    const pos = dg.node(n.data.id) || { x: 0, y: 0 };
+    const pos = positionOf(n.data.id) || { x: 0, y: 0 };
     const recentChanges = n.data.recent_changes || 0;
+    const label = shortLabel(n.data.label);
 
     if (hotspotMode) {
       graph.addNode(n.data.id, {
         x: pos.x,
         y: pos.y,
         size: proportionalSize(recentChanges, maxRecentChanges),
-        label: n.data.label,
+        label,
+        fullLabel: n.data.label,
         color: recentChanges > 0 ? heatColor(recentChanges / (maxRecentChanges || 1)) : HEAT_NEUTRAL,
         kind: n.data.kind,
         recentChanges,
@@ -273,12 +408,32 @@ export function buildGraphologyGraph(nodes, edges, options = {}) {
         path: n.data.path,
         startLine: n.data.start_line,
       });
+    } else if (colorBy === "community") {
+      // 모듈 바깥 이웃(boundary)은 작고 흐리게 — 이 모듈이 누구와 이어지는지만 보여준다.
+      const seed = !!n.data.seed;
+      graph.addNode(n.data.id, {
+        x: pos.x,
+        y: pos.y,
+        size: n.data.boundary ? 5 : emphasizeSeeds ? (seed ? 13 : 6) : 9,
+        label,
+        fullLabel: n.data.label,
+        forceLabel: emphasizeSeeds && seed,
+        seed,
+        color: n.data.boundary ? "#cbd5e1" : communityColor(n.data.community),
+        kind: n.data.kind,
+        recentChanges,
+        type: "circle",
+        path: n.data.path,
+        startLine: n.data.start_line,
+        boundary: !!n.data.boundary,
+      });
     } else {
       graph.addNode(n.data.id, {
         x: pos.x,
         y: pos.y,
         size: n.data.kind === "external" ? 8 : 11,
-        label: n.data.label,
+        label,
+        fullLabel: n.data.label,
         color: KIND_COLORS[n.data.kind] || "#94a3b8",
         kind: n.data.kind,
         recentChanges,
@@ -289,14 +444,28 @@ export function buildGraphologyGraph(nodes, edges, options = {}) {
       });
     }
   }
+  // 경로에서 연속한 (a → b) 쌍 — 이 엣지들만 강조색으로.
+  const pathNext = new Map();
+  for (let i = 0; pathEdges && i < pathEdges.length - 1; i++) {
+    if (!pathNext.has(pathEdges[i])) pathNext.set(pathEdges[i], new Set());
+    pathNext.get(pathEdges[i]).add(pathEdges[i + 1]);
+  }
   for (const e of edges) {
     if (!graph.hasNode(e.data.source) || !graph.hasNode(e.data.target)) continue;
+    const onPath = !!pathNext.get(e.data.source)?.has(e.data.target);
     graph.mergeEdge(e.data.source, e.data.target, {
-      size: e.data.resolved ? 1.2 : 0.8,
-      color: e.data.resolved ? "#94a3b8" : "#e2e8f0",
+      size: onPath ? 3 : e.data.resolved ? 1.2 : 0.8,
+      color: onPath ? PATH_EDGE_COLOR : e.data.resolved ? "#94a3b8" : "#e2e8f0",
       resolved: e.data.resolved,
       type: "arrow",
     });
+  }
+  // 오염 경로 hop 은 호출 엣지가 아니라 인자→파라미터 전달일 수 있다 — 그래도 순서가 보이게 잇는다.
+  for (let i = 0; pathEdges && i < pathEdges.length - 1; i++) {
+    const [a, b] = [pathEdges[i], pathEdges[i + 1]];
+    if (a !== b && graph.hasNode(a) && graph.hasNode(b) && !graph.hasEdge(a, b)) {
+      graph.addEdge(a, b, { size: 2, color: PATH_EDGE_COLOR, type: "arrow", synthetic: true });
+    }
   }
   return graph;
 }
@@ -315,7 +484,7 @@ export function drawNodeLabelBelow(context, data, settings) {
   const weight = settings.labelWeight;
   context.font = `${weight} ${size}px ${font}`;
 
-  const maxWidth = 110;
+  const maxWidth = 150;
   let label = data.label;
   let width = context.measureText(label).width;
   if (width > maxWidth) {
@@ -328,8 +497,13 @@ export function drawNodeLabelBelow(context, data, settings) {
 
   // Sigma 캔버스 자체는 컨테이너 CSS 배경(다크 테마)과 무관하게 흰 배경으로
   // 그려진다 — 그 위에 검은 글씨를 유지한다.
-  context.fillStyle = "#0f172a";
+  // 흰 외곽선(halo)을 먼저 그려 엣지/다른 노드 위에서도 글자가 깨져 보이지 않게 한다.
   context.textAlign = "center";
   context.textBaseline = "top";
+  context.lineWidth = 3;
+  context.lineJoin = "round";
+  context.strokeStyle = "rgba(255, 255, 255, 0.9)";
+  context.strokeText(label, data.x, data.y + data.size + 4);
+  context.fillStyle = "#0f172a";
   context.fillText(label, data.x, data.y + data.size + 4);
 }

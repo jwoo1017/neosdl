@@ -376,7 +376,11 @@ def call_graph_paths(cur, scan_id: UUID, symbol_query: str, depth: int = 3, cand
         item = {"relation": relation, "target": label(t["symbol_key"]), "hops": r["hops"],
                 "symbol_key": r["symbol_key"], "qualified_name": m.get("qualified_name"),
                 "path": m.get("path"), "start_line": m.get("start_line"), "end_line": m.get("end_line"),
-                "chain": [label(k) for k in r["path"]]}
+                "chain": [label(k) for k in r["path"]],
+                # 흐름 탭 재생용 — chain 은 사람이 읽는 문자열이라 hop 별 위치를 따로 싣는다.
+                "chain_hops": [{"symbol_key": k, "qualified_name": meta.get(k, {}).get("qualified_name"),
+                                "path": meta.get(k, {}).get("path"), "line": meta.get(k, {}).get("start_line")}
+                               for k in r["path"]]}
         if relation == "callee" and r.get("call_line"):
             item["call_line"] = r["call_line"]
         results.append(item)

@@ -37,6 +37,9 @@ from app.github_app import (
     list_recent_commits,
 )
 from app.graph import make_graph_store
+from app.graphify_adapter import (
+    get_or_build_code_map, load_graph_rows, query_subgraph, short_label, shortest_path,
+)
 from app.language_colors import color_for
 from app.model_catalog import MODEL_CATALOG
 from app.repo_queries import list_commits, list_pull_requests, list_repo_branches, repo_github_info
@@ -507,7 +510,7 @@ def callers(scan_id: UUID, symbol_key: str, depth: int = 3,
 
 @api.get("/scans/{scan_id}/graph")
 def scan_graph(scan_id: UUID, include_unresolved: bool = True, domain: str | None = None,
-               view: Literal["all", "calls", "dependency"] = "all",
+               view: Literal["all", "calls", "dependency"] = "all", community: int | None = None,
                member: dict = Depends(get_current_member)):
     """Cytoscape.js elements 형태로 스캔 전체 그래프를 반환한다 (프론트엔드 시각화용).
 
@@ -526,6 +529,9 @@ def scan_graph(scan_id: UUID, include_unresolved: bool = True, domain: str | Non
     Dependency Graph), 'all'은 필터 없음(기존 동작). 노드(심볼) 목록은 view와
     무관하게 항상 스캔 전체를 반환한다 — 그래야 domain 필터와 조합했을 때도
     일관된 이웃 계산이 된다.
+
+    각 노드에 코드 지도 모듈(community)을 실어준다. `community` 를 주면 그 모듈
+    심볼 + 직접 연결된 바깥 이웃(boundary=true)만 남긴다 — 코드 지도 드릴다운용.
     """
     with tx() as cur:
         assert_scan_access(cur, scan_id, member["id"], "viewer")
@@ -581,6 +587,8 @@ def scan_graph(scan_id: UUID, include_unresolved: bool = True, domain: str | Non
             )
             change_counts = {r["path"]: r["change_count"] for r in cur.fetchall()}
 
+        membership = get_or_build_code_map(cur, scan_id)["membership"]
+
     nodes = {
         s["symbol_key"]: {"data": {
             "id": s["symbol_key"], "label": s["qualified_name"], "kind": s["kind"],
@@ -589,6 +597,7 @@ def scan_graph(scan_id: UUID, include_unresolved: bool = True, domain: str | Non
             "role": s["file_role"], "domain": s["file_domain"],
             "summary": s["own_summary"] or (s["file_summary"] if s["kind"] == "module" else None),
             "recent_changes": change_counts.get(s["path"], 0),
+            "community": membership.get(s["symbol_key"]),
         }}
         for s in symbols
     }
@@ -620,8 +629,90 @@ def scan_graph(scan_id: UUID, include_unresolved: bool = True, domain: str | Non
         nodes = {sid: n for sid, n in nodes.items() if sid in keep_ids}
         cy_edges = kept_edges
 
+    if community is not None:
+        member_ids = {sid for sid, n in nodes.items() if n["data"].get("community") == community}
+        kept_edges = [e for e in cy_edges
+                      if e["data"]["source"] in member_ids or e["data"]["target"] in member_ids]
+        keep_ids = set(member_ids)
+        for e in kept_edges:
+            keep_ids.add(e["data"]["source"])
+            keep_ids.add(e["data"]["target"])
+        nodes = {sid: n for sid, n in nodes.items() if sid in keep_ids}
+        for sid, n in nodes.items():
+            n["data"]["boundary"] = sid not in member_ids
+        cy_edges = kept_edges
+
     max_recent_changes = max((n["data"]["recent_changes"] for n in nodes.values()), default=0)
     return {"nodes": list(nodes.values()), "edges": cy_edges, "max_recent_changes": max_recent_changes}
+
+
+@api.get("/scans/{scan_id}/code-map")
+def scan_code_map(scan_id: UUID, member: dict = Depends(get_current_member)):
+    """코드 지도 — graphify 로 묶은 모듈(커뮤니티) + 모듈 간 연결 + 요약 리포트.
+
+    전체 심볼 헤어볼 대신 처음 보여줄 화면. 스캔당 한 번 계산해 code_map 에 캐시한다.
+    """
+    with tx() as cur:
+        assert_scan_access(cur, scan_id, member["id"], "viewer")
+        cm = get_or_build_code_map(cur, scan_id)
+    return {"engine": cm["engine"], "communities": cm["communities"], "links": cm["links"],
+            "report": cm["report"], "symbol_count": len(cm["membership"])}
+
+
+class SubgraphRequest(BaseModel):
+    symbol_keys: list[str] = Field(min_length=1, max_length=80)
+    depth: int = Field(1, ge=0, le=2)
+    max_nodes: int = Field(60, ge=1, le=200)
+
+
+@api.post("/scans/{scan_id}/subgraph")
+def scan_subgraph(scan_id: UUID, body: SubgraphRequest, member: dict = Depends(get_current_member)):
+    """근거 서브그래프 — AI 답변 근거 / 흐름 경로 심볼만 그래프로 (graphify query 방식).
+
+    시드(seed=true)는 강조하고, depth 만큼 이웃을 붙이되 허브는 건너뛴다.
+    depth=0 이면 시드끼리의 연결만 — 흐름 경로를 지도 위에 그대로 올릴 때 쓴다.
+    """
+    with tx() as cur:
+        assert_scan_access(cur, scan_id, member["id"], "viewer")
+        symbols, edges = load_graph_rows(cur, scan_id)
+        membership = get_or_build_code_map(cur, scan_id)["membership"]
+    kept = query_subgraph(symbols, edges, body.symbol_keys, depth=body.depth, max_nodes=body.max_nodes)
+    kept_set = set(kept)
+    seeds = set(body.symbol_keys)
+    by_key = {s["symbol_key"]: s for s in symbols}
+    nodes = [{"data": {
+        "id": k, "label": by_key[k]["qualified_name"], "kind": by_key[k]["kind"],
+        "path": by_key[k]["path"], "start_line": by_key[k]["start_line"],
+        "community": membership.get(k), "seed": k in seeds,
+    }} for k in kept]
+    seen_pairs: set[tuple[str, str]] = set()
+    cy_edges = []
+    for e in edges:
+        pair = (e["src_symbol_key"], e["dst_symbol_key"])
+        if pair[0] in kept_set and pair[1] in kept_set and pair[0] != pair[1] and pair not in seen_pairs:
+            seen_pairs.add(pair)
+            cy_edges.append({"data": {"id": f"e{len(cy_edges)}", "source": pair[0], "target": pair[1],
+                                      "edge_type": e["edge_type"], "resolved": True,
+                                      "confidence": e["confidence"]}})
+    return {"nodes": nodes, "edges": cy_edges, "missing": [k for k in body.symbol_keys if k not in by_key]}
+
+
+@api.get("/scans/{scan_id}/path")
+def scan_path(scan_id: UUID, src: str, dst: str, member: dict = Depends(get_current_member)):
+    """두 심볼 사이 최단 호출 경로(graphify `path A B` 방식) — 흐름 탭 재생용 hop 목록."""
+    with tx() as cur:
+        assert_scan_access(cur, scan_id, member["id"], "viewer")
+        symbols, edges = load_graph_rows(cur, scan_id)
+    keys = shortest_path(symbols, edges, src, dst)
+    if keys is None:
+        raise HTTPException(404, "no_path")
+    by_key = {s["symbol_key"]: s for s in symbols}
+    return {"kind": "call", "hops": [
+        {"symbol_key": k, "label": short_label(by_key[k]["qualified_name"]),
+         "qualified_name": by_key[k]["qualified_name"], "path": by_key[k]["path"],
+         "line": by_key[k]["start_line"]}
+        for k in keys
+    ]}
 
 
 @api.get("/scans/{scan_id}/graph/domains")

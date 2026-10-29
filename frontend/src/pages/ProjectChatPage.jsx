@@ -542,15 +542,19 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
   const { projectId: routeProjectId } = useParams();
   const projectId = propProjectId ?? routeProjectId;
   const { projects } = useProject();
-  const { openDetailTab } = useTabs();
+  const { openDetailTab, openFlowTab } = useTabs();
   const { me } = useMe(); // 내 질문(오른쪽)과 팀원 질문(왼쪽, 프로필) 구분
   const project = useMemo(
     () => (projects || []).find((p) => p.id === projectId) || null,
     [projects, projectId]
   );
   const openRiskDetail = useCallback(() => {
-    if (project) openDetailTab(project);
+    if (project) openDetailTab(project, "security/risk");
   }, [project, openDetailTab]);
+  // 답변 근거의 코드 흐름을 새 탭에서 애니메이션으로 재생한다.
+  const playFlow = useCallback((flow, scanId) => {
+    if (project) openFlowTab(project, flow, scanId);
+  }, [project, openFlowTab]);
   const [sessions, setSessions] = useState(null); // null = 불러오는 중 | ChatSession[]
   const [activeSessionId, setActiveSessionId] = useState(null); // 현재 보고 있는 세션
   const [messages, setMessages] = useState(null); // null = 불러오는 중
@@ -563,6 +567,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
   const [streaming, setStreaming] = useState({}); // client_msg_id -> 누적 텍스트(내가 보낸 것만)
   const [agentEvents, setAgentEvents] = useState({}); // client_msg_id -> AgentEvent[] (id로 upsert, 내가 보낸 것만)
   const [riskByCid, setRiskByCid] = useState({}); // client_msg_id -> Contextual Risk(§16, evaluate_query 결과)
+  const [flowsByCid, setFlowsByCid] = useState({}); // client_msg_id -> { flows, scanId } — 답변 근거의 코드 흐름
   const [pendingClientMsgId, setPendingClientMsgId] = useState(null); // 응답을 기다리는 중인 질문(최대 1개), 없으면 null
   const [liveShownMessageIds, setLiveShownMessageIds] = useState(() => new Set()); // 아직 실시간 블록으로 보여주는 중이라 히스토리 목록에서는 건너뛸 DB message id
   const [question, setQuestion] = useState("");
@@ -689,6 +694,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     setStreaming({});
     setAgentEvents({});
     setRiskByCid({});
+    setFlowsByCid({});
     setPendingClientMsgId(null);
     pendingSinceCountRef.current = 0;
     setLiveShownMessageIds(new Set());
@@ -742,6 +748,8 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
           }));
         } else if (data.type === "risk") {
           setRiskByCid((prev) => ({ ...prev, [data.client_msg_id]: data.risk }));
+        } else if (data.type === "flows") {
+          setFlowsByCid((prev) => ({ ...prev, [data.client_msg_id]: { flows: data.flows, scanId: data.scan_id } }));
         } else if (data.type === "pentest_suggestion") {
           // 보안 점검 의도 감지 — 블랙박스(외부 표적) 또는 레포 부팅 engagement 실행 제안.
           setPentestSuggestion({ kind: data.kind || "external", target: data.target, repo: data.repo, goal: data.goal });
@@ -839,6 +847,7 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
     setStreaming((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setAgentEvents((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setRiskByCid((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+    setFlowsByCid((prev) => (Object.keys(prev).length === 0 ? prev : {}));
     setLiveShownMessageIds((prev) => (prev.size === 0 ? prev : new Set()));
     // 지금 이 시점까지의 메시지 개수를 스냅샷으로 남긴다 — 위 확인 useEffect가
     // 이 개수를 넘어서는(=이 질문을 보낸 뒤에 새로 도착한) assistant 메시지만
@@ -958,6 +967,8 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
                 toolsUsed={m.tools_used}
                 risk={m.evidence?.risk}
                 onOpenRiskDetail={openRiskDetail}
+                flows={m.evidence?.flows}
+                onPlayFlow={(flow) => playFlow(flow, m.evidence?.scan_id)}
               />
             ))
           )}
@@ -969,6 +980,8 @@ export default function ProjectChatPage({ projectId: propProjectId }) {
               events={agentEvents[streamingCid] || []}
               risk={riskByCid[streamingCid]}
               onOpenRiskDetail={openRiskDetail}
+              flows={flowsByCid[streamingCid]?.flows}
+              onPlayFlow={(flow) => playFlow(flow, flowsByCid[streamingCid]?.scanId)}
               live
               streaming={isStreaming}
               pending={!streamingText && (agentEvents[streamingCid] || []).length === 0}

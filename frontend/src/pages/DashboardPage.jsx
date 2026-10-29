@@ -186,13 +186,14 @@ export default function DashboardPage() {
                       <td>
                         {state?.status === "done" && state.scanId && (
                           <Link className="btn-primary" to={`/projects/${activeProject.id}/detail/graph/${state.scanId}`}>
-                            그래프 보기
+                            코드 지도 열기
                           </Link>
                         )}
                         {state?.status === "error" && <span className="alert-error">{state.error}</span>}
                         {!state && (
-                          <Link className="btn-primary" to={`/projects/${activeProject.id}/detail/graph`}>
-                            최근 스캔 보기
+                          <Link className="btn-primary" to={`/projects/${activeProject.id}/detail/graph?repo=${repo.id}`}
+                                title="이 레포의 최근 스캔으로 함수·모듈 연결 관계를 그래프로 봅니다">
+                            코드 지도 열기
                           </Link>
                         )}
                       </td>

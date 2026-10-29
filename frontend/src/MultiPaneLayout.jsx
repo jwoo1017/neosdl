@@ -34,7 +34,10 @@ export default function MultiPaneLayout() {
     else openDetailTab(project);
   }, [location.pathname, projects, openChatTab, openDetailTab, navigate]);
 
-  const factory = useMemo(() => makePaneFactory({ updateNodeConfig }), [updateNodeConfig]);
+  const factory = useMemo(
+    () => makePaneFactory({ updateNodeConfig, openDetailTab }),
+    [updateNodeConfig, openDetailTab]
+  );
 
   // 드래그 중 <Layout>이 리렌더돼도 콜백 정체성이 유지되도록 안정화.
   const onRenderTabSet = useCallback(

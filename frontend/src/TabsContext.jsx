@@ -157,10 +157,19 @@ export function TabsProvider({ children }) {
   }, [model, persist]);
 
   // 같은 (component, projectId) 탭이 있으면 선택, 없으면 활성 tabset 에 추가.
+  // 이미 열린 탭에 navRequest(하위 경로 이동 요청)가 오면 config 에 실어 보내
+  // 패널이 자기 MemoryRouter 안에서 이동하게 한다.
   const addOrSelectTab = useCallback(
     (component, name, config) => {
       const existing = findTab(model, component, config.projectId);
       if (existing) {
+        if (config.navRequest) {
+          model.doAction(
+            Actions.updateNodeAttributes(existing.getId(), {
+              config: { ...(existing.getConfig() || {}), navRequest: config.navRequest },
+            })
+          );
+        }
         model.doAction(Actions.selectTab(existing.getId()));
       } else {
         const target = model.getActiveTabset()?.getId() || firstTabsetId(model);
@@ -181,19 +190,45 @@ export function TabsProvider({ children }) {
   );
 
   const openPane = useCallback(
-    (component, project) => {
+    (component, project, extra = {}) => {
       if (!project?.id) return;
       const kindLabel = component === "chat" ? "채팅" : "상세";
       addOrSelectTab(component, `${kindLabel} · ${project.name}`, {
         projectId: project.id,
         projectName: project.name,
+        ...extra,
       });
     },
     [addOrSelectTab]
   );
 
   const openChatTab = useCallback((project) => openPane("chat", project), [openPane]);
-  const openDetailTab = useCallback((project) => openPane("detail", project), [openPane]);
+  // subPath: 상세 하위 경로("graph", "security/risk" 등). 주면 그 화면으로 바로 연다.
+  const openDetailTab = useCallback(
+    (project, subPath) => {
+      if (!subPath || !project?.id) return openPane("detail", project);
+      const path = `/projects/${project.id}/detail/${subPath.replace(/^\/+/, "")}`;
+      return openPane("detail", project, { detailPath: path, navRequest: { path, nonce: Date.now() } });
+    },
+    [openPane]
+  );
+  // 코드 흐름 재생 탭 — 프로젝트당 하나를 재사용하고, 새 흐름이 오면 내용·제목만 바꾼다.
+  const openFlowTab = useCallback(
+    (project, flow, scanId) => {
+      if (!project?.id || !flow) return;
+      const name = `흐름 · ${flow.hops?.[flow.hops.length - 1]?.label || project.name}`;
+      const config = { projectId: project.id, projectName: project.name, flow, scanId, flowNonce: Date.now() };
+      const existing = findTab(model, "flow", project.id);
+      if (existing) {
+        model.doAction(Actions.updateNodeAttributes(existing.getId(), { name, config }));
+        model.doAction(Actions.selectTab(existing.getId()));
+        navigate("/panes");
+        return;
+      }
+      addOrSelectTab("flow", name, config);
+    },
+    [model, addOrSelectTab, navigate]
+  );
   // 프로젝트와 무관한 NeoSDL 시작 페이지(인사말 + 첫 단계 안내) — 한 개만 연다.
   const openWelcomeTab = useCallback(() => addOrSelectTab("welcome", "NeoSDL 시작하기", {}), [addOrSelectTab]);
 
@@ -226,11 +261,12 @@ export function TabsProvider({ children }) {
       hasTabs: tabCount > 0,
       openChatTab,
       openDetailTab,
+      openFlowTab,
       openWelcomeTab,
       updateNodeConfig,
       resetLayout,
     }),
-    [model, tabCount, openChatTab, openDetailTab, openWelcomeTab, updateNodeConfig, resetLayout]
+    [model, tabCount, openChatTab, openDetailTab, openFlowTab, openWelcomeTab, updateNodeConfig, resetLayout]
   );
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;

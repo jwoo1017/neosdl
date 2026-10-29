@@ -88,3 +88,58 @@ export const InviteLinkIcon = (p) => (
     <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" />
   </Svg>
 );
+
+// ---- 팀스페이스 공개 범위
+// 공개 — 지구본
+export const GlobeIcon = (p) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5c-2.4-2.3-3.6-5.1-3.6-8.5S9.6 5.8 12 3.5z" />
+  </Svg>
+);
+
+// 참가 제한 — 열쇠구멍 있는 문(보이지만 초대로만 들어온다)
+export const DoorKeyIcon = (p) => (
+  <Svg {...p}>
+    <path d="M6 20.5V5a1.5 1.5 0 0 1 1.5-1.5h9A1.5 1.5 0 0 1 18 5v15.5M4 20.5h16" />
+    <circle cx="12" cy="11" r="1.6" />
+    <path d="M12 12.6v2.6" />
+  </Svg>
+);
+
+// 비공개 — 가려진 눈
+export const EyeOffIcon = (p) => (
+  <Svg {...p}>
+    <path d="M3 12s3.2-6 9-6c1.6 0 3 .4 4.2 1M21 12s-3.2 6-9 6c-1.6 0-3-.4-4.2-1" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    <path d="M4 20L20 4" />
+  </Svg>
+);
+
+// ---- 직무
+// PM — 체크리스트 보드
+export const PmIcon = (p) => (
+  <Svg {...p}>
+    <rect x="5" y="4.5" width="14" height="16" rx="2" />
+    <path d="M9 3.5h6v2.5H9z" />
+    <path d="M8.5 11l1.4 1.4 2.4-2.6M8.5 16l1.4 1.4 2.4-2.6M14 11.2h2M14 16.2h2" />
+  </Svg>
+);
+
+// 프론트엔드 — 브라우저 창
+export const FrontendIcon = (p) => (
+  <Svg {...p}>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+    <path d="M3.5 8.5h17" />
+    <path d="M10 12.5l-2 2 2 2M14 12.5l2 2-2 2" />
+  </Svg>
+);
+
+// 백엔드 — 서버 랙
+export const BackendIcon = (p) => (
+  <Svg {...p}>
+    <rect x="4" y="4" width="16" height="7" rx="1.5" />
+    <rect x="4" y="13" width="16" height="7" rx="1.5" />
+    <path d="M7.5 7.5h.01M7.5 16.5h.01M11 7.5h5M11 16.5h5" />
+  </Svg>
+);

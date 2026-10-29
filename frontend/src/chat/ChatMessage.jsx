@@ -4,6 +4,7 @@ import AiAvatarIcon from "../icons/AiAvatarIcon";
 import { TOOL_LABELS } from "../toolLabels";
 import { useLanguage } from "../i18n/LanguageContext";
 import EvidencePanel from "./EvidencePanel";
+import FlowCards from "./FlowCard";
 import MarkdownAnswer from "./MarkdownAnswer";
 
 function formatTime(iso, lang) {
@@ -19,7 +20,7 @@ function formatTime(iso, lang) {
 //  - 작성자 기록이 없는 예전 질문(sql/029 이전, author=null)은 이전처럼 오른쪽 말풍선
 // 사용자 입력은 절대 마크다운을 태우지 않는다. 진행 타임라인은 기존 컴포넌트 재사용.
 export default function ChatMessage({
-  role, content, events, toolsUsed, live, streaming, pending, risk, onOpenRiskDetail,
+  role, content, events, toolsUsed, live, streaming, pending, risk, onOpenRiskDetail, flows, onPlayFlow,
   author, mine, createdAt,
 }) {
   const hasEvents = events && events.length > 0;
@@ -80,6 +81,7 @@ export default function ChatMessage({
           </div>
         ) : null}
 
+        {flows && !pending && !streaming && <FlowCards flows={flows} onPlay={onPlayFlow} />}
         {risk && !pending && <EvidencePanel risk={risk} onOpenDetail={onOpenRiskDetail} />}
       </div>
     </div>

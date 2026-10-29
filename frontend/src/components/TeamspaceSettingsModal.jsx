@@ -16,10 +16,10 @@ import { assignableRoles, canManageMember, describeSpaceError, isSpaceAdmin, SPA
 import { removeRecentProjectsByTeamspace } from "../recentProjects";
 import Avatar from "./Avatar";
 import Modal from "./Modal";
+import { ChoiceCards, Segmented } from "./Segmented";
+import { DISCIPLINE_LABEL, DISCIPLINE_OPTIONS, roleOptions, VISIBILITY_OPTIONS } from "./spaceOptions";
 import TeamspaceInviteList from "./TeamspaceInviteList";
-
-const VISIBILITY_LABEL = { open: "공개", closed: "참가 제한", private: "비공개" };
-const DISCIPLINE_LABEL = { pm: "PM", frontend: "프론트엔드", backend: "백엔드" };
+import { CopyIcon } from "../icons/SpaceIcons";
 
 export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
   const { reload: reloadTeamspaces } = useTeamspace();
@@ -36,7 +36,7 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
   const [inviteEmail, setInviteEmail] = useState("");
   const [lastInvite, setLastInvite] = useState(null);
   const [inviteListVersion, setInviteListVersion] = useState(0);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const load = () => {
     fetchTeamspace(teamspaceId)
@@ -128,6 +128,13 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
   };
 
   const doDeleteTeamspace = async () => {
+    const ok = await dialog.confirm({
+      title: "팀스페이스 삭제",
+      message: `'${teamspace.name}' 팀스페이스를 삭제할까요?\n소속 프로젝트도 더 이상 보이지 않게 되고, 되돌릴 수 없습니다(감사 로그는 보존).`,
+      confirmLabel: "삭제",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteTeamspace(teamspaceId);
       removeRecentProjectsByTeamspace(teamspaceId);
@@ -138,174 +145,216 @@ export default function TeamspaceSettingsModal({ teamspaceId, onClose }) {
     }
   };
 
+  const copyInvite = async () => {
+    try {
+      await navigator.clipboard.writeText(lastInvite.invite_url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 클립보드 권한 없음 — 링크는 화면에 그대로 보인다
+    }
+  };
+
   if (!teamspace) {
     return (
       <Modal title="팀스페이스 관리" onClose={onClose} wide>
-        {error ? <div className="alert-error">{error}</div> : "불러오는 중..."}
+        {error ? <div className="alert-error">{error}</div> : <p className="ws-loading">불러오는 중...</p>}
       </Modal>
     );
   }
 
   const isLastOwner = isOwner && teamspace.members.filter((m) => m.role === "owner").length <= 1;
+  const infoDirty = nameDraft.trim() !== teamspace.name
+    || descriptionDraft.trim() !== (teamspace.description || "")
+    || visibilityDraft !== teamspace.visibility;
+  const visibility = VISIBILITY_OPTIONS.find((o) => o.value === teamspace.visibility);
+  const VisibilityIcon = visibility?.Icon;
 
   return (
-    <Modal title={`팀스페이스 관리 · ${teamspace.name}`} onClose={onClose} wide>
-      {error && <div className="alert-error">{error}</div>}
+    <Modal title="팀스페이스 관리" onClose={onClose} wide>
+      {error && <div className="alert-error ws-error">{error}</div>}
 
-      <section className="dashboard-section">
-        <h2>팀스페이스 정보</h2>
-        {isAdmin ? (
-          <form className="auth-form" onSubmit={saveInfo}>
-            <input value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} placeholder="이름" />
-            <textarea
-              value={descriptionDraft}
-              onChange={(e) => setDescriptionDraft(e.target.value)}
-              placeholder="설명"
-              rows={2}
-            />
-            <select value={visibilityDraft} onChange={(e) => setVisibilityDraft(e.target.value)}>
-              <option value="open">공개 — 워크스페이스 멤버 누구나 보고 가입 가능</option>
-              <option value="closed">참가 제한 — 누구나 보이지만 가입은 초대로만</option>
-              <option value="private">비공개 — 멤버에게만 표시</option>
-            </select>
-            <button className="btn-primary auth-submit" type="submit">
-              저장
-            </button>
-          </form>
-        ) : (
-          <>
-            <p className="muted">{teamspace.name}</p>
-            {teamspace.description && <p className="muted">{teamspace.description}</p>}
-            <span className="badge">{VISIBILITY_LABEL[teamspace.visibility]}</span>
-          </>
-        )}
-      </section>
-
-      <section className="dashboard-section">
-        <h2>멤버</h2>
-        <div className="table-scroll">
-          <table className="repo-table">
-            <thead>
-              <tr>
-                <th>계정</th>
-                <th>역할</th>
-                <th>직무</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {teamspace.members.map((m) => {
-                const isMe = m.member_id === me?.id;
-                const manageable = !isMe && canManageMember(myRole, m.role);
-                return (
-                <tr key={m.member_id}>
-                  <td>
-                    <span className="member-cell">
-                      <Avatar profile={{ id: m.member_id, nickname: m.nickname, name: m.name, avatar_url: m.avatar_url }}
-                              size={26} role={m.role} />
-                      <span className="member-cell-names">
-                        <span>{m.nickname} {isMe && <span className="muted">(나)</span>} {m.is_guest && <span className="guest-badge" title="회사 도메인 밖 계정 — 초대받은 공간만 이용">게스트</span>}</span>
-                        {m.name && m.name !== m.nickname && <span className="muted">{m.name}</span>}
-                      </span>
-                    </span>
-                  </td>
-                  <td>
-                    {manageable ? (
-                      <select value={m.role} onChange={(e) => changeMemberRole(m.member_id, e.target.value)}>
-                        {assignableRoles(myRole).map((r) => (
-                          <option key={r} value={r}>{SPACE_ROLE_LABEL[r]}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      SPACE_ROLE_LABEL[m.role] || m.role
-                    )}
-                  </td>
-                  <td>
-                    {isAdmin ? (
-                      <select
-                        value={m.discipline || ""}
-                        onChange={(e) => changeMemberDiscipline(m.member_id, e.target.value)}
-                      >
-                        <option value="">미지정</option>
-                        <option value="pm">PM</option>
-                        <option value="frontend">프론트엔드</option>
-                        <option value="backend">백엔드</option>
-                      </select>
-                    ) : (
-                      m.discipline ? DISCIPLINE_LABEL[m.discipline] : "미지정"
-                    )}
-                  </td>
-                  <td>
-                    {isMe ? (
-                      <button
-                        onClick={doLeave}
-                        disabled={isLastOwner}
-                        title={isLastOwner ? "마지막 소유자는 나갈 수 없습니다 — 다른 멤버를 소유자로 지정하거나 팀스페이스를 삭제하세요" : undefined}
-                      >
-                        나가기
-                      </button>
-                    ) : (
-                      manageable && <button onClick={() => doRemoveMember(m)}>제거</button>
-                    )}
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      <div className="ws-row">
+        <div className="ws-row-label">
+          <h3>기본 정보</h3>
+          <p>이름과 설명은 사이드바와 초대 화면에 보입니다.</p>
         </div>
-      </section>
+        <div className="ws-row-control">
+          {isAdmin ? (
+            <>
+              <input className="ws-input" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)}
+                     placeholder="팀스페이스 이름" aria-label="팀스페이스 이름" />
+              <textarea className="ws-input ts-desc" value={descriptionDraft} rows={2}
+                        onChange={(e) => setDescriptionDraft(e.target.value)}
+                        placeholder="무엇을 하는 팀인지 한 줄로 (선택)" aria-label="설명" />
+            </>
+          ) : (
+            <div className="ts-static">
+              <span className="ws-static">{teamspace.name}</span>
+              {teamspace.description && <span className="ts-static-desc">{teamspace.description}</span>}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="ws-row">
+        <div className="ws-row-label">
+          <h3>공개 범위</h3>
+          <p>워크스페이스 안에서 이 팀스페이스가 누구에게 보이는지 정합니다.</p>
+        </div>
+        <div className="ws-row-control">
+          {isAdmin ? (
+            <>
+              <ChoiceCards ariaLabel="공개 범위" options={VISIBILITY_OPTIONS}
+                           value={visibilityDraft} onChange={setVisibilityDraft} />
+              <div className="ts-save-bar">
+                {infoDirty && <span className="ts-dirty">저장하지 않은 변경이 있습니다</span>}
+                <button type="button" className="mp-btn mp-btn-primary" disabled={!infoDirty || !nameDraft.trim()}
+                        onClick={saveInfo}>
+                  저장
+                </button>
+              </div>
+            </>
+          ) : (
+            visibility && (
+              <div className="ts-visibility-static">
+                <span className="ts-visibility-chip"><VisibilityIcon size={14} /> {visibility.title}</span>
+                <span className="ts-static-desc">{visibility.desc}</span>
+              </div>
+            )
+          )}
+        </div>
+      </div>
+
+      <div className="ws-section">
+        <div className="ws-section-head">
+          <h3>멤버 <span className="ws-count">{teamspace.members.length}</span></h3>
+          {isAdmin && <p>직무는 선택된 것을 한 번 더 누르면 해제됩니다.</p>}
+        </div>
+        <ul className="ws-members">
+          {teamspace.members.map((m) => {
+            const isMe = m.member_id === me?.id;
+            const manageable = !isMe && canManageMember(myRole, m.role);
+            return (
+              <li key={m.member_id} className="ts-member">
+                <div className="ts-member-who">
+                  <Avatar profile={{ id: m.member_id, nickname: m.nickname, name: m.name, avatar_url: m.avatar_url }}
+                          size={28} role={m.role} />
+                  <div className="ws-member-names">
+                    <span className="ws-member-nick">
+                      {m.nickname}
+                      {isMe && <span className="ws-chip">나</span>}
+                      {m.is_guest && <span className="ws-chip ws-chip-guest">게스트</span>}
+                    </span>
+                    {m.name && m.name !== m.nickname && <span className="ws-member-name">{m.name}</span>}
+                  </div>
+                </div>
+                <div className="ts-member-controls">
+                  {manageable ? (
+                    <Segmented size="sm" ariaLabel={`${m.nickname} 역할`} value={m.role}
+                               options={roleOptions(assignableRoles(myRole))}
+                               onChange={(r) => changeMemberRole(m.member_id, r)} />
+                  ) : (
+                    <span className="ts-role-chip">{SPACE_ROLE_LABEL[m.role] || m.role}</span>
+                  )}
+                  {isAdmin ? (
+                    <Segmented size="sm" allowDeselect ariaLabel={`${m.nickname} 직무`} value={m.discipline || ""}
+                               options={DISCIPLINE_OPTIONS}
+                               onChange={(d) => changeMemberDiscipline(m.member_id, d)} />
+                  ) : (
+                    <span className="ts-role-chip is-faint">
+                      {m.discipline ? DISCIPLINE_LABEL[m.discipline] : "직무 미지정"}
+                    </span>
+                  )}
+                </div>
+                <div className="ws-member-action">
+                  {isMe ? (
+                    isLastOwner ? (
+                      <span className="ws-note">마지막 소유자</span>
+                    ) : (
+                      <button type="button" className="ws-text-btn" onClick={doLeave}>나가기</button>
+                    )
+                  ) : (
+                    manageable && (
+                      <button type="button" className="ws-text-btn ws-text-btn-danger" onClick={() => doRemoveMember(m)}>
+                        제거
+                      </button>
+                    )
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        {isLastOwner && (
+          <p className="ts-footnote">
+            마지막 소유자는 나갈 수 없습니다. 다른 멤버를 소유자로 지정하거나 팀스페이스를 삭제하세요.
+          </p>
+        )}
+      </div>
 
       {isAdmin && (
-        <section className="dashboard-section">
-          <h2>멤버 초대</h2>
-          <form className="inline-form" onSubmit={submitInvite}>
-            <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
-              <option value="admin">{SPACE_ROLE_LABEL.admin}</option>
-              <option value="member">{SPACE_ROLE_LABEL.member}</option>
-            </select>
-            <select value={inviteDiscipline} onChange={(e) => setInviteDiscipline(e.target.value)}>
-              <option value="">직무 미지정</option>
-              <option value="pm">PM</option>
-              <option value="frontend">프론트엔드</option>
-              <option value="backend">백엔드</option>
-            </select>
-            <input
-              placeholder="이메일 (선택, 비우면 링크 소지자 누구나)"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-            />
-            <button type="submit">초대 링크 생성</button>
-          </form>
-          {lastInvite && (
-            <p className="muted invite-url">
-              {lastInvite.target_email
-                ? lastInvite.email_sent
-                  ? "메일을 발송했습니다: "
-                  : "메일 발송 실패 — 아래 링크를 직접 전달하세요: "
-                : "생성됨: "}
-              <code>{lastInvite.invite_url}</code>
-            </p>
-          )}
-          <TeamspaceInviteList teamspaceId={teamspaceId} version={inviteListVersion} />
-        </section>
+        <div className="ws-row">
+          <div className="ws-row-label">
+            <h3>초대</h3>
+            <p>이메일을 비워 두면 링크를 가진 누구나 들어올 수 있습니다.</p>
+          </div>
+          <div className="ws-row-control">
+            <form className="ts-invite-form" onSubmit={submitInvite}>
+              <div className="ts-invite-pickers">
+                <div className="ts-field">
+                  <span className="ts-field-label">역할</span>
+                  <Segmented ariaLabel="초대 역할" value={inviteRole} onChange={setInviteRole}
+                             options={roleOptions(["member", "admin"])} />
+                </div>
+                <div className="ts-field">
+                  <span className="ts-field-label">직무 <em>선택</em></span>
+                  <Segmented allowDeselect ariaLabel="초대 직무" value={inviteDiscipline}
+                             onChange={setInviteDiscipline} options={DISCIPLINE_OPTIONS} />
+                </div>
+              </div>
+              <div className="ws-inline">
+                <input className="ws-input" type="email" placeholder="name@company.com"
+                       value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} aria-label="초대 이메일" />
+                <button type="submit" className="mp-btn mp-btn-primary">
+                  {inviteEmail.trim() ? "초대 보내기" : "링크 만들기"}
+                </button>
+              </div>
+            </form>
+            {lastInvite && (
+              <div className="ws-invite-result">
+                <span className="ws-invite-result-label">
+                  {lastInvite.target_email
+                    ? lastInvite.email_sent
+                      ? `${lastInvite.target_email} 에게 메일을 보냈습니다.`
+                      : "메일을 보내지 못했습니다. 아래 링크를 직접 전달하세요."
+                    : "초대 링크가 만들어졌습니다."}
+                </span>
+                <div className="ws-invite-url">
+                  <code>{lastInvite.invite_url}</code>
+                  <button type="button" className="ws-text-btn" onClick={copyInvite}>
+                    <CopyIcon size={13} /> {copied ? "복사됨" : "복사"}
+                  </button>
+                </div>
+              </div>
+            )}
+            <TeamspaceInviteList teamspaceId={teamspaceId} version={inviteListVersion} />
+          </div>
+        </div>
       )}
 
       {isOwner && (
-        <section className="dashboard-section danger-zone">
-          <h2>팀스페이스 삭제</h2>
-          <p className="muted">
-            팀스페이스를 삭제하면 소속 프로젝트도 함께 더 이상 보이지 않게 됩니다(감사 로그는 보존). 되돌릴 수 없습니다.
-          </p>
-          {confirmDelete ? (
-            <div className="inline-form">
-              <button className="btn-danger" onClick={doDeleteTeamspace}>정말 삭제합니다</button>
-              <button onClick={() => setConfirmDelete(false)}>취소</button>
-            </div>
-          ) : (
-            <button className="btn-danger" onClick={() => setConfirmDelete(true)}>팀스페이스 삭제</button>
-          )}
-        </section>
+        <div className="ws-row ws-row-danger">
+          <div className="ws-row-label">
+            <h3>팀스페이스 삭제</h3>
+            <p>소속 프로젝트도 함께 보이지 않게 됩니다. 감사 로그는 남고, 되돌릴 수 없습니다.</p>
+          </div>
+          <div className="ws-row-control ws-row-control-end">
+            <button type="button" className="mp-btn mp-btn-ghost mp-btn-danger-text" onClick={doDeleteTeamspace}>
+              삭제
+            </button>
+          </div>
+        </div>
       )}
     </Modal>
   );

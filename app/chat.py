@@ -38,6 +38,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app import ai_providers, analysis, chat_bus, chat_pentest, observability, orchestrator, profiles, toolbox
 from app.agent_events import AgentEvent, mark_done, new_event
+from app.code_flow import flows_from_evidence
 from app.auth import (
     assert_project_role, get_current_member, get_current_member_ws, watch_ws_session, ws_origin_allowed,
 )
@@ -567,10 +568,16 @@ async def _handle_question(session_id: str, project_id: str, question: str, clie
             # 이 답에 쓰인 코드의 Exposure 경계(§11, §16). 스트리밍 연결에만 로컬 전달 —
             # 완성된 assistant 메시지의 evidence 에 함께 저장되므로 히스토리에서도 복원된다.
             await queue.put({"type": "risk", "client_msg_id": client_msg_id, "risk": risk})
+        # 근거에 호출/오염 경로가 있으면 "흐름 카드"로 — 흐름 탭에서 애니메이션으로 재생한다.
+        flows = flows_from_evidence(evidence)
+        if flows:
+            await queue.put({"type": "flows", "client_msg_id": client_msg_id,
+                             "flows": flows, "scan_id": str(ctx["scan_id"])})
         # (점검 제안 라우팅은 파이프라인 이전에서 처리됨 — #1)
         await run_in_threadpool(_insert_assistant_message, session_id, project_id, answer,
                                  {"tool_results": evidence, "agent_events": collected_events,
-                                  "risk": risk}, tools_used)
+                                  "risk": risk, "flows": flows,
+                                  "scan_id": str(ctx["scan_id"]) if ctx["scan_id"] else None}, tools_used)
     except Exception:
         log.exception("채팅 질문 처리 실패 — session_id=%s", session_id)
         await queue.put({"type": "error", "client_msg_id": client_msg_id,
