@@ -177,14 +177,27 @@ def preview_boot_recipe(project_id: UUID, member: dict = Depends(get_current_mem
     return {"recipe": recipe}
 
 
+class ApproveEngagementIn(BaseModel):
+    # 승인과 동시에 engagement 의 승인 모드를 올린다(예: "auto"). 자동 승인 토글을 점검 도중 켠
+    # 사용자가 남은 명령도 자동 진행하길 기대하는 흐름 — 이후 스텝은 permission 게이트를 자동 통과한다.
+    # 외부(비trusted) 표적은 auto 라도 destructive(sqlmap 등)는 여전히 멈춘다(인가 표면 보호).
+    permission_mode: str | None = None
+
+
 @router.post("/engagements/{engagement_id}/approve")
-def approve_engagement(engagement_id: UUID, member: dict = Depends(get_current_member)):
+def approve_engagement(engagement_id: UUID, body: ApproveEngagementIn | None = None,
+                       member: dict = Depends(get_current_member)):
     """awaiting_approval 로 멈춘 engagement 의 pending 명령을 승인하고 재개한다(HITL).
 
     승인된 명령을 params.approved_commands 에 쌓고 engagement.run 을 재enqueue → 그 명령은
     permission 게이트를 통과한다. 재실행 시 비파괴 정찰(nmap/nikto)은 다시 돌지만 멱등하다.
+    body.permission_mode 를 주면(자동 승인 전환) engagement.permission_mode 를 올려 남은 스텝을 자동화한다.
     """
     import json
+
+    new_mode = body.permission_mode if body else None
+    if new_mode is not None and new_mode not in _VALID_PERMISSION:
+        raise HTTPException(422, "invalid permission_mode")
 
     with tx() as cur:
         cur.execute("SELECT project_id, status, result, params FROM engagement WHERE id=%s FOR UPDATE",
@@ -203,6 +216,8 @@ def approve_engagement(engagement_id: UUID, member: dict = Depends(get_current_m
         if pending not in approved:
             approved.append(pending)
         params["approved_commands"] = approved
+        if new_mode:   # 자동 승인 전환 — 남은 스텝이 permission 게이트를 자동 통과(trusted 는 끝까지)
+            cur.execute("UPDATE engagement SET permission_mode=%s WHERE id=%s", (new_mode, str(engagement_id)))
         cur.execute("UPDATE engagement SET params=%s::jsonb, status='queued', error=NULL, updated_at=now() "
                     "WHERE id=%s", (json.dumps(params), str(engagement_id)))
         # 원래 dedupe_key(engagement:{id}) 와 겹치지 않게 재개마다 다른 키.

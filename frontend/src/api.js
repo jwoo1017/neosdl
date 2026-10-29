@@ -711,8 +711,12 @@ export async function fetchEngagement(engagementId) {
 }
 
 // 승인 대기(HITL) 중인 engagement 의 pending 명령을 승인하고 재개한다.
-export async function approveEngagement(engagementId) {
-  const res = await apiFetch(`/engagements/${engagementId}/approve`, { method: "POST" });
+export async function approveEngagement(engagementId, permissionMode) {
+  const res = await apiFetch(`/engagements/${engagementId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(permissionMode ? { permission_mode: permissionMode } : {}),
+  });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `approve failed: ${res.status}`);
   return res.json();
 }
