@@ -210,7 +210,7 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
     def persist(rec):
         _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
         engagement_bus.notify_now(eid, _step_event(_seq[0], rec))   # 라이브 스트리밍(채팅/EngageTab)
-        queue.heartbeat_current(cur)   # 깊은 점검(30스텝)은 10분 초과 — 스텝마다 리스 갱신(이중 실행 방지)
+        queue.heartbeat_current()   # 깊은 점검(30스텝)은 10분 초과 — 스텝마다 리스 갱신(이중 실행 방지)
         _seq[0] += 1
 
     try:
@@ -300,15 +300,20 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
 
         target = booted.web_ip
         subtask_id = _add_subtask(cur, task_id, eid, "pentester")
-        _seq = [0]
+        # 상태 영속/재개: 이전 실행의 agent_action 을 복원해 이미 실행한 명령은 다시 안 돈다(_run_blackbox
+        # 와 동형). 이게 없으면 승인(ask)마다 재부팅+전부 재실행하는 O(n²) 루프가 돈다. 표적은 매번
+        # 새로 부팅되지만 같은 앱이라 이미 점검한 엔드포인트를 다시 때릴 필요가 없다.
+        prior_history, prior_open_ports, prior_executed = _load_prior_state(cur, eid)
+        approved = (engagement.get("params") or {}).get("approved_commands") or []
+        resume_commands = [c for c in approved if c not in prior_executed]
+        _seq = [len(prior_history)]
 
         def persist(rec):
             _add_agent_action(cur, subtask_id, eid, _seq[0], rec)
             engagement_bus.notify_now(eid, _step_event(_seq[0], rec))   # 라이브 스트리밍(채팅/EngageTab)
-            queue.heartbeat_current(cur)   # 깊은 점검(30스텝)은 10분 초과 — 스텝마다 리스 갱신(이중 실행 방지)
+            queue.heartbeat_current()   # 깊은 점검(30스텝)은 10분 초과 — 스텝마다 리스 갱신(이중 실행 방지)
             _seq[0] += 1
 
-        approved = (engagement.get("params") or {}).get("approved_commands") or []
         # 코드그래프 유도: 스캔한 소스에서 실제 엔드포인트를 뽑아 도구를 겨눈다(홈 크롤 대신).
         endpoints = pentest_routes.enumerate_endpoints(cur, str(engagement.get("scan_id") or ""))
         if endpoints:
@@ -317,7 +322,9 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
         outcome = pentester.run_pentester(
             cur, target=target, llm_generate=llm_generate, toolbox_exec=state["exec"],
             permission_mode=permission_mode, effective_role="manager", actor=actor,
-            approved_commands=approved, trusted_target=True, on_step=persist, endpoints=endpoints,
+            approved_commands=approved, resume_commands=resume_commands,
+            prior_history=prior_history, prior_open_ports=prior_open_ports,
+            trusted_target=True, on_step=persist, endpoints=endpoints,
             max_steps=settings().pentest_max_steps, sqlmap_flags=settings().pentest_sqlmap_flags)
     finally:
         try:

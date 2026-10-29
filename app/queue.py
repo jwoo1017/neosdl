@@ -12,7 +12,7 @@ from typing import Any
 from psycopg import Cursor
 
 # 지금 이 워커 스레드가 처리 중인 잡 — main.py 가 핸들러 진입 전에 설정한다. 긴 핸들러(engagement)가
-# 깊숙한 콜백에서 job_id/worker 를 몰라도 heartbeat_current(cur) 한 줄로 리스를 갱신할 수 있게 한다.
+# 깊숙한 콜백에서 job_id/worker 를 몰라도 heartbeat_current() 한 줄로 리스를 갱신할 수 있게 한다.
 _current_job: contextvars.ContextVar[dict | None] = contextvars.ContextVar("current_job", default=None)
 
 
@@ -20,12 +20,22 @@ def set_current_job(job: dict | None, worker: str | None = None) -> None:
     _current_job.set({"id": job["id"], "worker": worker} if job else None)
 
 
-def heartbeat_current(cur: Cursor) -> bool:
-    """현재 잡의 리스를 갱신(없으면 no-op). 긴 루프의 스텝 사이에서 부른다. 가로채였으면 False."""
+def heartbeat_current() -> bool:
+    """현재 잡의 리스를 **자체 트랜잭션에서 커밋**해 갱신한다(없으면 no-op).
+
+    engagement 는 run 전체가 **하나의 긴 tx**에서 돌기에, 그 tx 의 커서로 heartbeat 하면 커밋 전까지
+    locked_at 갱신이 job_reap(별도 tx)에 안 보여 무효다 — 10분 뒤 회수돼 이중 실행된다. 그래서
+    notify_now 처럼 풀에서 다른 커넥션을 받아 즉시 커밋한다. 가로채였거나 실패면 best-effort(무시).
+    """
     ctx = _current_job.get()
     if not ctx:
         return True
-    return heartbeat(cur, ctx["id"], ctx["worker"])
+    from app.db import tx   # 지연 임포트 — 순환 의존 회피
+    try:
+        with tx() as cur:
+            return heartbeat(cur, ctx["id"], ctx["worker"])
+    except Exception:
+        return True
 
 
 def enqueue(
