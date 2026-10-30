@@ -217,16 +217,19 @@ def _maybe_pentest_suggestion(question: str, project_id, member_id: str, model: 
                                      project_id=str(project_id), purpose="pentest_intent")
 
     kw = chat_pentest.detect(question)
-    if kw and kw.get("target"):
-        det = kw                                   # 외부 표적이 명시되면 명확 — LLM 없이 외부 블랙박스.
+    if kw:
+        # 키워드가 확신한 경우(표적 명시·강한 실행어·레포힌트)는 **LLM 없이 확정**한다. detect 는 질문형을
+        # 걸러내고 애매한 약한 의도는 None 을 주므로, 비None 이면 정밀도가 높다 — 약한 로컬 LLM 이 명백한
+        # 실행 요청("보안 검사 해주세요")을 질문으로 오판하던 문제를 막는다.
+        det = kw
     elif model and chat_pentest.has_security_hint(question):
         try:
-            det = chat_pentest.classify(question, _gen)   # ★ LLM 이 1차로 의도 판정(repo/none)
+            det = chat_pentest.classify(question, _gen)   # 키워드가 놓친 애매한 경우만 LLM 1차 판정
         except Exception:
             log.debug("pentest 의도 LLM 분류 실패 — 키워드 폴백", exc_info=True)
-            det = kw                               # LLM 을 못 돌림 → 키워드 결과로 폴백
+            det = None                             # LLM 을 못 돌림 → 보수적으로 제안 안 함
     else:
-        det = kw                                   # 모델 없음/보안 신호 없음 → 키워드(대개 None)
+        det = None                                 # 모델 없음/보안 신호 없음 → 제안 안 함
     if not det:
         return None
     with tx() as cur:
