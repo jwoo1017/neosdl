@@ -2,6 +2,7 @@
 
 가입 자격
   - 회사 도메인(ALLOWED_SIGNUP_DOMAINS, 정확히 일치 — 하위 도메인 불허)이면 바로 가입.
+    도메인 밖이라도 ALLOWED_SIGNUP_EMAILS 에 적힌 개별 주소는 회사 계정으로 취급한다(시연용 등).
   - 그 외 주소는 그 주소로 온 **대기 중인 초대**(워크스페이스/팀스페이스/프로젝트)가 있을
     때만 가입(게스트). 링크 초대(target_email 없음)로는 외부인이 가입할 수 없다.
   - 게스트 여부는 컬럼 없이 이메일 도메인으로 계산한다 — 도메인 목록을 바꿔도 백필 불필요.
@@ -44,6 +45,11 @@ def allowed_domains() -> set[str]:
     return {d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()}
 
 
+def allowed_emails() -> set[str]:
+    raw = settings().allowed_signup_emails or ""
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
 def email_domain(email: str | None) -> str | None:
     if not email or "@" not in email:
         return None
@@ -51,6 +57,8 @@ def email_domain(email: str | None) -> str | None:
 
 
 def is_company_email(email: str | None) -> bool:
+    if email and email.strip().lower() in allowed_emails():
+        return True
     return email_domain(email) in allowed_domains()
 
 

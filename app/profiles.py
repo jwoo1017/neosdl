@@ -18,7 +18,7 @@ AVATAR_ROUTE = "/api/files/avatars/"
 # member 를 m 으로 조인한 쿼리에 그대로 끼워 넣는다.
 PROFILE_COLUMNS = """
     m.id AS member_id, m.nickname, m.name, m.avatar_source, m.avatar_key, m.avatar_updated_at,
-    split_part(lower(m.email), '@', 2) AS email_domain,
+    lower(m.email) AS email_lower,
     (SELECT ga.avatar_url FROM github_account ga
       WHERE ga.member_id = m.id AND ga.avatar_url IS NOT NULL
       ORDER BY ga.linked_at LIMIT 1) AS github_avatar_url
@@ -50,11 +50,10 @@ def public_profile(row: dict) -> dict:
 
 def _is_guest(row: dict) -> bool:
     """회사 도메인 밖 계정(게스트) — 멤버 목록에 배지로 표시(app/signup_policy.py)."""
-    domain = row.get("email_domain")
-    return signup_policy.is_guest(f"x@{domain}" if domain else None)
+    return signup_policy.is_guest(row.get("email_lower"))
 
 
-_INTERNAL_KEYS = ("avatar_source", "avatar_key", "avatar_updated_at", "github_avatar_url", "email_domain")
+_INTERNAL_KEYS = ("avatar_source", "avatar_key", "avatar_updated_at", "github_avatar_url", "email_lower")
 
 
 def with_profile(row: dict) -> dict:

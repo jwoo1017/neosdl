@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     # 이 도메인의 이메일은 바로 가입할 수 있다(정확히 일치, 하위 도메인 불허). 그 외 주소는
     # 그 주소로 온 초대가 있을 때만 게스트로 가입한다. 콤마로 구분.
     allowed_signup_domains: str = "aeonlab.kr,finble.io,zerokleek.com"
+    # 도메인 밖이지만 회사 계정으로 취급할 개별 주소(시연용 등). 콤마로 구분, 기본은 비어 있음.
+    allowed_signup_emails: str = ""
 
     # --- 팀 초대 링크 ---
     invite_ttl_days: int = 7

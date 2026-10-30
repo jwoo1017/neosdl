@@ -160,6 +160,15 @@ def test_domain_helpers():
     assert {"aeonlab.kr", "finble.io", "zerokleek.com"} <= signup_policy.allowed_domains()
 
 
+def test_allowed_individual_email(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings(), "allowed_signup_emails", " Demo@Gmail.com , ")
+    assert signup_policy.is_company_email("demo@gmail.com")
+    assert signup_policy.is_company_email("DEMO@GMAIL.COM")
+    assert not signup_policy.is_company_email("other@gmail.com")   # 도메인 전체가 열리면 안 된다
+    assert not signup_policy.is_guest("demo@gmail.com")
+
+
 # --------------------------------------------------------------------- 로그인 잠금
 
 @pytest.mark.integration
