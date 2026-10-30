@@ -5805,6 +5805,10 @@ textarea.eng-modal-input {
   background: var(--surface-3);
   color: var(--text);
 }
+.ui-popover-item.is-danger,
+.ui-popover-item.is-danger.is-cursor {
+  color: #f87171;
+}
 .ui-popover-hint {
   font-size: 0.72rem;
   color: var(--text-dim);

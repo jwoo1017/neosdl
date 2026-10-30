@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 // 버튼 옆에 뜨는 작은 동작 메뉴 — 모달 없이 바로 고른다.
 // 사이드바처럼 overflow 로 잘리는 컨테이너 안에서도 보이도록 position: fixed 로
 // anchor(DOMRect) 기준에 띄운다. 바깥 클릭·Escape·스크롤로 닫힌다.
-// items: [{ key, label, hint?, onSelect }]
+// items: [{ key, label, hint?, danger?, onSelect }]
 export default function PopoverMenu({ anchor, items, onClose, ariaLabel }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ top: anchor.bottom + 4, left: anchor.left });
@@ -61,7 +61,7 @@ export default function PopoverMenu({ anchor, items, onClose, ariaLabel }) {
         style={{ top: pos.top, left: pos.left }} onKeyDown={onKeyDown}>
       {items.map((item, i) => (
         <li key={item.key} role="menuitem"
-            className={`ui-popover-item${i === cursor ? " is-cursor" : ""}`}
+            className={`ui-popover-item${i === cursor ? " is-cursor" : ""}${item.danger ? " is-danger" : ""}`}
             onMouseEnter={() => setCursor(i)}
             onClick={() => pick(item)}>
           <span className="ui-popover-label">{item.label}</span>

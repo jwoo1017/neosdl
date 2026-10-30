@@ -232,6 +232,18 @@ export function TabsProvider({ children }) {
   // 프로젝트와 무관한 NeoSDL 시작 페이지(인사말 + 첫 단계 안내) — 한 개만 연다.
   const openWelcomeTab = useCallback(() => addOrSelectTab("welcome", "NeoSDL 시작하기", {}), [addOrSelectTab]);
 
+  // 삭제된 프로젝트의 탭(채팅·상세·흐름)을 모두 닫는다.
+  const closeProjectTabs = useCallback(
+    (projectId) => {
+      const ids = [];
+      model.visitNodes((n) => {
+        if (n.getType() === "tab" && (n.getConfig() || {}).projectId === projectId) ids.push(n.getId());
+      });
+      ids.forEach((id) => model.doAction(Actions.deleteTab(id)));
+    },
+    [model]
+  );
+
   // 패널이 자기 하위 경로를 노드 config에 되돌려 저장할 때 쓴다.
   const updateNodeConfig = useCallback(
     (nodeId, patch) => {
@@ -263,10 +275,12 @@ export function TabsProvider({ children }) {
       openDetailTab,
       openFlowTab,
       openWelcomeTab,
+      closeProjectTabs,
       updateNodeConfig,
       resetLayout,
     }),
-    [model, tabCount, openChatTab, openDetailTab, openFlowTab, openWelcomeTab, updateNodeConfig, resetLayout]
+    [model, tabCount, openChatTab, openDetailTab, openFlowTab, openWelcomeTab, closeProjectTabs, updateNodeConfig,
+     resetLayout]
   );
 
   return <TabsContext.Provider value={value}>{children}</TabsContext.Provider>;

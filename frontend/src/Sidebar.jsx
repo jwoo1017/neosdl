@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { fetchProjectStatuses, joinTeamspace, logout, moveProject } from "./api";
+import { deleteProject, fetchProjectStatuses, joinTeamspace, logout, moveProject } from "./api";
 import { useWorkspace } from "./WorkspaceContext";
 import { useTeamspace } from "./TeamspaceContext";
 import { useProject } from "./ProjectContext";
 import { useSidebar } from "./SidebarContext";
 import { useTabs } from "./TabsContext";
-import { getRecentProjects, pruneRecentProjectsByValidWorkspaces, pushRecentProject } from "./recentProjects";
+import {
+  getRecentProjects, pruneRecentProjectsByValidWorkspaces, pushRecentProject, removeRecentProject,
+} from "./recentProjects";
 import { PROJECT_DRAG_MIME } from "./dragTypes";
 import CreateWorkspaceModal from "./components/CreateWorkspaceModal";
 import CreateTeamspaceModal from "./components/CreateTeamspaceModal";
@@ -146,7 +148,7 @@ export default function Sidebar() {
   const { teamspaces, personalSpace, reload: reloadTeamspaces } = useTeamspace();
   const { projects, activeProjectId, setActiveProjectId, reload: reloadProjects } = useProject();
   const { collapsed, setCollapsed } = useSidebar();
-  const { openChatTab, openDetailTab, openWelcomeTab } = useTabs();
+  const { openChatTab, openDetailTab, openWelcomeTab, closeProjectTabs } = useTabs();
   const dialog = useDialog();
 
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
@@ -254,7 +256,33 @@ export default function Sidebar() {
     { key: "overview", label: "상세 보기", hint: "레포지토리 · 스캔 설정", onSelect: () => openProjectDetail(project, "overview") },
     { key: "graph", label: "코드 지도", hint: "함수·모듈 연결 관계 그래프", onSelect: () => openProjectDetail(project, "graph") },
     { key: "security", label: "보안 분석", hint: "스캔 결과 · 위험", onSelect: () => openProjectDetail(project, "security/scan") },
+    // 삭제는 프로젝트 owner 만 가능(app/projects.py delete_project) — 그 외엔 메뉴에 띄우지 않는다.
+    ...(project.role === "owner"
+      ? [{ key: "delete", label: "프로젝트 삭제", danger: true, onSelect: () => removeProject(project) }]
+      : []),
   ];
+
+  const removeProject = async (project) => {
+    if (!(await dialog.confirm({
+      title: "프로젝트 삭제",
+      message: `'${project.name}'을(를) 삭제합니다. 사이드바와 목록에서 사라지고 열린 탭도 닫힙니다. 계속할까요?`,
+      confirmLabel: "삭제",
+      danger: true,
+    }))) {
+      return;
+    }
+    setDragError(null);
+    try {
+      await deleteProject(project.id);
+      closeProjectTabs(project.id);
+      removeRecentProject(project.id);
+      setRecent(getRecentProjects());
+      await reloadProjects(); // 활성 프로젝트가 지워졌으면 reload 가 남은 것 중 하나로 바꾼다
+
+    } catch (err) {
+      setDragError(err.message);
+    }
+  };
 
   const openRecent = (item) => {
     if (item.workspaceId && item.workspaceId !== activeWorkspaceId) setActiveWorkspaceId(item.workspaceId);
