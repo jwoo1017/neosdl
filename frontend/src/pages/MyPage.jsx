@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   changePassword, confirmEmailChange, deleteAvatar, fetchGithubAccounts, githubLoginUrl, requestEmailChange,
-  setAvatarSource, unlinkGithubAccount, updateProfile, uploadAvatar, withdrawAccount,
+  requestPasswordChange, setAvatarSource, unlinkGithubAccount, updateProfile, uploadAvatar, withdrawAccount,
 } from "../api";
 import Avatar from "../components/Avatar";
 import Modal from "../components/Modal";
@@ -39,6 +39,7 @@ const ERRORS = {
   code_expired: "인증 코드가 만료되었습니다. 다시 요청하세요.",
   too_many_attempts: "입력 횟수를 초과했습니다. 다시 요청하세요.",
   too_many_requests: "요청이 너무 많습니다. 1시간 후 다시 시도하세요.",
+  no_email: "이 계정은 이메일이 없어 비밀번호를 설정할 수 없습니다. 먼저 이메일을 등록하세요.",
 };
 const KIND_LABEL = { workspace: "워크스페이스", teamspace: "팀스페이스", project: "프로젝트", installation: "GitHub App 설치" };
 const CONFIRM_TEXT = "탈퇴합니다";
@@ -344,19 +345,30 @@ function EmailRow() {
 }
 
 function PasswordRow() {
+  const { me } = useMe();
   const [open, setOpen] = useState(false);
-  const [current, setCurrent] = useState("");
+  const [step, setStep] = useState(1);        // 1: 코드 받기, 2: 코드 + 새 비밀번호
+  const [code, setCode] = useState("");
   const [next, setNext] = useState("");
   const [confirmNext, setConfirmNext] = useState("");
   const { busy, msg, setMsg, run } = useAction();
-  const { me } = useMe();
   const checks = passwordChecks(next, me?.email);
 
   const close = () => {
     setOpen(false);
-    setCurrent("");
+    setStep(1);
+    setCode("");
     setNext("");
     setConfirmNext("");
+  };
+  const request = async () => {
+    try {
+      await run(() => requestPasswordChange());
+      setStep(2);
+      setMsg({ type: "ok", text: `${me.email} 로 인증 코드를 보냈습니다. 10분 안에 입력하세요.` });
+    } catch {
+      /* useAction 이 표시 */
+    }
   };
   const submit = async (e) => {
     e.preventDefault();
@@ -365,7 +377,7 @@ function PasswordRow() {
       return;
     }
     try {
-      await run(() => changePassword(current, next), "비밀번호를 바꿨습니다. 다른 기기에서는 다시 로그인해야 합니다.");
+      await run(() => changePassword(code, next), "비밀번호를 바꿨습니다. 다른 기기에서는 다시 로그인해야 합니다.");
       close();
     } catch {
       /* useAction 이 표시 */
@@ -375,27 +387,50 @@ function PasswordRow() {
   return (
     <SettingRow
       label="비밀번호"
-      description="바꾸면 이 기기를 뺀 모든 기기에서 로그아웃됩니다"
+      description="이메일로 인증 코드를 받아 새 비밀번호를 설정합니다. 바꾸면 이 기기를 뺀 모든 기기에서 로그아웃됩니다"
       value={<span className="mp-value mp-value-mask">••••••••</span>}
       action={!open && <button type="button" className="mp-btn mp-btn-ghost" onClick={() => { setMsg(null); setOpen(true); }}>변경</button>}
       msg={msg}
     >
       {open && (
-        <form className="mp-inline-form" onSubmit={submit}>
-          <input type="password" placeholder="현재 비밀번호 (처음 설정이면 비워두세요)" value={current} autoFocus
-                 autoComplete="current-password" onChange={(e) => setCurrent(e.target.value)} />
-          <input type="password" placeholder="새 비밀번호" value={next} required
-                 autoComplete="new-password" onChange={(e) => setNext(e.target.value)} />
-          <input type="password" placeholder="새 비밀번호 확인" value={confirmNext} required
-                 autoComplete="new-password" onChange={(e) => setConfirmNext(e.target.value)} />
-          <PasswordChecklist checks={checks} />
-          <div className="mp-form-actions">
-            <button type="button" className="mp-btn mp-btn-secondary" onClick={close}>취소</button>
-            <button type="submit" className="mp-btn mp-btn-primary" disabled={busy || !checks.every((c) => c.ok)}>
-              비밀번호 변경
-            </button>
-          </div>
-        </form>
+        <div className="mp-steps">
+          <ol className="mp-stepper">
+            <li className={step === 1 ? "current" : "done"}>인증 코드 받기</li>
+            <li className={step === 2 ? "current" : ""}>새 비밀번호 설정</li>
+          </ol>
+          {step === 1 ? (
+            <div className="mp-inline-form">
+              <p className="mp-hint">
+                {me.email
+                  ? `${me.email} 로 6자리 인증 코드를 보냅니다.`
+                  : "이 계정은 이메일이 없어 비밀번호를 설정할 수 없습니다. 먼저 이메일을 등록하세요."}
+              </p>
+              <div className="mp-form-actions">
+                <button type="button" className="mp-btn mp-btn-secondary" onClick={close}>취소</button>
+                <button type="button" className="mp-btn mp-btn-primary" disabled={busy || !me.email} onClick={request}>
+                  인증 코드 받기
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form className="mp-inline-form" onSubmit={submit}>
+              <input inputMode="numeric" autoComplete="one-time-code" placeholder="6자리 인증 코드" maxLength={6} autoFocus
+                     value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} required />
+              <input type="password" placeholder="새 비밀번호" value={next} required
+                     autoComplete="new-password" onChange={(e) => setNext(e.target.value)} />
+              <input type="password" placeholder="새 비밀번호 확인" value={confirmNext} required
+                     autoComplete="new-password" onChange={(e) => setConfirmNext(e.target.value)} />
+              <PasswordChecklist checks={checks} />
+              <div className="mp-form-actions">
+                <button type="button" className="mp-btn mp-btn-secondary" onClick={() => { setMsg(null); setStep(1); }}>이전</button>
+                <button type="submit" className="mp-btn mp-btn-primary"
+                        disabled={busy || code.length !== 6 || !checks.every((c) => c.ok)}>
+                  비밀번호 변경
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
       )}
     </SettingRow>
   );

@@ -155,8 +155,10 @@ async function meCall(path, { method = "POST", body, form } = {}) {
 }
 
 export const updateProfile = (fields) => meCall("/me", { method: "PATCH", body: fields });
-export const changePassword = (currentPassword, newPassword) =>
-  meCall("/me/password", { body: { current_password: currentPassword || null, new_password: newPassword } });
+// 비밀번호 변경 — 1) 계정 이메일로 코드 받기 → 2) 코드 + 새 비밀번호로 변경
+export const requestPasswordChange = () => meCall("/me/password/request", { body: {} });
+export const changePassword = (code, newPassword) =>
+  meCall("/me/password", { body: { code: code.trim(), new_password: newPassword } });
 export const requestEmailChange = (newEmail, password) =>
   meCall("/me/email", { body: { new_email: newEmail, password: password || null } });
 export const confirmEmailChange = (code) => meCall("/me/email/verify", { body: { code } });

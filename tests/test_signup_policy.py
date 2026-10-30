@@ -233,7 +233,8 @@ def test_password_reset_flow(env):
 def test_password_change_uses_same_rules(env):
     c = env.client()
     env.signup(c)
-    r = c.post("/api/me/password", json={"current_password": PW, "new_password": "abcdefgh"})
+    # 새 비밀번호 규칙 검사는 코드 확인보다 먼저라, 약한 비밀번호면 코드와 무관하게 거부된다.
+    r = c.post("/api/me/password", json={"code": "000000", "new_password": "abcdefgh"})
     assert r.status_code == 400 and r.json()["detail"].startswith("weak_password:")
 
 

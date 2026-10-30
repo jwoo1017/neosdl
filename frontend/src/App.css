@@ -4597,11 +4597,17 @@ tr.risk-row:hover { background: var(--surface-2); }
   line-height: 1.5;
 }
 
-/* 이메일 변경 2단계 진행 표시 */
+/* 이메일·비밀번호 변경 2단계 진행 표시 */
 .mp-steps {
   display: flex;
   flex-direction: column;
   gap: 0.8rem;
+}
+.mp-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-dim);
 }
 .mp-stepper {
   display: flex;

@@ -198,18 +198,25 @@ def test_replacing_avatar_deletes_previous_file(env):
 # --------------------------------------------------------------------- 세션 무효화 / 비밀번호 / 이메일
 
 @pytest.mark.integration
-def test_password_change_logs_out_other_sessions(env):
+def test_password_change_by_email_code_logs_out_other_sessions(env):
     email = env.signup(env.client)
     other = env.new_client()
     assert other.post("/api/auth/login", json={"email": email, "password": PW}).status_code == 204
     assert other.get("/api/me").status_code == 200
 
-    r = env.client.post("/api/me/password", json={"current_password": "wrong", "new_password": "new-pw-1234"})
-    assert r.status_code == 403
-    r = env.client.post("/api/me/password", json={"current_password": PW, "new_password": "new-pw-1234"})
-    assert r.status_code == 204
+    # 1) 계정 이메일로 인증 코드 요청
+    assert env.client.post("/api/me/password/request").status_code == 202
+    code = env.sent[-1][1]
+    # 2) 틀린 코드는 거부(현재 비밀번호는 더 이상 요구하지 않는다)
+    assert env.client.post("/api/me/password", json={"code": "000000", "new_password": "new-pw-1234"}).status_code == 400
+    # 2) 맞는 코드 + 새 비밀번호 → 변경
+    r = env.client.post("/api/me/password", json={"code": code, "new_password": "new-pw-1234"})
+    assert r.status_code == 204, r.text
     assert env.client.get("/api/me").status_code == 200      # 지금 기기는 새 쿠키로 유지
     assert other.get("/api/me").status_code == 401           # 다른 기기는 끊김
+    # 새 비밀번호로 로그인되는지 확인
+    assert env.new_client().post("/api/auth/login",
+                                 json={"email": email, "password": "new-pw-1234"}).status_code == 204
 
 
 @pytest.mark.integration

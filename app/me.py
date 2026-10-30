@@ -32,9 +32,9 @@ class ProfileIn(BaseModel):
     nickname: str | None = Field(default=None, max_length=200)
 
 
-class PasswordIn(BaseModel):
-    current_password: str | None = None          # 비밀번호가 없는 GitHub 전용 계정의 최초 설정이면 생략
-    new_password: str = Field(max_length=200)   # 규칙은 app/signup_policy.validate_password
+class PasswordChangeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=12)   # 계정 이메일로 받은 6자리 인증 코드
+    new_password: str = Field(max_length=200)        # 규칙은 app/signup_policy.validate_password
 
 
 class EmailChangeIn(BaseModel):
@@ -86,18 +86,41 @@ def update_profile(body: ProfileIn, member: dict = Depends(get_current_member)):
     return resp
 
 
-@router.post("/me/password", status_code=204)
-def change_password(body: PasswordIn, member: dict = Depends(get_current_member)):
-    signup_policy.validate_password(body.new_password, member.get("email"))
+@router.post("/me/password/request", status_code=202)
+def request_password_change(member: dict = Depends(get_current_member)):
+    """비밀번호 변경 1단계 — 계정 이메일로 인증 코드를 보낸다(현재 비밀번호 대신 이메일 소유로 본인 확인).
+
+    이메일이 없는 계정(GitHub 전용)은 이 방식으로 비밀번호를 설정할 수 없다 → no_email.
+    쿨다운/시간당 한도(이메일 변경·찾기와 합산)는 email_verification 이 429 로 돌려준다.
+    """
     with tx() as cur:
-        _require_password(cur, member["id"], body.current_password)
-        cur.execute(
-            "UPDATE member SET password_hash=%s, token_version=token_version+1, updated_at=now() WHERE id=%s",
-            (hash_password(body.new_password), member["id"]),
-        )
-        audit.record(cur, actor=f"user:{member['nickname']}", action="member.password.change",
-                     subject={"member_id": member["id"]}, payload={})
-        session_member = _session_member(cur, member["id"], member["email_verified"])
+        cur.execute("SELECT email FROM member WHERE id=%s", (member["id"],))
+        if not cur.fetchone()["email"]:
+            raise HTTPException(400, "no_email")
+        return email_verification.issue_password_reset_code(cur, member["id"])
+
+
+@router.post("/me/password", status_code=204)
+def change_password(body: PasswordChangeIn, member: dict = Depends(get_current_member)):
+    """비밀번호 변경 2단계 — 이메일로 받은 코드가 맞으면 새 비밀번호로 바꾸고 다른 기기를 로그아웃한다.
+
+    코드 오입력 횟수는 커밋돼야 하므로(5회 제한 유지) 실패는 트랜잭션 밖에서 400 으로 바꾼다.
+    """
+    signup_policy.validate_password(body.new_password, member.get("email"))
+    session_member = None
+    with tx() as cur:
+        result = email_verification.verify_code(cur, member["id"], body.code, purpose="password_reset")
+        if "error" not in result:
+            cur.execute(
+                "UPDATE member SET password_hash=%s, token_version=token_version+1, "
+                "email_verified_at=coalesce(email_verified_at, now()), updated_at=now() WHERE id=%s",
+                (hash_password(body.new_password), member["id"]),
+            )
+            audit.record(cur, actor=f"user:{member['nickname']}", action="member.password.change",
+                         subject={"member_id": member["id"]}, payload={"via": "email_code"})
+            session_member = _session_member(cur, member["id"], True)   # 코드 수신 = 이메일 소유 확인
+    if "error" in result:
+        raise HTTPException(400, result["error"])
     resp = Response(status_code=204)
     _set_session_cookie(resp, session_member)     # 다른 기기는 tv 불일치로 401, 이 기기만 유지
     return resp
