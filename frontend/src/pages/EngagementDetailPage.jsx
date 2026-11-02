@@ -6,6 +6,7 @@ import { createBackoff, isTerminalClose } from "../wsReconnect";
 import MarkdownAnswer from "../chat/MarkdownAnswer";
 import EngageTimeline from "../components/EngageTimeline";
 import EngageLiveStatus from "../components/EngageLiveStatus";
+import BlackboxFinding, { VerdictNotes } from "../components/BlackboxFinding";
 import { IconBoot, IconScan, IconFinding, IconEndpoint, IconReport, IconPause, IconLock } from "../components/EngageIcons";
 
 // 섹션 제목 + 아이콘.
@@ -235,6 +236,15 @@ export default function EngagementDetailPage() {
   );
 }
 
+// 엔드포인트 sink 추적 요약 — 위험 n / 안전 / 없음 / 추적 불가.
+function sinkSummary(prof) {
+  if (!prof?.resolved) return "추적 불가";
+  const all = prof.sinks || [], bad = prof.dangerous || [];
+  if (!all.length) return "없음";
+  if (bad.length) return `위험 ${bad.length} · ${bad.map((x) => `${x.file.split("/").pop()}:${x.line}`).join(", ")}`;
+  return `안전 ${all.length}`;
+}
+
 function Stat({ label, value }) {
   return (
     <div>
@@ -244,8 +254,6 @@ function Stat({ label, value }) {
   );
 }
 
-const SEV_BADGE = { critical: "badge-risk-critical", high: "badge-risk-high",
-  medium: "badge-risk-medium", low: "badge-risk-low" };
 
 const TERMINAL_STATUS = ["succeeded", "failed", "cancelled"];
 
@@ -325,23 +333,10 @@ function BlackboxDetail({ eng, report, connected, liveSteps = [], lastActivityAt
       {(r.findings || []).length > 0 && (
         <div className="dashboard-section" style={{ marginTop: "1.2rem" }}>
           <SectionHead icon={IconFinding}>발견 ({r.findings.length})</SectionHead>
-          <div className="table-scroll">
-          <table className="repo-table">
-            <thead><tr><th>심각도</th><th>제목</th><th>근거</th><th>소스 위치</th></tr></thead>
-            <tbody>
-              {r.findings.map((f, i) => (
-                <tr key={i}>
-                  <td><span className={`badge ${SEV_BADGE[f.severity] || ""}`}>{f.severity || "?"}</span></td>
-                  <td>{f.title}</td>
-                  <td className="muted" style={{ fontSize: "0.78rem" }}>{f.evidence}</td>
-                  <td className="muted" style={{ fontSize: "0.75rem", fontFamily: "monospace" }}>
-                    {f.file ? `${f.file}:${f.line ?? "?"}` : "-"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {r.findings.map((f, i) => <BlackboxFinding key={i} f={f} defaultOpen={i === 0} />)}
           </div>
+          <VerdictNotes report={r} />
         </div>
       )}
 
@@ -353,7 +348,7 @@ function BlackboxDetail({ eng, report, connected, liveSteps = [], lastActivityAt
           </p>
           <div className="table-scroll">
             <table className="repo-table">
-              <thead><tr><th>메서드</th><th>경로</th><th>인증</th><th>소스 위치</th></tr></thead>
+              <thead><tr><th>메서드</th><th>경로</th><th>인증</th><th>소스 위치</th><th>코드 sink</th></tr></thead>
               <tbody>
                 {r.endpoints.map((e, i) => (
                   <tr key={i}>
@@ -364,6 +359,7 @@ function BlackboxDetail({ eng, report, connected, liveSteps = [], lastActivityAt
                       {e.file ? `${e.file}:${e.line ?? "?"}` : "-"}
                       {e.handler ? ` (${e.handler})` : ""}
                     </td>
+                    <td className="muted" style={{ fontSize: "0.75rem" }}>{sinkSummary(e.sink_profile)}</td>
                   </tr>
                 ))}
               </tbody>

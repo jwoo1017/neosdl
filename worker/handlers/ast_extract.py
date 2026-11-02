@@ -36,6 +36,25 @@ def _text(node: Node | None, src: bytes) -> str:
     return src[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
 
+# CommonJS 함수 export — `exports.signup = async (req) => {…}` / `module.exports.signup = function () {…}`.
+# 예전엔 심볼이 안 생겨 이 함수로 들어가는 호출 엣지·PDG 가 통째로 빠졌다(sink 추적 단절).
+# edge_extract·cfg_extract 도 같은 판정을 써야 심볼 키가 맞는다.
+_JS_FN_VALUES = ("arrow_function", "function_expression", "function")
+
+
+def _exported_fn_name(node: Node, src: bytes) -> str | None:
+    if node.type != "assignment_expression":
+        return None
+    left, right = node.child_by_field_name("left"), node.child_by_field_name("right")
+    if left is None or right is None or right.type not in _JS_FN_VALUES:
+        return None
+    text = _text(left, src)
+    for prefix in ("module.exports.", "exports."):
+        if text.startswith(prefix) and text[len(prefix):].isidentifier():
+            return text[len(prefix):]
+    return None
+
+
 def _symbol(kind: str, qname: str, param_types: list[str], node: Node, src: bytes) -> dict:
     body_hash = hashlib.sha256(src[node.start_byte:node.end_byte]).hexdigest()
     signature = f"{qname}({', '.join(param_types)})" if param_types else qname
@@ -208,6 +227,11 @@ def _walk_javascript(node: Node, src: bytes, scope: list[str], out: list[dict]) 
                 qname = ".".join(scope + [name])
                 params = _js_param_types(value.child_by_field_name("parameters"))
                 out.append(_symbol("function", qname, params, value, src))
+        elif t == "assignment_expression" and _exported_fn_name(child, src):
+            value = child.child_by_field_name("right")
+            qname = ".".join(scope + [_exported_fn_name(child, src)])
+            params = _js_param_types(value.child_by_field_name("parameters"))
+            out.append(_symbol("function", qname, params, value, src))
         else:
             _walk_javascript(child, src, scope, out)
 
@@ -274,6 +298,11 @@ def _walk_typescript(node: Node, src: bytes, scope: list[str], out: list[dict]) 
                 qname = ".".join(scope + [name])
                 params = _ts_param_types(value.child_by_field_name("parameters"), src)
                 out.append(_symbol("function", qname, params, value, src))
+        elif t == "assignment_expression" and _exported_fn_name(child, src):
+            value = child.child_by_field_name("right")
+            qname = ".".join(scope + [_exported_fn_name(child, src)])
+            params = _ts_param_types(value.child_by_field_name("parameters"), src)
+            out.append(_symbol("function", qname, params, value, src))
         else:
             _walk_typescript(child, src, scope, out)
 

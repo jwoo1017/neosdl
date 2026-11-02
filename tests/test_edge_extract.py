@@ -154,3 +154,28 @@ def test_scope_tracking_matches_ast_extract_symbol_keys():
             if sym["kind"] in ("function", "method"):
                 key = (path, sym["qualified_name"], tuple(sym["param_types"]))
                 assert key in index.symbol_key_exact, f"{key} missing from index"
+
+
+def test_commonjs_exports_function_and_instance_export_resolve():
+    """`exports.x = fn` 이 심볼이 되고, `module.exports = new Svc()` 의 멤버 호출이 클래스 메서드로 이어진다."""
+    files = {
+        "src/repo.js": b"exports.findByEmail = async (email) => {\n  return db.query(email);\n};\n",
+        "src/service.js": b"""
+const repo = require('./repo');
+class AuthService {
+  login(email) { return repo.findByEmail(email); }
+}
+module.exports = new AuthService();
+""",
+        "src/ctrl.js": b"""
+const service = require('./service');
+exports.login = async (req, res) => { return service.login(req.body.email); };
+""",
+    }
+    index, sources = _build_index(files)
+    repo_edges = extract_edges("javascript", ".js", "src/service.js", sources["src/service.js"], index)
+    hit = [e for e in repo_edges if e["resolved"] and "findByEmail" in (e["dst_symbol_key"] or "")]
+    assert hit and "AuthService.login" in hit[0]["src_symbol_key"]
+    ctrl_edges = extract_edges("javascript", ".js", "src/ctrl.js", sources["src/ctrl.js"], index)
+    inst = _edges_by_kind(ctrl_edges, "import_module_instance_member")
+    assert inst and "AuthService.login" in inst[0]["dst_symbol_key"] and "#login(" in inst[0]["src_symbol_key"]

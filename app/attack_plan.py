@@ -97,26 +97,48 @@ def _ran(seen: set[str], prefix: str, needle: str = "") -> bool:
     return any(c.startswith(prefix) and (needle in c) for c in seen)
 
 
+def _code_priority(ep: dict) -> int:
+    """sink 추적 결과로 본 공격 우선순위 — 0: 코드상 위험 sink, 1: 추적 불가(모름), 2: 안전 sink 만, 3: sink 없음."""
+    prof = ep.get("sink_profile") or {}
+    if not prof.get("resolved"):
+        return 1
+    if prof.get("dangerous"):
+        return 0
+    return 2 if prof.get("sinks") else 3
+
+
+def _code_proven_safe(ep: dict, category: str) -> bool:
+    """코드가 이 카테고리 sink 를 찾았고 전부 안전(바인딩·상수)인가 — 그러면 그 프로브는 건너뛴다."""
+    prof = ep.get("sink_profile") or {}
+    got = [s for s in prof.get("sinks") or [] if s.get("category") == category]
+    return bool(prof.get("resolved") and got and not any(s.get("dangerous") for s in got))
+
+
 def _injection_step(target: str, port: int, seen: set[str], endpoints, sqlmap_flags: str):
     """엔드포인트 2패스(비인증→인증) 능동 주입. 각 엔드포인트에서 sqlmap→XSS→SSTI→LFI 순.
+
+    코드 유도: 핸들러→sink 추적에서 위험 sink 가 나온 엔드포인트를 먼저 때리고, 코드상 SQL 이 전부
+    바인딩으로 증명된 엔드포인트는 sqlmap 을 생략한다(추적이 불완전하면 기존처럼 전부 돈다).
     아직 안 돌린 첫 프로브의 명령+태그를 반환, 전부 돌렸으면 None."""
+    ordered = sorted(endpoints or [], key=_code_priority)        # 안정 정렬 — 같은 순위는 기존 랭킹 유지
     for want_auth in (False, True):
-        for ep in (endpoints or []):
+        for ep in ordered:
             if not ep.get("params") or bool(ep.get("auth")) != want_auth:
                 continue
             path = ep["path"]
             tag_auth = "(인증 라우트·비인증 표면) " if want_auth else ""
+            tag_code = "코드상 위험 sink · " if _code_priority(ep) == 0 else ""
             probes = (
-                (sqlmap_for(target, port, ep, sqlmap_flags), "SQL 인젝션"),
-                (xss_probe(target, port, ep), "반영 XSS"),
-                (ssti_probe(target, port, ep), "템플릿 주입(SSTI)"),
-                (lfi_probe(target, port, ep), "경로순회/파일읽기(LFI)"),
+                (sqlmap_for(target, port, ep, sqlmap_flags), "SQL 인젝션", "sql_injection"),
+                (xss_probe(target, port, ep), "반영 XSS", "xss"),
+                (ssti_probe(target, port, ep), "템플릿 주입(SSTI)", "ssti"),
+                (lfi_probe(target, port, ep), "경로순회/파일읽기(LFI)", "path_traversal"),
             )
-            for cmd, label in probes:
+            for cmd, label, category in probes:
                 # 각 프로브 명령은 path+페이로드 마커까지 포함해 결정적으로 유일하므로 seen 비교만으로 충분.
-                if cmd in seen:
+                if cmd in seen or (category == "sql_injection" and _code_proven_safe(ep, category)):
                     continue
-                return f'{cmd}  ({label} {tag_auth}소스 유도: {ep["method"]} {path})'
+                return f'{cmd}  ({label} {tag_auth}{tag_code}소스 유도: {ep["method"]} {path})'
     return None
 
 

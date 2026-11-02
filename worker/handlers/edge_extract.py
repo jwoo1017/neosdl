@@ -18,6 +18,7 @@ from tree_sitter import Node, Parser
 
 from worker.handlers.ast_extract import (
     _LANGUAGES,
+    _exported_fn_name,
     _js_param_types,
     _java_param_types,
     _python_param_types,
@@ -194,6 +195,12 @@ def _resolve_call(parts, lang, path, class_qname, alias_map, index: ScanIndex, w
                 dst = index.top_level_by_path.get(target.path, {}).get(member)
                 if dst:
                     return dst, True, 0.9, "import_module_member"
+                # `module.exports = new AuthService()` — 모듈 멤버가 그 파일 클래스의 메서드다.
+                # 그 파일에서 이 이름의 메서드를 가진 클래스가 정확히 하나일 때만 잇는다.
+                owners = [m[member] for (p, _c), m in index.class_methods.items()
+                          if p == target.path and member in m]
+                if len(owners) == 1:
+                    return owners[0], True, 0.75, "import_module_instance_member"
                 return None, False, 0.3, "import_module_member_not_found"
             if target.kind in ("class", "symbol") and target.path and target.qname:
                 dst = index.class_methods.get((target.path, target.qname), {}).get(member)
@@ -626,6 +633,14 @@ def _collect_js(node, src, path, scope, func_key, index, calls_out, param_fn):
                     _collect_js(body, src, path, scope, new_func_key, index, calls_out, param_fn)
             else:
                 _collect_js(child, src, path, scope, func_key, index, calls_out, param_fn)
+        elif t == "assignment_expression" and _exported_fn_name(child, src):
+            value = child.child_by_field_name("right")
+            qname = ".".join(scope + [_exported_fn_name(child, src)])
+            params = tuple(param_fn(value.child_by_field_name("parameters"), src))
+            new_func_key = index.symbol_key_exact.get((path, qname, params)) or func_key
+            body = value.child_by_field_name("body")
+            if body is not None:
+                _collect_js(body, src, path, scope, new_func_key, index, calls_out, param_fn)
         elif t == "call_expression":
             func_field = child.child_by_field_name("function")
             parts = _flatten_chain(func_field, src)

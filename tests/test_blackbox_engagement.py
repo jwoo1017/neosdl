@@ -52,7 +52,7 @@ def test_run_blackbox_wires_and_persists(monkeypatch):
         captured.update(target=target, permission_mode=permission_mode, approved=approved_commands,
                         resume=kw.get("resume_commands"))
         return pentester.PentestOutcome(
-            "succeeded", findings=[{"title": "open ssh", "severity": "low"}],
+            "succeeded", findings=[{"title": "open ssh", "severity": "low", "source": "nuclei"}],
             history=[{"command": "nmap -sV test.internal", "result": {"ok": True, "exit_code": 0}}], steps=2)
 
     monkeypatch.setattr(eng.pentester, "run_pentester", fake_run)

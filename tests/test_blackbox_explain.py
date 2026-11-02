@@ -45,13 +45,56 @@ def test_header_findings_anchor_to_app_creation_and_cors_to_cors_call():
     assert snip["start"] == 1 and snip["focus"] == 5 and snip["lines"][4] == "app.use(cors());"
 
 
-def test_sqli_keeps_handler_location_and_gets_plus_minus_five_lines():
-    f = {"title": "SQL 인젝션 확인 — sqlmap ...", "severity": "critical", "evidence": "sqlmap: parameter=email",
-         "file": "src/controllers/authController.js", "line": 20}
+_SINK = {"category": "sql_injection", "label": "SQL 쿼리 실행", "callee": "db.query",
+         "file": "src/controllers/authController.js", "line": 20, "code": "line20", "arg": "sql",
+         "construction": "concat_input", "construction_ko": "요청 값을 문자열 연결/보간으로 직접 넣음",
+         "tainted": ["email"], "function": "login"}
+
+
+def _code_finding(status="confirmed"):
+    return {"title": "SQL 인젝션 확인 — /login", "severity": "critical", "evidence": "sqlmap: parameter=email; path=/login",
+            "source": "sqlmap", "tool": "sqlmap", "status": status, "category": "sql_injection",
+            "file": _SINK["file"], "line": 20, "sink": dict(_SINK),
+            "code_trace": [{"file": "src/controllers/authController.js", "line": 3, "name": "login", "kind": "handler"},
+                           {"file": _SINK["file"], "line": 20, "name": "db.query", "kind": "sink"}]}
+
+
+def test_sqli_explanation_comes_from_sink_facts_not_a_fixed_glossary():
+    f = _code_finding()
     bx.attach_code([f], reader=_reader, module_paths=list(_SRC), entry_names=_ENTRY)
     assert f["label"] == "SQL 인젝션 확인"
+    assert "authController.js:20" in f["plain"] and "`db.query`" in f["plain"] and "`email`" in f["plain"]
+    assert "sqlmap" in f["plain"] and "`db.query('… = ?', [email])`" in f["fix"]
     s = f["snippet"]
     assert (s["start"], s["focus"], len(s["lines"])) == (15, 20, 11) and s["lines"][5] == "line20"
+    assert f["code_trace"][0]["snippet"]["focus"] == 3                 # 체인 단계마다 코드
+
+
+def test_suspected_label_and_wording():
+    f = _code_finding("suspected")
+    e = bx.explain(f)
+    assert e["label"] == "SQL 인젝션 의심(코드 분석)" and "아직 확인되지 않은" in e["plain"]
+
+
+def test_patch_is_kept_only_when_before_matches_source():
+    src = {"src/repo.js": "\n".join([
+        "exports.find = async (email) => {",
+        "  const sql = \"SELECT * FROM users WHERE email = '\" + email + \"'\";",
+        "  return db.query(sql);",
+        "};"])}
+    f = {**_code_finding(), "file": "src/repo.js", "line": 3, "sink": {**_SINK, "file": "src/repo.js", "line": 3}}
+    good = ('{"line_start":2,"line_end":3,"before":"  const sql = \\"SELECT * FROM users WHERE email = \'\\" + email + \\"\'\\";\\n'
+            '  return db.query(sql);","after":"  return db.query(\'SELECT * FROM users WHERE email = ?\', [email]);",'
+            '"note":"바인딩"}')
+    assert bx.suggest_patches([f], src.get, lambda p: good) == 1
+    assert f["patch"]["line_start"] == 2 and "?" in f["patch"]["after"]
+
+    f2 = {**f}
+    f2.pop("patch")
+    hallucinated = '{"line_start":3,"line_end":3,"before":"return pool.query(q);","after":"return pool.query(q, [x]);"}'
+    assert bx.suggest_patches([f2], src.get, lambda p: hallucinated) == 0 and "patch" not in f2
+    no_binding = '{"line_start":3,"line_end":3,"before":"  return db.query(sql);","after":"  return db.query(sql.trim());"}'
+    assert bx.suggest_patches([f2], src.get, lambda p: no_binding) == 0
 
 
 def test_without_source_only_explanations_are_added():
@@ -158,7 +201,9 @@ def test_file_exposure_without_static_serving_has_no_bogus_anchor():
 
 
 def test_sqli_findings_are_never_merged():
-    fs = [{"title": "SQL 인젝션 확인 — /login", "severity": "critical", "evidence": "", "file": "a.js", "line": 1},
-          {"title": "SQL 인젝션 확인 — /signup", "severity": "critical", "evidence": "", "file": "a.js", "line": 9}]
+    fs = [{"title": "SQL 인젝션 확인 — /login", "severity": "critical", "evidence": "", "file": "a.js", "line": 1,
+           "category": "sql_injection"},
+          {"title": "SQL 인젝션 확인 — /signup", "severity": "critical", "evidence": "", "file": "a.js", "line": 9,
+           "category": "sql_injection"}]
     bx.attach_code(fs, reader=None, module_paths=[], entry_names=_ENTRY)
     assert len(fs) == 2

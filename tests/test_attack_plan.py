@@ -170,3 +170,20 @@ def test_observed_findings_dispatches_by_command():
     sources = {x["source"] for x in f}
     assert sources == {"sqlmap", "lfi", "nuclei"}
     assert len(f) == 3
+
+
+def test_code_guided_order_and_sqlmap_skip_for_proven_safe():
+    """위험 sink 엔드포인트를 먼저, SQL 이 전부 바인딩으로 증명된 엔드포인트는 sqlmap 생략."""
+    from app import attack_plan as ap
+    safe = {"method": "POST", "path": "/signup", "params": ["email"], "auth": False,
+            "sink_profile": {"resolved": True, "sinks": [{"category": "sql_injection", "dangerous": False}],
+                             "dangerous": []}}
+    risky = {"method": "POST", "path": "/login", "params": ["email"], "auth": False,
+             "sink_profile": {"resolved": True, "sinks": [{"category": "sql_injection", "dangerous": True}],
+                              "dangerous": [{"category": "sql_injection", "dangerous": True}]}}
+    first = ap._injection_step("t", 4000, set(), [safe, risky], ap.DEFAULT_SQLMAP_FLAGS)
+    assert first.startswith("sqlmap") and "/login" in first and "코드상 위험 sink" in first
+    seen = {ap.sqlmap_for("t", 4000, risky), ap.xss_probe("t", 4000, risky), ap.ssti_probe("t", 4000, risky),
+            ap.lfi_probe("t", 4000, risky)}
+    nxt = ap._injection_step("t", 4000, seen, [safe, risky], ap.DEFAULT_SQLMAP_FLAGS)
+    assert nxt.startswith("curl") and "/signup" in nxt          # signup 은 sqlmap 건너뛰고 XSS 부터

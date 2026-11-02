@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 
 from tree_sitter import Node, Parser
 
-from worker.handlers.ast_extract import _LANGUAGES, _js_param_types, _python_param_types, _text, _ts_param_types
+from worker.handlers.ast_extract import (_LANGUAGES, _exported_fn_name, _js_param_types, _python_param_types, _text,
+                                         _ts_param_types)
 from worker.handlers.edge_extract import ScanIndex, _flatten_chain
 
 # --------------------------------------------------------------------- 상수
@@ -522,6 +523,12 @@ def _py_stmt(builder: CFGBuilder, stmt: Node, src: bytes, cur: int,
         return UNREACHABLE
 
     if t == "return_statement":
+        # `return db.query(sql)` — 리턴식 안의 호출도 sink 매칭 대상이다. 예전엔 여기서 호출을 안 모아
+        # 레포지토리 계층의 가장 흔한 쿼리 패턴이 PDG 에서 통째로 빠졌다(2026-11-02).
+        found_calls: list[tuple[int, str, list[str], list[str], list[int]]] = []
+        _find_calls(stmt, src, found_calls)
+        for cline, target, arg_vars, arg_texts, arg_lines in found_calls:
+            builder.add_call(cur, cline, target, arg_vars, arg_texts, arg_lines)
         uses: list[tuple[str, int]] = []
         for c in _named(stmt):
             _identifier_uses(c, src, uses)
@@ -669,6 +676,12 @@ def _js_stmt(builder: CFGBuilder, stmt: Node, src: bytes, cur: int,
         return UNREACHABLE
 
     if t == "return_statement":
+        # `return db.query(sql)` — 리턴식 안의 호출도 sink 매칭 대상이다. 예전엔 여기서 호출을 안 모아
+        # 레포지토리 계층의 가장 흔한 쿼리 패턴이 PDG 에서 통째로 빠졌다(2026-11-02).
+        found_calls: list[tuple[int, str, list[str], list[str], list[int]]] = []
+        _find_calls(stmt, src, found_calls)
+        for cline, target, arg_vars, arg_texts, arg_lines in found_calls:
+            builder.add_call(cur, cline, target, arg_vars, arg_texts, arg_lines)
         uses: list[tuple[str, int]] = []
         for c in _named(stmt):
             _identifier_uses(c, src, uses)
@@ -977,6 +990,9 @@ def build_function_cfgs(lang: str, suffix: str, path: str, source: bytes,
                     _emit_value_fn(child, value, scope, js_param_fn, _js_body)
                 else:
                     walk(child, scope)
+            elif t == "assignment_expression" and lang != "python" and _exported_fn_name(child, source):
+                _emit_value_fn(child, child.child_by_field_name("right"), scope, js_param_fn, _js_body,
+                               name=_exported_fn_name(child, source))
             else:
                 walk(child, scope)
 
@@ -1011,9 +1027,8 @@ def build_function_cfgs(lang: str, suffix: str, path: str, source: bytes,
         # 중첩 함수(클로저)도 각자 독립된 CFG 로 뽑는다.
         walk(body, scope)
 
-    def _emit_value_fn(decl_node: Node, value: Node, scope: list[str], param_fn, body_walker):
-        name_node = decl_node.child_by_field_name("name")
-        name = _text(name_node, source)
+    def _emit_value_fn(decl_node: Node, value: Node, scope: list[str], param_fn, body_walker, name: str | None = None):
+        name = name or _text(decl_node.child_by_field_name("name"), source)
         qname = ".".join(scope + [name])
         params_node = value.child_by_field_name("parameters")
         params = tuple(param_fn(params_node, source))

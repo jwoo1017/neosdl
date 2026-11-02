@@ -64,7 +64,7 @@ def test_run_repo_blackbox_wires_persists_and_cleans(monkeypatch):
                  approved_commands=None, trusted_target=False, **kw):
         captured.update(target=target, trusted=trusted_target, mode=permission_mode)
         return pentester.PentestOutcome(
-            "succeeded", findings=[{"title": "exposed /admin", "severity": "high"}],
+            "succeeded", findings=[{"title": "exposed /admin", "severity": "high", "source": "ffuf"}],
             history=[{"command": "nmap -Pn 172.18.0.3", "result": {"ok": True, "exit_code": 0}}], steps=3)
 
     monkeypatch.setattr(eng.pentester, "run_pentester", fake_run)
@@ -107,15 +107,23 @@ def test_run_repo_blackbox_threads_recipe_from_params(monkeypatch):
     assert captured["recipe"] == recipe        # params → boot_repo_target(recipe=...)
 
 
-def test_attach_source_maps_finding_to_endpoint_file_line():
-    """블랙박스 발견(명령에 엔드포인트 path 포함) → 그 엔드포인트의 소스 file:line 역매핑."""
-    eps = [{"method": "POST", "path": "/api/v1/auth/login",
-            "file": "src/routes/notAuthRouter.js", "line": 28, "handler": "authController.login"}]
-    findings = [{"title": 'SQL 인젝션 확인 — sqlmap -u ".../api/v1/auth/login" --data="email=1"',
-                 "severity": "critical", "evidence": "sqlmap: parameter=email"}]
-    eng._attach_source(findings, eps)
-    assert findings[0]["file"] == "src/routes/notAuthRouter.js" and findings[0]["line"] == 28
-    assert findings[0]["endpoint"] == "POST /api/v1/auth/login"
+def test_judge_anchors_tool_finding_to_sink_and_drops_llm_claim():
+    """도구 발견은 그 엔드포인트의 실제 sink 줄로, 문장에 경로만 들어 있는 LLM 주장은 폐기."""
+    sink = {"category": "sql_injection", "label": "SQL 쿼리 실행", "callee": "db.query",
+            "file": "src/repositories/userRepository.js", "line": 9, "code": "return db.query(sql);",
+            "construction": "concat_input", "construction_ko": "…", "dangerous": True, "tainted": ["email"],
+            "chain": [{"file": "src/controllers/AuthController.js", "line": 8, "name": "login", "kind": "handler"}]}
+    eps = [{"method": "POST", "path": "/api/v1/auth/login", "file": "src/controllers/AuthController.js", "line": 8,
+            "sink_profile": {"sinks": [sink], "dangerous": [sink]}}]
+    outcome = pentester.PentestOutcome("succeeded", findings=[
+        {"title": "SQL 인젝션 확인 — /api/v1/auth/login", "severity": "critical", "source": "sqlmap",
+         "evidence": "sqlmap: parameter=email, back-end DBMS=MySQL; path=/api/v1/auth/login"},
+        {"title": "SQL Injection Vulnerability", "severity": "high", "source": "llm",
+         "evidence": "POST http://172.18.0.3:4000/api/v1/auth/signup email param"}], history=[])
+    verdict = eng._judge(outcome, eps)
+    [f] = outcome.findings
+    assert (f["file"], f["line"], f["status"]) == ("src/repositories/userRepository.js", 9, "confirmed")
+    assert [d["title"] for d in verdict["discarded"]] == ["SQL Injection Vulnerability"]
 
 
 def test_run_repo_blackbox_boot_failure_is_blocked_report(monkeypatch):

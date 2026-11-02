@@ -13,8 +13,8 @@ from __future__ import annotations
 import json
 import logging
 
-from app import (agents, ai_providers, audit, blackbox_explain, engagement_bus, pentest_routes, pentester,
-                 queue, sandbox)
+from app import (agents, ai_providers, audit, blackbox_explain, engagement_bus, finding_verdict, pentest_routes,
+                 pentester, queue, sandbox, sink_trace)
 from app.config import settings
 from app.db import tx
 from app.engagements import set_status
@@ -24,34 +24,45 @@ log = logging.getLogger("worker.engagement")
 _TERMINAL = ("succeeded", "failed", "cancelled")
 
 
-def _attach_source(findings: list, endpoints: list) -> list:
-    """발견에 소스 위치를 붙인다 — title/evidence 에 엔드포인트 path 가 있으면 그 엔드포인트의 file:line.
+def _trace_sinks(cur, scan_id: str | None, endpoints: list) -> None:
+    """엔드포인트마다 핸들러→서비스→sink 를 소스로 추적해 `sink_profile` 을 붙인다(best-effort).
 
-    블랙박스 발견(sqlmap 등)은 URL 을 때린 결과라 소스 링크가 없다. 우린 코드그래프로 엔드포인트→
-    핸들러 소스를 알므로, "어떤 파일 몇 번째 줄" 을 발견에 역매핑해 사원이 바로 고칠 수 있게 한다.
+    공격 계획(위험 sink 우선)과 판정(발견 위치 = 실제 sink 줄)이 이걸 쓴다. 실패해도 점검은 계속.
     """
-    if not endpoints:
-        return findings
-    eps = sorted(endpoints, key=lambda e: len(e.get("path") or ""), reverse=True)  # 긴 path 우선
-    for f in findings:
-        hay = f"{f.get('title', '')} {f.get('evidence', '')}"
-        for e in eps:
-            p = e.get("path")
-            if p and p in hay and e.get("file"):
-                f["file"], f["line"] = e["file"], e.get("line")
-                f["endpoint"] = f"{e['method']} {p}"
-                break
-    return findings
+    if not scan_id or not endpoints:
+        return
+    try:
+        reader = pentest_routes.file_reader(cur, scan_id)
+        if reader is None:
+            return
+        sink_trace.trace_endpoints(reader, pentest_routes._module_paths(cur, scan_id), endpoints)
+        n = sum(len((e.get("sink_profile") or {}).get("dangerous") or []) for e in endpoints)
+        log.info("sink 추적: 엔드포인트 %d개, 위험 sink %d개", len(endpoints), n)
+    except Exception:
+        log.warning("sink 추적 실패 — 코드 근거 없이 진행", exc_info=True)
 
 
-def _explain(cur, outcome, *, project_id: str, scan_id: str | None = None) -> str:
-    """발견에 쉬운 설명·수정법·소스 ±5줄을 붙이고 AI 요약을 돌려준다(best-effort — 실패해도 리포트는 남김)."""
+def _judge(outcome, endpoints: list | None) -> dict:
+    """도구 증거 × 코드 증거로 발견을 판정한다 — LLM 단독 주장은 여기서 폐기(outcome.findings 제자리 교체)."""
+    verdict = finding_verdict.reconcile(outcome.findings, endpoints or [], outcome.history)
+    if verdict["discarded"]:
+        log.info("근거 없는 LLM 발견 %d건 폐기: %s", len(verdict["discarded"]),
+                 [d.get("title") for d in verdict["discarded"]][:5])
+    outcome.findings[:] = verdict["findings"]
+    return verdict
+
+
+def _explain(cur, outcome, *, project_id: str, scan_id: str | None = None, safe: list | None = None) -> str:
+    """발견에 쉬운 설명·수정법·소스(체인 스니펫)·검증된 패치를 붙이고 AI 요약을 돌려준다(best-effort)."""
     if outcome.status != "succeeded":
         return ""
     model = ai_providers.resolve_requested_model(None)
 
     def summary_generate(prompt: str) -> str:
         return ai_providers.generate(model, prompt, project_id=project_id, purpose="pentest_summary")
+
+    def patch_generate(prompt: str) -> str:
+        return ai_providers.generate(model, prompt, json_mode=True, project_id=project_id, purpose="pentest_fix")
 
     try:
         reader, paths = None, []
@@ -60,14 +71,18 @@ def _explain(cur, outcome, *, project_id: str, scan_id: str | None = None) -> st
             paths = pentest_routes._module_paths(cur, scan_id) if reader else []
         blackbox_explain.attach_code(outcome.findings, reader=reader, module_paths=paths,
                                      entry_names=pentest_routes._ENTRY_NAMES)
-        return blackbox_explain.summarize(outcome.findings, outcome.history, summary_generate)
+        try:
+            blackbox_explain.suggest_patches(outcome.findings, reader, patch_generate)
+        except Exception:
+            log.warning("수정 패치 생성 실패 — 결정적 고치는 법만", exc_info=True)
+        return blackbox_explain.summarize(outcome.findings, outcome.history, summary_generate, safe)
     except Exception:
         log.warning("블랙박스 발견 설명/요약 실패 — 결정적 요약만", exc_info=True)
-        return blackbox_explain.fallback_summary(outcome.findings, outcome.history)
+        return blackbox_explain.fallback_summary(outcome.findings, outcome.history, safe)
 
 
 def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list | None = None,
-                          summary: str = "") -> dict:
+                          summary: str = "", verdict: dict | None = None) -> dict:
     """pentester outcome → 리포트 아티팩트 body(markdown + 구조화). 외부/레포 블랙박스 공용.
 
     endpoints(소스 포함)를 주면 '점검 범위' 섹션으로 사원이 확인할 파일 범위를 특정한다.
@@ -86,12 +101,27 @@ def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list |
         out = (r.get("output") or r.get("error") or "").strip()
         if out:   # 명령 출력(마스킹됨) 또는 거부 사유 — 화면에서 원인이 바로 보이게 코드블록으로
             lines += ["", "```", out[:4000], "```", ""]
+    verdict = verdict or {}
     if outcome.findings:
         lines.append("\n## 발견")
         for f in outcome.findings:
             loc = f"  →  `{f['file']}:{f.get('line')}`" if f.get("file") else ""
-            lines.append(f"- [{f.get('severity','?')}] {f.get('label') or f.get('title','')}: "
+            tag = " (코드상 의심)" if f.get("status") == "suspected" else ""
+            lines.append(f"- [{f.get('severity','?')}]{tag} {f.get('label') or f.get('title','')}: "
                          f"{f.get('evidence','')}{loc}")
+            if f.get("code_trace"):
+                lines.append("  - 경로: " + " → ".join(
+                    f"{h.get('name')} `{h.get('file')}:{h.get('line')}`" for h in f["code_trace"]))
+    if verdict.get("safe"):
+        lines.append("\n## 코드로 안전 확인")
+        for sfe in verdict["safe"]:
+            locs = ", ".join(f"`{x['file']}:{x['line']}`" for x in sfe["sinks"][:4])
+            lines.append(f"- `{sfe['endpoint']}` — SQL 은 전부 바인딩/고정 문자열 ({locs})")
+    if verdict.get("discarded"):
+        lines.append("\n## 근거 없어 제외한 AI 주장")
+        lines.append("도구 출력·코드 어디에도 근거가 없어 발견으로 올리지 않았습니다:")
+        for d in verdict["discarded"][:10]:
+            lines.append(f"- {d.get('title')}")
     if endpoints:
         lines.append("\n## 점검 범위 (엔드포인트 → 소스)")
         lines.append("사원이 확인할 파일 범위입니다 — 발견 유무와 무관하게 점검한 엔드포인트의 소스 위치:")
@@ -99,7 +129,12 @@ def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list |
             src = f"{e['file']}:{e.get('line')}" if e.get("file") else "(소스 미상)"
             h = f" — {e['handler']}" if e.get("handler") else ""
             flag = " [인증필요]" if e.get("auth") else ""
-            lines.append(f"- `{e['method']} {e['path']}`{flag}  →  `{src}`{h}")
+            prof = e.get("sink_profile") or {}
+            sk = ""
+            if prof.get("sinks"):
+                d = len(prof.get("dangerous") or [])
+                sk = f" · sink {len(prof['sinks'])}개" + (f"(위험 {d})" if d else "(안전)")
+            lines.append(f"- `{e['method']} {e['path']}`{flag}  →  `{src}`{h}{sk}")
     # 구조화 history — UI 가 마크다운 덤프 대신 스텝 카드(아이콘·상태·출력)로 렌더한다.
     hist = []
     for h in outcome.history:
@@ -113,7 +148,7 @@ def _blackbox_report_body(target: str, outcome, *, title: str, endpoints: list |
     return {"markdown": "\n".join(lines), "target": target, "status": outcome.status,
             "findings": outcome.findings, "steps": outcome.steps,
             "pending_command": outcome.pending_command, "endpoints": endpoints or [],
-            "history": hist}
+            "history": hist, "discarded": verdict.get("discarded") or [], "safe": verdict.get("safe") or []}
 
 
 def _add_subtask(cur, task_id: str, engagement_id: str, role: str) -> str:
@@ -227,8 +262,9 @@ def _run_blackbox(cur, engagement: dict, target: str) -> dict:
         except Exception:
             log.warning("툴박스 정리 실패", exc_info=True)
 
+    verdict = _judge(outcome, [])   # 외부 표적은 소스가 없다 — 도구 관측만 발견, LLM 단독 주장은 폐기
     summary = _explain(cur, outcome, project_id=str(engagement["project_id"]))
-    body = _blackbox_report_body(target, outcome, title="블랙박스 점검 리포트", summary=summary)
+    body = _blackbox_report_body(target, outcome, title="블랙박스 점검 리포트", summary=summary, verdict=verdict)
     agents._add_artifact(cur, eid, task_id, "report", "블랙박스 점검 리포트", body)
     agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",
                         {"status": outcome.status, "findings": len(outcome.findings)})
@@ -317,6 +353,7 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
 
         # 코드그래프 유도: 스캔한 소스에서 실제 엔드포인트를 뽑아 도구를 겨눈다(홈 크롤 대신).
         endpoints = pentest_routes.enumerate_endpoints(cur, str(engagement.get("scan_id") or ""))
+        _trace_sinks(cur, str(engagement.get("scan_id") or "") or None, endpoints)   # 핸들러→sink 코드 경로
         if endpoints:
             log.info("engagement %s 유도 엔드포인트 %d개(예: %s)", eid, len(endpoints),
                      f"{endpoints[0]['method']} {endpoints[0]['path']}")
@@ -334,11 +371,12 @@ def _run_repo_blackbox(cur, engagement: dict) -> dict:
         except Exception:
             log.warning("레포 블랙박스 정리 실패", exc_info=True)
 
-    _attach_source(outcome.findings, endpoints)   # 발견 → 어떤 파일 몇 번째 줄
+    verdict = _judge(outcome, endpoints)   # 도구 × 코드 판정 — 위치는 실제 sink 줄, LLM 단독 주장 폐기
     summary = _explain(cur, outcome, project_id=str(engagement["project_id"]),
-                       scan_id=str(engagement.get("scan_id") or "") or None)   # 쉬운 설명·코드 ±5줄·AI 요약
+                       scan_id=str(engagement.get("scan_id") or "") or None,
+                       safe=verdict["safe"])   # sink 사실 기반 설명·체인 스니펫·검증 패치·AI 요약
     body = _blackbox_report_body(target, outcome, title="레포 부팅 블랙박스 리포트", endpoints=endpoints,
-                                 summary=summary)
+                                 summary=summary, verdict=verdict)
     body["web_port"] = booted.web_port
     agents._add_artifact(cur, eid, task_id, "report", "레포 부팅 블랙박스 리포트", body)
     agents._finish_task(cur, task_id, "succeeded" if outcome.status == "succeeded" else "blocked",

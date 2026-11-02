@@ -13,38 +13,25 @@ from __future__ import annotations
 
 import re
 
+from app import sinks
+
 SOURCE_PATTERNS = [re.compile(p) for p in (
-    r"req\.(body|query|params)",
-    r"request\.(GET|POST|args|form|json|query)",
+    r"req\.(body|query|params|headers|cookies|files?)\b",
+    r"request\.(GET|POST|args|form|json|query|query_params|path_params|headers|cookies|files|values|data)",
     r"\binput\(",
     r"os\.environ",
     r"process\.env",
     r"sys\.argv",
 )]
 
-# (category, pattern) — category는 security_finding.category / 심각도 매핑
-# (app/security_severity.py) 에 그대로 쓰인다.
-SINK_PATTERNS = [(cat, re.compile(p)) for cat, p in (
-    ("sql_injection", r"\.execute\b"),
-    ("command_injection", r"\bexec\("),
-    ("command_injection", r"\beval\("),
-    ("command_injection", r"os\.system"),
-    ("command_injection", r"subprocess\."),
-    ("command_injection", r"child_process"),
-    ("xss", r"innerHTML"),
-    ("xss", r"dangerouslySetInnerHTML"),
-)]
-
-# 카테고리별로 "이 인자 위치부터는 위험하지 않다" — SQL 실행 함수(`pool.execute(sql, [a, b])`,
-# `cur.execute(sql, (a,))`)의 두 번째 인자부터는 DB 드라이버가 값으로 바인딩하는 파라미터라
-# 사용자 입력이 들어가도 인젝션이 아니다. 위험한 건 첫 인자(쿼리 문자열)에 섞일 때뿐이다.
-# 이 구분이 없어서 `?` 바인딩된 쿼리 5건을 SQL 인젝션으로 오탐했다(acts-gallery admin/user.repository).
-_SAFE_FROM_ARG_INDEX = {"sql_injection": 1}
+# sink 정의는 app/sinks.py 카탈로그가 소유한다(엔드포인트 sink 추적과 같은 기준). 예전 이 자리의
+# 목록은 SQL sink 가 `\.execute` 하나뿐이라 `db.query`·`pool.query`·`knex.raw` 를 못 봤다.
+# 인자 위치 규칙도 카탈로그의 danger_args 로 옮겼다 — SQL 실행 함수(`pool.execute(sql, [a, b])`)의
+# 두 번째 인자부터는 드라이버가 값으로 바인딩하므로 인젝션이 아니다(acts-gallery `?` 바인딩 오탐 5건).
 
 
 def _is_dangerous_position(category: str, index: int) -> bool:
-    safe_from = _SAFE_FROM_ARG_INDEX.get(category)
-    return safe_from is None or index < safe_from
+    return sinks.is_dangerous_position(category, index)
 
 
 # worker/handlers/cfg_extract.py 의 PARAMETER 와 같은 문자열이어야 한다 —
@@ -58,10 +45,7 @@ def _matches_any(patterns: list[re.Pattern], text: str | None) -> bool:
 
 
 def _match_sink_category(text: str | None) -> str | None:
-    for category, pattern in SINK_PATTERNS:
-        if pattern.search(text or ""):
-            return category
-    return None
+    return sinks.category(text)
 
 
 def find_security_paths_interprocedural(

@@ -7,9 +7,14 @@ taint 엔진(`app/dataflow.py`)이 실제로 탐지하는 카테고리만 다룬
 
 from __future__ import annotations
 
+# 카테고리 이름은 app/sinks.py 카탈로그와 같다.
 SEVERITY_BY_CATEGORY: dict[str, str] = {
     "sql_injection": "critical",
     "command_injection": "critical",
+    "code_injection": "critical",
+    "ssti": "critical",
+    "path_traversal": "high",
+    "nosql_injection": "high",
     "xss": "high",
 }
 

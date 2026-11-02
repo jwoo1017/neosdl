@@ -1,11 +1,13 @@
-"""블랙박스 발견을 비전문가가 읽을 수 있게 — 쉬운 설명·수정법·관련 소스 ±5줄·AI 요약.
+"""블랙박스 발견을 비전문가가 읽을 수 있게 — 쉬운 설명·수정법·관련 소스·AI 요약.
 
-nikto/sqlmap 발견 제목은 "Suggested security header missing: referrer-policy. See: …" 같은 도구
-원문이라 사원이 무엇이 문제인지 알 수 없다. 여기서:
-- **결정적 사전**으로 발견마다 label(쉬운 이름)·plain(무엇이 위험한지)·fix(고치는 법)를 붙이고,
-- 발견을 **소스 위치**로 앵커링한다 — SQLi 는 `_attach_source` 의 핸들러 file:line, 보안 헤더류는
-  앱 생성 줄(`express()`/`helmet(`), CORS 는 `cors(` 줄 — 그리고 그 줄 ±5 스니펫을 싣는다.
-- 전체 결과를 **LLM 이 3~4문장으로 요약**한다(실패하면 결정적 요약으로 폴백 — 조용히 비지 않게).
+두 종류를 다르게 다룬다:
+- **주입류(SQL·XSS·SSTI·LFI·명령·eval·NoSQL)** — 판정(app/finding_verdict.py)이 sink_trace 로 찾은
+  **실제 sink 줄**을 들고 온다. 설명·고치는 법은 그 sink 의 사실(호출·섞인 요청 값·쿼리 구성)로 만든다.
+  예전엔 제목에 `sql inj` 만 있으면 고정 문구("입력값이 DB 쿼리에 그대로 이어 붙어…")를 붙였고, 그게
+  쿼리가 없는 컨트롤러 선언 줄 옆에 나가 "코드를 안 보고 답한다"는 지적을 받았다(2026-11-02).
+  LLM 수정 패치는 원문 줄과 대조해 맞을 때만 싣는다.
+- **위생류(보안 헤더·CORS·노출 파일)** — nikto 영어 원문을 사전으로 한국어화하고 앱 생성/cors/정적 서빙
+  줄로 앵커링한다(호스트 단위 설정이라 엔드포인트 sink 가 없다).
 
 DB·소스 읽기는 주입받은 reader 로만(오프라인 단위 테스트). 소스는 로컬에만 머문다.
 """
@@ -15,24 +17,14 @@ from __future__ import annotations
 import logging
 import re
 
+from app import sinks
+
 log = logging.getLogger("app.blackbox_explain")
 
 SNIPPET_RADIUS = 5
 
 # (매칭 정규식, kind, label, plain, fix) — 위에서부터 첫 매칭. kind 는 소스 앵커 종류.
 _GLOSSARY = [
-    (re.compile(r"sql 인젝션|sql inj", re.I), "sqli", "SQL 인젝션 확인",
-     "입력값이 DB 쿼리에 그대로 이어 붙어, 공격자가 로그인 우회·데이터 열람/변조를 할 수 있습니다. 즉시 수정이 필요합니다.",
-     "문자열 연결 대신 파라미터 바인딩(prepared statement, `?` 자리표시자)이나 ORM 쿼리 빌더를 쓰세요."),
-    (re.compile(r"반영 xss|reflected xss|\bxss 확인", re.I), "xss", "반영 XSS(교차 사이트 스크립팅) 확인",
-     "입력값이 페이지에 이스케이프 없이 그대로 출력돼, 공격자가 심은 스크립트가 피해자 브라우저에서 실행됩니다. 세션 탈취·피싱으로 이어집니다.",
-     "출력 시 HTML 이스케이프(템플릿 자동 이스케이프 사용), 입력 검증, 그리고 `helmet()` CSP 로 스크립트 출처를 제한하세요."),
-    (re.compile(r"ssti|템플릿 주입", re.I), "ssti", "서버사이드 템플릿 주입(SSTI) 확인",
-     "입력값이 서버 템플릿 엔진에서 코드로 평가됩니다(예: {{7*7}}→49). 원격 코드 실행까지 번질 수 있는 치명적 결함입니다.",
-     "사용자 입력을 템플릿 소스에 넣지 말고 **데이터로만** 전달하세요(render 변수 바인딩). 템플릿을 문자열 연결로 만들지 마세요."),
-    (re.compile(r"경로순회|path traversal|\blfi\b|파일읽기", re.I), "lfi", "경로순회/로컬 파일 읽기(LFI) 확인",
-     "파일 경로 파라미터에 ../ 를 넣어 서버의 임의 파일(/etc/passwd 등)을 읽어갈 수 있습니다. 소스·설정·비밀이 유출됩니다.",
-     "사용자 입력을 파일 경로에 직접 쓰지 말고, 화이트리스트/인덱스로 매핑하거나 `path.basename` 후 고정 디렉터리에 join 하세요."),
     (re.compile(r"접근통제 결함|broken access|비인증 접근", re.I), "access", "접근통제 결함(비인증 접근)",
      "로그인이 필요한 엔드포인트가 인증 없이도 응답합니다. 남의 데이터 열람·변조(IDOR 포함) 위험이 있습니다.",
      "서버에서 모든 보호 라우트에 인증·인가 미들웨어를 강제하고, 객체 소유권(본인 자원인지)을 매 요청 확인하세요."),
@@ -114,8 +106,91 @@ _SQLMAP_CLEAN = re.compile(r"do(?:es)? not (?:seem|appear) to be injectable", re
 _URL_PATH = re.compile(r"https?://[^/\s\"']+(/[^\s\"'?]*)")
 
 
+# 주입류 — 영향 한 문장(무엇이 가능해지나). 원인·위치·수정은 sink 사실로 따로 만든다.
+_IMPACT = {
+    sinks.SQL: "공격자가 쿼리 구조를 바꿔 로그인 우회·데이터 열람/변조를 할 수 있습니다.",
+    sinks.NOSQL: "`{\"$ne\": null}` 같은 연산자 객체로 조건을 무력화해 로그인 우회·데이터 열람이 가능합니다.",
+    sinks.CMD: "공격자가 서버에서 임의 셸 명령을 실행할 수 있습니다(서버 장악).",
+    sinks.CODE: "공격자가 서버에서 임의 코드를 실행할 수 있습니다(서버 장악).",
+    sinks.SSTI: "템플릿 엔진이 입력을 코드로 평가해 원격 코드 실행까지 번질 수 있습니다.",
+    sinks.LFI: "`../` 로 서버의 임의 파일(소스·설정·비밀)을 읽거나 쓸 수 있습니다.",
+    sinks.XSS: "공격자가 심은 스크립트가 피해자 브라우저에서 실행돼 세션 탈취·피싱으로 이어집니다.",
+}
+_EVIDENCE_PARAM = re.compile(r"parameter=([^,;\s]+)")
+
+
+def _py_file(path: str | None) -> bool:
+    return str(path or "").endswith(".py")
+
+
+def _fix_for_sink(cat: str, sink: dict, path: str | None) -> str:
+    """sink 사실로 만든 고치는 법 — 실제 호출·변수 이름을 그대로 쓴다."""
+    callee = sink.get("callee") or "호출"
+    vs = ", ".join(f"`{v}`" for v in (sink.get("tainted") or [])[:3]) or "요청 값"
+    vlist = ", ".join((sink.get("tainted") or ["value"])[:3])
+    loc = f"`{_base(path)}:{sink.get('line')}`"
+    if cat == sinks.SQL:
+        if _py_file(path):
+            return (f"{loc} 의 쿼리 문자열에서 {vs} 를 빼고 자리표시자로 바꾼 뒤 값은 따로 넘기세요: "
+                    f"`{callee}(\"… = %s\", ({vlist},))` (SQLAlchemy 면 `text(\"… = :v\")` + 파라미터 dict).")
+        return (f"{loc} 의 쿼리 문자열에서 {vs} 를 빼고 자리표시자(`?`, pg 는 `$1`)로 바꾼 뒤 값은 두 번째 인자 배열로 "
+                f"넘기세요: `{callee}('… = ?', [{vlist}])`. 테이블·컬럼명처럼 바인딩이 안 되는 자리는 허용 목록으로 검증하세요.")
+    if cat == sinks.NOSQL:
+        return (f"{loc} 에서 요청 값을 필터 객체째 넘기지 말고 필요한 필드만 문자열로 강제하세요"
+                f"(`String({vlist})`), 또는 `express-mongo-sanitize` 로 `$` 연산자를 제거하세요.")
+    if cat == sinks.CMD:
+        return (f"{loc} 의 `{callee}` 대신 인자 배열을 받는 `execFile`/`spawn`(shell: false)을 쓰고, {vs} 는 허용 목록으로 "
+                f"검증하세요. 셸 문자열에 요청 값을 이어 붙이면 안 됩니다.")
+    if cat == sinks.CODE:
+        return f"{loc} 의 `{callee}` 를 제거하고 `JSON.parse`·명시적 분기 등 데이터로만 처리하세요."
+    if cat == sinks.SSTI:
+        return (f"{loc} 에서 {vs} 를 템플릿 **소스**에 넣지 말고 렌더 변수로만 넘기세요"
+                f"(예: `res.render('view', {{ {vlist} }})`). 템플릿을 문자열 연결로 만들지 마세요.")
+    if cat == sinks.LFI:
+        return (f"{loc} 에서 {vs} 를 경로에 쓰기 전에 `path.basename` 으로 디렉터리 성분을 떼고 고정 디렉터리와 join 한 뒤, "
+                f"결과가 그 디렉터리 안인지(`startsWith`) 확인하세요. 가능하면 ID→파일 매핑 표를 쓰세요.")
+    if cat == sinks.XSS:
+        return (f"{loc} 의 `{callee}` 로 HTML 을 직접 만들지 말고 `res.json` 으로 응답하거나 {vs} 를 HTML 이스케이프하세요"
+                f"(템플릿 엔진 자동 이스케이프 + `helmet()` CSP).")
+    return f"{loc} 의 `{callee}` 에 {vs} 가 그대로 들어가지 않게 검증·이스케이프하세요."
+
+
+def _base(path: str | None) -> str:
+    return str(path or "").replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _explain_code(f: dict) -> dict:
+    """주입류 발견 → sink 사실 기반 {kind, label, plain, fix}."""
+    cat = f.get("category")
+    name = sinks.CATEGORY_KO.get(cat, "주입")
+    confirmed = f.get("status") != "suspected"
+    label = f"{name} 확인" if confirmed else f"{name} 의심(코드 분석)"
+    sink = f.get("sink") or {}
+    parts = []
+    if sink:
+        vs = ", ".join(f"`{v}`" for v in (sink.get("tainted") or [])[:3]) or "요청 값"
+        how = {"concat_input": "문자열 연결/보간으로 그대로 들어갑니다",
+               "direct_input": "가공 없이 그대로 전달됩니다"}.get(sink.get("construction"), "섞여 들어갑니다")
+        parts.append(f"`{_base(sink.get('file'))}:{sink.get('line')}` 의 `{sink.get('callee')}` 호출에 요청 값 {vs} 가 {how}.")
+    if confirmed:
+        param = _EVIDENCE_PARAM.search(f.get("evidence") or "")
+        tool = f.get("tool") or f.get("source") or "도구"
+        parts.append(f"{tool} 가 실제 요청으로 주입에 성공했습니다"
+                     + (f"(파라미터 `{param.group(1)}`)." if param and param.group(1) != "?" else "."))
+    else:
+        parts.append("자동 공격으로는 아직 확인되지 않은, 코드 분석상의 위험입니다.")
+    if f.get("code_note"):
+        parts.append(f["code_note"])
+    parts.append(_IMPACT.get(cat, ""))
+    fix = _fix_for_sink(cat, sink, sink.get("file")) if sink else (
+        "도구가 확인한 엔드포인트의 핸들러부터 요청 값이 쿼리/명령/템플릿/경로로 이어지는 곳을 찾아 바인딩·이스케이프로 바꾸세요.")
+    return {"kind": "vuln", "label": label, "plain": " ".join(p for p in parts if p), "fix": fix}
+
+
 def explain(f: dict) -> dict:
-    """발견 1건 → {kind, label, plain, fix}. 사전에 없으면 원문 제목을 다듬어 label 로."""
+    """발견 1건 → {kind, label, plain, fix}. 주입류는 sink 사실로, 위생류는 사전으로, 그 외는 원문 제목."""
+    if f.get("category") in sinks.CATEGORY_KO:
+        return _explain_code(f)
     hay = f"{f.get('title', '')} {f.get('evidence', '')}"
     for rx, kind, label, plain, fix in _GLOSSARY:
         if rx.search(hay):
@@ -235,7 +310,21 @@ def attach_code(findings: list, *, reader, module_paths: list[str], entry_names:
             src = reader(f["file"])
             if src:
                 f["snippet"] = snippet(src.splitlines(), f["file"], int(f["line"]))
+        _trace_snippets(f, reader)
     return findings
+
+
+def _trace_snippets(f: dict, reader) -> None:
+    """경로 체인(route → handler → … → sink)의 각 단계에 ±3줄 — UI 가 단계를 눌러 코드를 본다."""
+    for hop in f.get("code_trace") or []:
+        if not hop.get("file") or not hop.get("line") or hop.get("snippet"):
+            continue
+        try:
+            src = reader(hop["file"])
+        except Exception:
+            src = None
+        if src:
+            hop["snippet"] = snippet(src.splitlines(), hop["file"], int(hop["line"]), radius=3)
 
 
 def _clean_sqlmap_paths(history: list) -> list[str]:
@@ -250,8 +339,8 @@ def _clean_sqlmap_paths(history: list) -> list[str]:
     return out
 
 
-def fallback_summary(findings: list, history: list) -> str:
-    """LLM 없이 만드는 요약 — 심각도 분포 + 가장 급한 것 + 안전 확인된 것."""
+def fallback_summary(findings: list, history: list, safe: list | None = None) -> str:
+    """LLM 없이 만드는 요약 — 확인/의심 구분 + 가장 급한 것 + 코드·도구로 안전 확인된 것."""
     if not findings:
         text = "점검한 범위에서 확인된 취약점이 없습니다."
     else:
@@ -259,24 +348,34 @@ def fallback_summary(findings: list, history: list) -> str:
         dist = ", ".join(f"{_SEV_KO[s]} {n}건" for s, n in counts.items() if n)
         top = next((f for s in _SEV_ORDER for f in findings if f.get("severity") == s), findings[0])
         text = f"총 {len(findings)}건을 발견했습니다({dist}). 가장 먼저 볼 것은 '{top.get('label') or top.get('title')}' 입니다."
-        if not counts["critical"] and not counts["high"]:
+        suspected = sum(1 for f in findings if f.get("status") == "suspected")
+        if suspected:
+            text += (f" 이 중 {suspected}건은 코드 분석으로 찾은 '의심'(요청 값이 쿼리·명령 등에 직접 섞이는 줄)이며"
+                     " 자동 공격으로는 아직 확인되지 않았습니다.")
+        if not counts["critical"] and not counts["high"] and not suspected:
             text += " 대부분 보안 헤더 설정 누락으로, 바로 뚫리는 취약점은 아니지만 helmet 등으로 한 번에 정리할 수 있습니다."
     clean = _clean_sqlmap_paths(history)
     if clean:
         text += f" SQL 주입 점검({', '.join(clean)})에서는 취약점이 확인되지 않았습니다."
+    coded = [s["endpoint"] for s in (safe or [])]
+    if coded:
+        shown = ", ".join(coded[:4]) + (f" 외 {len(coded) - 4}개" if len(coded) > 4 else "")
+        text += f" 코드상으로도 {shown} 의 쿼리는 모두 바인딩/고정 문자열이라 안전합니다."
     return text
 
 
-def summarize(findings: list, history: list, llm_generate=None) -> str:
+def summarize(findings: list, history: list, llm_generate=None, safe: list | None = None) -> str:
     """전체 결과를 비전문가용 3~4문장으로. llm_generate(prompt)->str 실패/빈 응답이면 결정적 요약."""
-    base = fallback_summary(findings, history)
+    base = fallback_summary(findings, history, safe)
     if llm_generate is None or not findings:
         return base
-    items = "\n".join(f"- [{f.get('severity', '?')}] {f.get('label') or f.get('title')}: {f.get('plain') or ''}"
+    items = "\n".join(f"- [{f.get('severity', '?')}·{'의심' if f.get('status') == 'suspected' else '확인'}] "
+                      f"{f.get('label') or f.get('title')}: {f.get('plain') or ''}"
                       for f in findings[:15])
     prompt = ("아래는 웹 서비스 자동 보안 점검 결과다. 보안 비전문가 개발자가 읽을 수 있게 한국어 3~4문장으로 "
               "요약하라. 무엇이 가장 급한지, 실제로 위험한지(바로 뚫리는지/설정 정리 수준인지), 무엇부터 고치면 "
-              "되는지를 쉬운 말로. 목록·마크다운·영어 전문용어 나열 금지. 없는 사실을 지어내지 말 것.\n\n"
+              "되는지를 쉬운 말로. '의심'은 코드상 위험일 뿐 공격으로 확인되진 않았다고 구분해 말하라. "
+              "목록·마크다운·영어 전문용어 나열 금지. 없는 사실을 지어내지 말 것.\n\n"
               f"발견 목록:\n{items}\n\n참고(결정적 요약): {base}")
     try:
         text = (llm_generate(prompt) or "").strip()
@@ -285,3 +384,82 @@ def summarize(findings: list, history: list, llm_generate=None) -> str:
         return base
     text = re.sub(r"^```\w*|```$", "", text).strip()
     return text[:900] if len(text) >= 20 else base
+
+
+# ───────────────────────────────────────────── 코드 수정 패치(LLM 제안 + 원문 대조 검증)
+PATCH_LIMIT = 5
+_PATCH_CONTEXT = 14
+_PLACEHOLDER = re.compile(r"\?|\$\d|%s|:\w+|%\(\w+\)s")
+
+
+def _patch_prompt(f: dict, lines: list[str], start: int, end: int) -> str:
+    sink = f.get("sink") or {}
+    code = "\n".join(f"{n:>4}| {lines[n - 1]}" for n in range(start, end + 1))
+    trace = " → ".join(f"{h.get('name')}({_base(h.get('file'))}:{h.get('line')})" for h in f.get("code_trace") or [])
+    return (
+        f"다음 코드의 {sink.get('line')}번 줄에 {sinks.CATEGORY_KO.get(f.get('category'), '주입')} 취약점이 있다. "
+        f"`{sink.get('callee')}` 호출에 요청 값 {', '.join(sink.get('tainted') or [])} 이(가) "
+        f"{sink.get('construction_ko')}.\n호출 경로: {trace}\n파일: {sink.get('file')}\n\n{code}\n\n"
+        "이 취약점만 고치는 최소 수정을 JSON 하나로만 답하라(설명 금지):\n"
+        '{"line_start":<수정 시작 줄>,"line_end":<수정 끝 줄>,"before":"<그 줄들의 원문 그대로>",'
+        '"after":"<바꿀 코드>","note":"<한국어 한 문장>"}\n'
+        "규칙: before 는 위 코드의 해당 줄을 줄번호 없이 **한 글자도 바꾸지 말고** 복사. 수정 범위는 취약한 줄을 "
+        "반드시 포함하고 12줄 이하. SQL 이면 자리표시자 + 바인딩 값 배열/튜플로. 기존 변수명·들여쓰기 유지."
+    )
+
+
+def _validate_patch(obj: dict, f: dict, lines: list[str]) -> dict | None:
+    try:
+        a, b = int(obj["line_start"]), int(obj["line_end"])
+        before, after = str(obj["before"]), str(obj["after"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    sink_line = int((f.get("sink") or {}).get("line") or 0)
+    if not (1 <= a <= b <= len(lines)) or b - a > 12 or not (a <= sink_line <= b):
+        return None
+    norm = lambda t: [ln.strip() for ln in t.strip("\n").splitlines() if ln.strip()]   # noqa: E731
+    if norm(before) != norm("\n".join(lines[a - 1:b])):
+        return None                                        # LLM 이 원문을 지어냄 — 버린다
+    if not after.strip() or norm(after) == norm(before):
+        return None
+    if f.get("category") == sinks.SQL and not _PLACEHOLDER.search(after):
+        return None                                        # SQL 인데 바인딩이 없는 '수정'
+    return {"file": f["sink"]["file"], "line_start": a, "line_end": b,
+            "before": "\n".join(lines[a - 1:b]), "after": after.rstrip("\n"),
+            "note": str(obj.get("note") or "")[:200], "verified": "원문 일치"}
+
+
+def suggest_patches(findings: list, reader, llm_generate, *, limit: int = PATCH_LIMIT) -> int:
+    """sink 가 있는 주입류 발견에 검증된 before/after 패치를 붙인다(제자리). 붙인 개수 반환.
+
+    LLM 이 낸 before 가 실제 소스 줄과 다르면(환각) 버리고 결정적 '고치는 법'만 남긴다.
+    """
+    if reader is None or llm_generate is None:
+        return 0
+    from app.pentester import parse_action
+    done = 0
+    for f in findings:
+        if done >= limit:
+            break
+        sink = f.get("sink") or {}
+        if f.get("category") not in sinks.CATEGORY_KO or not sink.get("file") or not sink.get("line"):
+            continue
+        try:
+            src = reader(sink["file"])
+        except Exception:
+            src = None
+        if not src:
+            continue
+        lines = src.splitlines()
+        line = int(sink["line"])
+        start, end = max(1, line - _PATCH_CONTEXT), min(len(lines), line + 6)
+        try:
+            obj = parse_action(llm_generate(_patch_prompt(f, lines, start, end)))
+        except Exception:
+            log.warning("수정 패치 LLM 실패 — 결정적 고치는 법만", exc_info=True)
+            continue
+        patch = _validate_patch(obj or {}, f, lines)
+        if patch:
+            f["patch"] = patch
+            done += 1
+    return done
